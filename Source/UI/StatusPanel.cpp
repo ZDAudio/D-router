@@ -6,20 +6,25 @@ namespace dcr {
 
 StatusPanel::StatusPanel (AudioEngine& e) : engine (e)
 {
-    title.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    title.setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    title.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+    title.setColour (juce::Label::textColourId,
+                     juce::Colour (0xFF000000u | engine.getSettings().accentColorRGB));
     addAndMakeVisible (title);
 
+    popOutBtn.setName ("win");
     popOutBtn.setTooltip ("Pop status panel out into its own window");
     popOutBtn.onClick = [this] { if (onPopOutRequested) onPopOutRequested(); };
     addAndMakeVisible (popOutBtn);
+
+    addAndMakeVisible (gauges);
 
     body.setMultiLine (true);
     body.setReadOnly (true);
     body.setScrollbarsShown (true);
     body.setCaretVisible (false);
-    body.setColour (juce::TextEditor::backgroundColourId, juce::Colour::fromRGB (18, 18, 22));
-    body.setColour (juce::TextEditor::textColourId,       juce::Colour::fromRGB (200, 220, 200));
+    body.setColour (juce::TextEditor::backgroundColourId, juce::Colour::fromRGB (12, 12, 14));
+    body.setColour (juce::TextEditor::textColourId,
+                    juce::Colour (0xFF000000u | engine.getSettings().accentColorRGB));
     body.setFont   (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 11.0f, 0));
     addAndMakeVisible (body);
 
@@ -29,7 +34,9 @@ StatusPanel::StatusPanel (AudioEngine& e) : engine (e)
 
 void StatusPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour::fromRGB (18, 18, 22));
+    g.fillAll (juce::Colour::fromRGB (10, 10, 12));
+    g.setColour (juce::Colour::fromRGB (36, 36, 42));
+    g.drawRect (getLocalBounds(), 1);
 }
 
 void StatusPanel::resized()
@@ -39,7 +46,19 @@ void StatusPanel::resized()
     popOutBtn.setBounds (top.removeFromRight (32));
     title.setBounds (top);
     r.removeFromTop (4);
+
+    // Top gauges occupy a fixed 64 px strip; latency text fills the rest.
+    gauges.setBounds (r.removeFromTop (64));
+    r.removeFromTop (6);
     body.setBounds (r);
+}
+
+void StatusPanel::visibilityChanged()
+{
+    if (isVisible())
+        startTimer (juce::jmax (50, engine.getSettings().statusTimerMs));
+    else
+        stopTimer();
 }
 
 void StatusPanel::refresh()
@@ -154,19 +173,133 @@ void StatusPanel::refresh()
       << (int) rep.engineBlockSize << " spl / " << (int) eng << " Hz)\n";
     s << "Round-trip worst = " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
 
-    body.setText (s, juce::dontSendNotification);
+    if (s != lastBodyText)
+    {
+        body.setText (s, juce::dontSendNotification);
+        lastBodyText = s;
+    }
 
     // --- colour by worst severity --------------------------------------------
     const auto& es = engine.getSettings();
-    juce::Colour col = juce::Colour::fromRGB (200, 220, 200);   // healthy
+    juce::Colour col = juce::Colour (0xFF000000u | es.accentColorRGB);   // healthy
     const bool recentDropout = lastUnderrunMs > 0.0
         && (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) < 5000.0;
 
     if (cpuAvg >= es.cpuCritRatio || stalledRatio >= es.stalledCritRatio || recentDropout)
-        col = juce::Colour::fromRGB (240, 80, 70);
+        col = juce::Colour (0xFF000000u | es.criticalColorRGB);
     else if (cpuAvg >= es.cpuWarnRatio || stalledRatio >= es.stalledWarnRatio)
-        col = juce::Colour::fromRGB (240, 200, 60);
+        col = juce::Colour (0xFF000000u | es.warningColorRGB);
     body.applyColourToAllText (col, true);
+
+    // Cache values for the gauge strip and trigger its repaint.
+    lastCpuAvg        = cpuAvg;
+    lastCpuPeak       = cpuPeak;
+    lastStalledRatio  = stalledRatio;
+    lastXrunIn        = engine.getTotalInputOverruns();
+    lastXrunOut       = engine.getTotalOutputUnderruns();
+    lastDropoutAgoSec = (lastUnderrunMs > 0.0)
+        ? (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) / 1000.0
+        : -1.0;
+    gauges.repaint();
+}
+
+void StatusPanel::GaugeStrip::paint (juce::Graphics& g)
+{
+    const auto& es = owner.engine.getSettings();
+    const auto accent   = juce::Colour (0xFF000000u | es.accentColorRGB);
+    const auto warning  = juce::Colour (0xFF000000u | es.warningColorRGB);
+    const auto critical = juce::Colour (0xFF000000u | es.criticalColorRGB);
+
+    auto pickColour = [&] (float val, float warnAt, float critAt)
+    {
+        if (val >= critAt)  return critical;
+        if (val >= warnAt)  return warning;
+        return accent;
+    };
+
+    g.fillAll (juce::Colour::fromRGB (16, 16, 20));
+
+    auto bounds = getLocalBounds().reduced (4);
+    const int n = 4;
+    const int gap = 6;
+    const int w = (bounds.getWidth() - (n - 1) * gap) / n;
+
+    // Helper to draw one labeled card with an optional progress bar.
+    auto drawCard = [&] (juce::Rectangle<int> r, const juce::String& label,
+                          const juce::String& valueText, juce::Colour valueCol,
+                          float fillRatio /* 0..1, <0 = no bar */) {
+        g.setColour (juce::Colour::fromRGB (24, 24, 30));
+        g.fillRect (r);
+        g.setColour (juce::Colour::fromRGB (40, 40, 48));
+        g.drawRect (r, 1);
+
+        auto inner = r.reduced (6, 4);
+
+        g.setColour (juce::Colour::fromRGB (140, 140, 150));
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.5f, 0));
+        g.drawText (label, inner.removeFromTop (12), juce::Justification::topLeft);
+
+        g.setColour (valueCol);
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 18.0f, juce::Font::bold));
+        g.drawText (valueText, inner.removeFromTop (22), juce::Justification::centredLeft);
+
+        if (fillRatio >= 0.0f)
+        {
+            auto barArea = inner.removeFromTop (8);
+            g.setColour (juce::Colour::fromRGB (12, 12, 14));
+            g.fillRect (barArea);
+            const int filledW = juce::jlimit (0, barArea.getWidth(),
+                                              (int) std::round (fillRatio * (float) barArea.getWidth()));
+            g.setColour (valueCol);
+            g.fillRect (barArea.withWidth (filledW));
+            g.setColour (juce::Colour::fromRGB (40, 40, 48));
+            g.drawRect (barArea, 0.5f);
+        }
+    };
+
+    // 1. CPU
+    {
+        auto r = bounds.withX (bounds.getX()).withWidth (w);
+        const auto cpuCol = pickColour (owner.lastCpuAvg, es.cpuWarnRatio, es.cpuCritRatio);
+        drawCard (r,
+                  "CPU  (peak " + juce::String (owner.lastCpuPeak * 100.0f, 0) + "%)",
+                  juce::String (owner.lastCpuAvg * 100.0f, 1) + " %",
+                  cpuCol,
+                  juce::jlimit (0.0f, 1.0f, owner.lastCpuAvg));
+    }
+    // 2. Stalled
+    {
+        auto r = bounds.withX (bounds.getX() + (w + gap)).withWidth (w);
+        const auto stCol = pickColour (owner.lastStalledRatio, es.stalledWarnRatio, es.stalledCritRatio);
+        drawCard (r,
+                  "STALLED (window)",
+                  juce::String (owner.lastStalledRatio * 100.0f, 2) + " %",
+                  stCol,
+                  juce::jlimit (0.0f, 1.0f, owner.lastStalledRatio * 4.0f));   // expand 25% -> full bar
+    }
+    // 3. Xruns
+    {
+        auto r = bounds.withX (bounds.getX() + 2 * (w + gap)).withWidth (w);
+        const bool dirty = (owner.lastXrunIn + owner.lastXrunOut) > 0;
+        drawCard (r, "XRUN  in / out",
+                  juce::String ((juce::int64) owner.lastXrunIn) + " / "
+                    + juce::String ((juce::int64) owner.lastXrunOut),
+                  dirty ? critical : accent,
+                  -1.0f);
+    }
+    // 4. Last dropout
+    {
+        auto r = bounds.withX (bounds.getX() + 3 * (w + gap)).withWidth (w);
+        const bool recent = owner.lastDropoutAgoSec >= 0.0 && owner.lastDropoutAgoSec < 5.0;
+        juce::String valText;
+        if (owner.lastDropoutAgoSec < 0.0)         valText = "never";
+        else if (owner.lastDropoutAgoSec < 60.0)   valText = juce::String (owner.lastDropoutAgoSec, 1) + " s";
+        else                                       valText = juce::String ((int) (owner.lastDropoutAgoSec / 60.0)) + "m";
+        drawCard (r, "LAST DROPOUT",
+                  valText,
+                  recent ? critical : accent,
+                  -1.0f);
+    }
 }
 
 } // namespace dcr

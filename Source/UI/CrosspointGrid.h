@@ -36,6 +36,9 @@ public:
     // channels in the matrix.
     void setHighlightedColumns (std::vector<int> cols);
 
+    // Set boundaries between different devices to draw visual separators across the grid
+    void setDeviceBoundaries (std::vector<int> ins, std::vector<int> outs);
+
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
@@ -46,6 +49,7 @@ private:
     juce::Rectangle<int> cellBounds (int outIdx, int inIdx) const noexcept;
     bool hitTestCell (int x, int y, int& outIdx, int& inIdx) const noexcept;
     void promptForDb (int outIdx, int inIdx);
+    std::vector<std::pair<int, int>> getCellsOnLine (int x0, int y0, int x1, int y1);
 
     static float dbToLin (float db) noexcept;
     static float linToDb (float lin) noexcept;
@@ -60,7 +64,13 @@ private:
     float dragStartDb = 0.0f;
     bool  draggedSinceMouseDown = false;
 
+    // Shift click state
+    int shiftStartOut = -1;
+    int shiftStartIn  = -1;
+
     std::vector<int> highlightedColumns;
+    std::vector<int> inputDeviceBoundaries;
+    std::vector<int> outputDeviceBoundaries;
 };
 
 } // namespace dcr

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_opengl/juce_opengl.h>
 
 #include <vector>
 
@@ -12,6 +13,7 @@
 #include "UI/MatrixView.h"
 #include "UI/OutputGroupPanel.h"
 #include "UI/StatusPanel.h"
+#include "UI/LookAndFeel.h"
 
 namespace dcr {
 
@@ -24,6 +26,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void parentHierarchyChanged() override;
 
 private:
     void timerCallback() override;
@@ -58,7 +61,13 @@ private:
     std::thread       reconfigThread;
     std::atomic<bool> isReconfiguring { false };
 
-    juce::Label      title { {}, "dcorerouter" };
+    LookAndFeel customLookAndFeel;
+
+    // GPU-backed renderer for the entire top-level component tree.  Drops
+    // composite & paint cost dramatically for the slider/meter-heavy UI.
+    juce::OpenGLContext openGLContext;
+
+    juce::Label      title { {}, "D-Core Router" };
     juce::TextButton devicesButton  { "Devices..." };
     juce::TextButton settingsButton { "Settings..." };
     juce::TextButton groupsButton   { "Groups..." };
@@ -66,7 +75,17 @@ private:
     juce::TextButton loadButton     { "Load..." };
     juce::TextButton stopButton     { "Stop" };
 
-    juce::Viewport   matrixViewport;
+    // Top Navigation Tabs
+    enum Tab { RoutingTab, GroupsTab, StatusTab };
+    Tab currentTab = RoutingTab;
+
+    juce::TextButton matrixTabBtn { "MATRIX ROUTING" };
+    juce::TextButton groupsTabBtn { "OUTPUT GROUPS" };
+    juce::TextButton statusTabBtn { "ENGINE MONITOR" };
+
+    juce::Label groupsPlaceholder;
+    juce::Label statusPlaceholder;
+
     MatrixView       matrixView { engine };
     OutputGroupPanel groupPanel  { engine };
     StatusPanel      statusPanel { engine };
@@ -75,8 +94,10 @@ private:
     bool statusPanelDetached = false;
     std::unique_ptr<juce::DocumentWindow> groupWindow;
     std::unique_ptr<juce::DocumentWindow> statusWindow;
+    
     void toggleGroupPanelDetach();
     void toggleStatusPanelDetach();
+    void switchTab (Tab newTab);
     static int cards_default_width();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

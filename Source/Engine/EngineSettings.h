@@ -45,7 +45,7 @@ struct EngineSettings
     // ===== UI ===============================================================
     int   meterTimerHz       = 30;          // level meter repaint rate
     float meterDecayFactor   = 0.92f;       // per-frame multiplicative decay
-    int   statusTimerMs      = 250;         // top status bar refresh interval
+    int   statusTimerMs      = 1000;        // engine-status panel refresh interval (default 1 Hz to save CPU)
 
     // ===== Performance warnings ============================================
     //  Health classification of (stalled / (stalled + processed)).
@@ -54,6 +54,14 @@ struct EngineSettings
     //  CPU thresholds for status colour.
     float cpuWarnRatio       = 0.70f;       // yellow above 70%
     float cpuCritRatio       = 0.90f;       // red above 90%
+
+    // ===== Theme colours ===================================================
+    //  Stored as 0xRRGGBB; alpha is implicitly 0xFF.  Used by LookAndFeel and
+    //  the status panel; semantic role colours (mute/solo/fx) stay hardwired
+    //  in LookAndFeel since those follow pro-audio convention.
+    unsigned int accentColorRGB   = 0x00FFD2;   // primary accent (knob arc, fader cap, focus rings)
+    unsigned int warningColorRGB  = 0xFFCC00;   // warning state (CPU > warn, stalled > warn)
+    unsigned int criticalColorRGB = 0xFF3B30;   // critical state (CPU > crit, dropouts, mute)
 
     // ===== Subset comparison =================================================
     //  Audio-path fields that, if changed, require an engine restart.

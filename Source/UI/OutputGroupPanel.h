@@ -23,10 +23,15 @@ public:
     // Call after the engine restarts or groups are added/removed/renamed.
     void rebuild();
 
-    // Button on each card asks the host (MainComponent) to detach/re-attach
-    // this panel into a separate window.
+    // Single header button (top-right) asks the host (MainComponent) to
+    // detach/re-attach this panel into a separate window.
     std::function<void()> onPopOutRequested;
-    void setDetached (bool d) { detached = d; for (auto* c : cards) c->updatePopOut (d); }
+    void setDetached (bool d);
+
+    // The header button itself, owned here so MainComponent can interrogate it.
+    juce::TextButton popOutBtn { "->" };
+
+    void visibilityChanged() override;
 
     // Fires when the mouse hovers into / out of a group card.  Argument is
     // the group's member output channels (or empty when no card is hovered).
@@ -66,6 +71,7 @@ private:
         std::array<std::unique_ptr<juce::DocumentWindow>, 5> editorWindows;
 
         void buildFor (OutputGroupPanel& p, int gIdx);
+        void paint (juce::Graphics&) override;
         void resized() override;
         void updatePopOut (bool detached);
 
@@ -78,11 +84,17 @@ private:
     };
     juce::OwnedArray<Card> cards;
     int lastHoveredCardIdx = -1;
+    int slotRefreshCounter = 0;
 
     // Cards live inside a Viewport so we get horizontal scrolling when the
     // panel is narrower than the total cards width.
     juce::Viewport   cardsViewport;
     juce::Component  cardsHolder;
+
+    // Small text shown when panel is embedded - hover-to-highlight only works
+    // when the panel is popped out (so the matrix is visible alongside).
+    juce::Label      hoverHintLabel;
+    juce::Label      panelTitle;
 
     std::unique_ptr<juce::FileChooser> pluginFileChooser;
     int pendingLoadCardIdx = -1;

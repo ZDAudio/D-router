@@ -11,9 +11,15 @@ namespace dcr {
 
 MainComponent::MainComponent()
 {
+    juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);
+    setLookAndFeel (&customLookAndFeel);
+
+    openGLContext.setContinuousRepainting (false);
+
     setSize (1100, 700);
 
     title.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+    title.setColour (juce::Label::textColourId, customLookAndFeel.getAccent());
     title.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (title);
 
@@ -21,18 +27,23 @@ MainComponent::MainComponent()
     settingsButton.onClick = [this]
     {
         SettingsDialog::launch (engine.getSettings(),
-            [this] (std::optional<EngineSettings> s)
+            [this] (std::optional<EngineSettings> s, bool persistToDisk)
             {
-                if (! s.has_value()) return;
+                if (! s.has_value()) return;        // Cancel
                 const bool needsRestart = ! s->audioPathEquals (engine.getSettings());
                 engine.setSettings (*s);
-                SettingsStore::save (*s);
+                if (persistToDisk)
+                    SettingsStore::save (*s);
                 if (needsRestart && ! currentSpecs.empty())
                     applyDeviceSelection (currentSpecs);
                 // Update UI-only timers immediately.
                 startTimer (engine.getSettings().statusTimerMs);
                 matrixView.pauseUpdates();
                 matrixView.resumeUpdates();
+                // Re-apply theme colours and force a global repaint.
+                customLookAndFeel.applyTheme (engine.getSettings());
+                title.setColour (juce::Label::textColourId, customLookAndFeel.getAccent());
+                repaint();
             });
     };
     saveButton    .onClick = [this] { saveSnapshotInteractive(); };
@@ -45,25 +56,60 @@ MainComponent::MainComponent()
     addAndMakeVisible (devicesButton);
     addAndMakeVisible (settingsButton);
     addAndMakeVisible (groupsButton);
+    
     addAndMakeVisible (saveButton);
     addAndMakeVisible (loadButton);
     addAndMakeVisible (stopButton);
-    addAndMakeVisible (groupPanel);
+
+    // Group buttons for radio toggling
+    matrixTabBtn.setRadioGroupId (100);
+    groupsTabBtn.setRadioGroupId (100);
+    statusTabBtn.setRadioGroupId (100);
+
+    matrixTabBtn.setClickingTogglesState (true);
+    groupsTabBtn.setClickingTogglesState (true);
+    statusTabBtn.setClickingTogglesState (true);
+
+    matrixTabBtn.setToggleState (true, juce::dontSendNotification);
+
+    matrixTabBtn.onClick = [this] { switchTab (RoutingTab); };
+    groupsTabBtn.onClick = [this] { switchTab (GroupsTab); };
+    statusTabBtn.onClick = [this] { switchTab (StatusTab); };
+
+    addAndMakeVisible (matrixTabBtn);
+    addAndMakeVisible (groupsTabBtn);
+    addAndMakeVisible (statusTabBtn);
+
+    groupsPlaceholder.setText ("OUTPUT GROUPS DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+    groupsPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
+    groupsPlaceholder.setJustificationType (juce::Justification::centred);
+    groupsPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+    addChildComponent (groupsPlaceholder);
+
+    statusPlaceholder.setText ("ENGINE MONITOR DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+    statusPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
+    statusPlaceholder.setJustificationType (juce::Justification::centred);
+    statusPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+    addChildComponent (statusPlaceholder);
+
+    // Output Group Panel setup
+    addChildComponent (groupPanel);
     groupPanel.onPopOutRequested = [this] { toggleGroupPanelDetach(); };
     groupPanel.onGroupHover = [this] (const std::vector<int>& outs)
     {
         matrixView.setHighlightedOutputs (outs);
     };
 
-    matrixViewport.setViewedComponent (&matrixView, false);
-    matrixViewport.setScrollBarsShown (true, true);
-    addAndMakeVisible (matrixViewport);
+    addChildComponent (matrixView);
 
-    addAndMakeVisible (statusPanel);
+    // Status Panel setup
+    addChildComponent (statusPanel);
     statusPanel.onPopOutRequested = [this] { toggleStatusPanelDetach(); };
 
-    // Load persistent settings (engine SR, ring sizes, SRC quality, etc.).
+    // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
     engine.setSettings (SettingsStore::load());
+    customLookAndFeel.applyTheme (engine.getSettings());
+    title.setColour (juce::Label::textColourId, customLookAndFeel.getAccent());
 
     // React to hotplug: if a routed device disappears, gracefully drop it.
     engine.onDeviceListChanged = [this]
@@ -89,6 +135,7 @@ MainComponent::MainComponent()
         applySnapshot (s);
 
     refreshStatus();
+    switchTab (RoutingTab);
     startTimer (engine.getSettings().statusTimerMs);
 }
 
@@ -96,49 +143,93 @@ void MainComponent::timerCallback() { refreshStatus(); }
 
 MainComponent::~MainComponent()
 {
+    // Detach GPU context before the component tree starts unwinding.
+    if (openGLContext.isAttached()) openGLContext.detach();
+
+    setLookAndFeel (nullptr);
+    juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+
     if (reconfigThread.joinable()) reconfigThread.join();
     // Auto-save on shutdown.
     SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
     engine.stop();
 }
 
+void MainComponent::parentHierarchyChanged()
+{
+    // Attach OpenGL only once we have a real top-level component with a peer.
+    if (! openGLContext.isAttached())
+        if (auto* top = getTopLevelComponent())
+            if (top->getPeer() != nullptr)
+                openGLContext.attachTo (*top);
+}
+
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour::fromRGB (28, 28, 32));
+    g.fillAll (juce::Colour::fromRGB (12, 12, 14)); // Deep cyber black background
 }
 
 void MainComponent::resized()
 {
     auto r = getLocalBounds().reduced (12);
     auto top = r.removeFromTop (32);
+    
+    // Left Configuration Section
     title.setBounds (top.removeFromLeft (160));
     top.removeFromLeft (10);
-    devicesButton .setBounds (top.removeFromLeft (90));
+    devicesButton.setBounds (top.removeFromLeft (90));
     top.removeFromLeft (4);
     settingsButton.setBounds (top.removeFromLeft (90));
     top.removeFromLeft (4);
-    groupsButton  .setBounds (top.removeFromLeft (90));
-    top.removeFromLeft (4);
-    saveButton    .setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (4);
-    loadButton    .setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (4);
-    stopButton    .setBounds (top.removeFromLeft (60));
+    groupsButton.setBounds (top.removeFromLeft (90));
+
+    // Right Session Section (Save, Load, Stop)
+    stopButton.setBounds (top.removeFromRight (60));
+    top.removeFromRight (12); // Extra separation for safety
+    loadButton.setBounds (top.removeFromRight (70));
+    top.removeFromRight (4);
+    saveButton.setBounds (top.removeFromRight (70));
+
+    r.removeFromTop (6);
+
+    // Tab navigation row -- FlexBox keeps three buttons centered and equal
+    // width regardless of how wide the window is.
+    {
+        auto tabRect = r.removeFromTop (28);
+        juce::FlexBox fb;
+        fb.flexDirection  = juce::FlexBox::Direction::row;
+        fb.justifyContent = juce::FlexBox::JustifyContent::center;
+        fb.alignContent   = juce::FlexBox::AlignContent::stretch;
+        fb.items.add (juce::FlexItem (matrixTabBtn).withFlex (1.0f).withMinWidth (90.0f)
+                                                    .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 0)));
+        fb.items.add (juce::FlexItem (groupsTabBtn).withFlex (1.0f).withMinWidth (90.0f)
+                                                    .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 2)));
+        fb.items.add (juce::FlexItem (statusTabBtn).withFlex (1.0f).withMinWidth (90.0f)
+                                                    .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 0, 0, 2)));
+        fb.performLayout (tabRect);
+    }
 
     r.removeFromTop (8);
-    if (! statusPanelDetached)
+    
+    // Position active component in viewport space r
+    if (currentTab == RoutingTab)
     {
-        auto statusBox = r.removeFromBottom (160);
-        r.removeFromBottom (6);
-        statusPanel.setBounds (statusBox);
+        matrixView.setBounds (r);
     }
-    if (! groupPanelDetached)
+    else if (currentTab == GroupsTab)
     {
-        auto groupBox = r.removeFromBottom (220);
-        r.removeFromBottom (6);
-        groupPanel.setBounds (groupBox);
+        if (groupPanelDetached)
+            groupsPlaceholder.setBounds (r);
+        else
+            groupPanel.setBounds (r);
     }
-    matrixViewport.setBounds (r);
+    else if (currentTab == StatusTab)
+    {
+        if (statusPanelDetached)
+            statusPlaceholder.setBounds (r);
+        else
+            statusPanel.setBounds (r);
+    }
 }
 
 namespace
@@ -176,6 +267,7 @@ void MainComponent::toggleStatusPanelDetach()
         statusWindow->setContentNonOwned (&statusPanel, false);
         statusWindow->centreWithSize (600, 280);
         statusWindow->setVisible (true);
+        statusPanel.setVisible (true);
         statusPanel.setDetached (true);
     }
     else
@@ -188,7 +280,7 @@ void MainComponent::toggleStatusPanelDetach()
         addAndMakeVisible (statusPanel);
         statusPanel.setDetached (false);
     }
-    resized();
+    switchTab (currentTab);
 }
 
 void MainComponent::toggleGroupPanelDetach()
@@ -208,6 +300,7 @@ void MainComponent::toggleGroupPanelDetach()
         groupWindow->centreWithSize (juce::jmax (820, cards_default_width()),
                                      juce::jmax (240, 240));
         groupWindow->setVisible (true);
+        groupPanel.setVisible (true);
         groupPanel.setDetached (true);
     }
     else
@@ -220,7 +313,7 @@ void MainComponent::toggleGroupPanelDetach()
         addAndMakeVisible (groupPanel);
         groupPanel.setDetached (false);
     }
-    resized();
+    switchTab (currentTab);
 }
 
 int MainComponent::cards_default_width() { return 800; }
@@ -229,104 +322,6 @@ void MainComponent::refreshStatus()
 {
     statusPanel.refreshNow();
 }
-
-#if 0   // legacy in-line status code; superseded by StatusPanel
-void legacy_refreshStatus_unused()
-{
-    juce::String s;
-    {
-        const int nIn  = 0, nOut = 0;
-        const auto processedBlocks = engine.getMatrixBlocksProcessed();
-        const auto stalledBlocks   = engine.getMatrixBlocksStalled();
-        const auto totalBlocks     = processedBlocks + stalledBlocks;
-        const float stalledRatio   = totalBlocks > 0 ? (float) stalledBlocks / (float) totalBlocks : 0.0f;
-        const float cpuAvg         = engine.getCpuLoadAvg();
-        const float cpuPeak        = engine.getCpuLoadPeak();
-
-        s << "   CPU " << juce::String (cpuAvg  * 100.0f, 1) << "% (peak "
-                       << juce::String (cpuPeak * 100.0f, 1) << "%)";
-        s << "   stalled " << juce::String (stalledRatio * 100.0f, 2) << "%";
-        s << "   xrun in=" << (juce::int64) engine.getTotalInputOverruns()
-          << " out="       << (juce::int64) engine.getTotalOutputUnderruns();
-
-        const double lastUnderrunMs = engine.getMostRecentUnderrunMs();
-        if (lastUnderrunMs > 0.0)
-        {
-            const double agoSec = (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) / 1000.0;
-            s << "   last dropout " << juce::String (agoSec, 1) << "s ago";
-        }
-
-        const auto& es = engine.getSettings();
-        juce::Colour col = juce::Colours::lightgrey;
-        if (cpuAvg >= es.cpuCritRatio   || stalledRatio >= es.stalledCritRatio
-            || (lastUnderrunMs > 0.0 && (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) < 5000.0))
-            col = juce::Colour::fromRGB (240, 80, 70);
-        else if (cpuAvg >= es.cpuWarnRatio || stalledRatio >= es.stalledWarnRatio)
-            col = juce::Colour::fromRGB (240, 200, 60);
-        juce::ignoreUnused (col);
-
-        // Show fill levels for first few input and output rings.
-        const int showN = juce::jmin (4, nIn);
-        const int showM = juce::jmin (4, nOut);
-        s << "   inRing[";
-        for (int n = 0; n < showN; ++n)
-            s << (n ? "," : "") << (juce::int64) engine.getInputRingFill (n);
-        s << "]  outRing[";
-        for (int m = 0; m < showM; ++m)
-            s << (m ? "," : "") << (juce::int64) engine.getOutputRingFill (m);
-        s << "]";
-    }
-    statusLabel.setText (s, juce::dontSendNotification);
-
-    // --- Latency report panel -------------------------------------------------
-    juce::String lat;
-    auto rep = engine.getLatencyReport();
-    const double eng = rep.engineSampleRate;
-
-    auto pad = [] (const juce::String& s, int n) -> juce::String
-    {
-        return s.length() >= n ? s : (s + juce::String::repeatedString (" ", n - s.length()));
-    };
-
-    if (rep.devices.empty())
-    {
-        lat << "Latency:  (no devices open)";
-    }
-    else
-    {
-        lat << pad ("Device", 28) << pad ("Dir", 6) << pad ("HW spl", 10)
-            << pad ("SRC spl", 10) << pad ("Total ms", 10) << "\n";
-
-        for (auto& d : rep.devices)
-        {
-            if (d.hasInput)
-            {
-                lat << pad (d.name.substring (0, 27), 28)
-                    << pad ("IN",  6)
-                    << pad (juce::String (d.hwInputSamples)  + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
-                    << pad (juce::String (d.srcInLatencyEng) + "@" + juce::String ((int) eng / 1000) + "k", 10)
-                    << pad (juce::String (d.getInputLatencyMs (eng), 2), 10) << "\n";
-            }
-            if (d.hasOutput)
-            {
-                lat << pad (d.name.substring (0, 27), 28)
-                    << pad ("OUT", 6)
-                    << pad (juce::String (d.hwOutputSamples)  + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
-                    << pad (juce::String (d.srcOutLatencyDev) + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
-                    << pad (juce::String (d.getOutputLatencyMs (eng), 2), 10) << "\n";
-            }
-        }
-
-        lat << "\n";
-        lat << "Engine path  = " << juce::String (rep.getEngineContributionMs(), 2) << " ms  "
-            << "(1 wait block + " << rep.outputPreFillBlocks << " pre-fill blocks @ "
-            << (int) rep.engineBlockSize << " spl / " << (int) eng << " Hz)\n";
-        lat << "Round-trip worst = " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms  "
-            << "(input + engine + output)";
-    }
-    juce::ignoreUnused (lat);
-}
-#endif
 
 void MainComponent::stopEngine()
 {
@@ -355,6 +350,8 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     auto preserved = captureMatrixByName();
 
     devicesButton.setEnabled (false);
+    settingsButton.setEnabled (false);
+    groupsButton.setEnabled (false);
     saveButton   .setEnabled (false);
     loadButton   .setEnabled (false);
     stopButton   .setEnabled (false);
@@ -381,10 +378,12 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             matrixView.rebuildFromEngine();
             matrixView.resumeUpdates();
             groupPanel.rebuild();
-            startTimer (250);
+            startTimer (engine.getSettings().statusTimerMs);
             refreshStatus();
 
             devicesButton.setEnabled (true);
+            settingsButton.setEnabled (true);
+            groupsButton.setEnabled (true);
             saveButton   .setEnabled (true);
             loadButton   .setEnabled (true);
             stopButton   .setEnabled (true);
@@ -658,6 +657,70 @@ void MainComponent::loadSnapshotInteractive()
             if (SnapshotStore::load (file, s))
                 applySnapshot (s);
         });
+}
+
+void MainComponent::switchTab (Tab newTab)
+{
+    currentTab = newTab;
+
+    matrixTabBtn.setToggleState (currentTab == RoutingTab, juce::dontSendNotification);
+    groupsTabBtn.setToggleState (currentTab == GroupsTab, juce::dontSendNotification);
+    statusTabBtn.setToggleState (currentTab == StatusTab, juce::dontSendNotification);
+
+    matrixView.setVisible (currentTab == RoutingTab);
+
+    // Keep floating/detached panels visible so they display in their windows
+    if (groupPanelDetached)
+        groupPanel.setVisible (true);
+    if (statusPanelDetached)
+        statusPanel.setVisible (true);
+
+    if (currentTab == GroupsTab)
+    {
+        if (groupPanelDetached)
+        {
+            groupsPlaceholder.setVisible (true);
+        }
+        else
+        {
+            groupsPlaceholder.setVisible (false);
+            groupPanel.setVisible (true);
+        }
+        
+        if (! statusPanelDetached)
+            statusPanel.setVisible (false);
+            
+        statusPlaceholder.setVisible (false);
+    }
+    else if (currentTab == StatusTab)
+    {
+        if (statusPanelDetached)
+        {
+            statusPlaceholder.setVisible (true);
+        }
+        else
+        {
+            statusPlaceholder.setVisible (false);
+            statusPanel.setVisible (true);
+        }
+        
+        if (! groupPanelDetached)
+            groupPanel.setVisible (false);
+            
+        groupsPlaceholder.setVisible (false);
+    }
+    else // RoutingTab
+    {
+        if (! groupPanelDetached)
+            groupPanel.setVisible (false);
+        if (! statusPanelDetached)
+            statusPanel.setVisible (false);
+            
+        groupsPlaceholder.setVisible (false);
+        statusPlaceholder.setVisible (false);
+    }
+
+    resized();
 }
 
 } // namespace dcr

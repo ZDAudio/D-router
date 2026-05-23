@@ -16,13 +16,53 @@ namespace
 
 OutputGroupPanel::OutputGroupPanel (AudioEngine& e) : engine (e)
 {
+    panelTitle.setText ("OUTPUT GROUPS", juce::dontSendNotification);
+    panelTitle.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
+    panelTitle.setColour (juce::Label::textColourId,
+                          juce::Colour (0xFF000000u | engine.getSettings().accentColorRGB));
+    addAndMakeVisible (panelTitle);
+
+    popOutBtn.setName ("win");
+    popOutBtn.setTooltip ("Pop panel out into its own window");
+    popOutBtn.onClick = [this] { if (onPopOutRequested) onPopOutRequested(); };
+    addAndMakeVisible (popOutBtn);
+
     addAndMakeVisible (cardsViewport);
     cardsViewport.setViewedComponent (&cardsHolder, false);
     cardsViewport.setScrollBarsShown (false, true);   // horizontal only
-    startTimerHz (30);
+
+    hoverHintLabel.setText ("Hover-to-highlight requires this panel to be popped out so the matrix is visible alongside it.",
+                            juce::dontSendNotification);
+    hoverHintLabel.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.0f, 0));
+    hoverHintLabel.setJustificationType (juce::Justification::centred);
+    hoverHintLabel.setColour (juce::Label::textColourId, juce::Colour::fromRGB (120, 120, 130));
+    addAndMakeVisible (hoverHintLabel);
+
+    startTimerHz (engine.getSettings().meterTimerHz);
 }
 
 OutputGroupPanel::~OutputGroupPanel() = default;
+
+void OutputGroupPanel::setDetached (bool d)
+{
+    detached = d;
+    popOutBtn.setButtonText (d ? "<-" : "->");
+    popOutBtn.setTooltip (d ? "Dock panel back into main window"
+                            : "Pop panel out into its own window");
+    hoverHintLabel.setVisible (! d);  // hint only meaningful when embedded
+    resized();
+    // Clear any leftover matrix highlight from before the toggle.
+    if (onGroupHover) onGroupHover ({});
+    lastHoveredCardIdx = -1;
+}
+
+void OutputGroupPanel::visibilityChanged()
+{
+    if (isVisible())
+        startTimerHz (juce::jmax (1, engine.getSettings().meterTimerHz));
+    else
+        stopTimer();
+}
 
 // ============================================================================
 // Card
@@ -35,8 +75,8 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
     if (g == nullptr) return;
 
     name.setText (g->name, juce::dontSendNotification);
-    name.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    name.setColour (juce::Label::textColourId, juce::Colours::white);
+    name.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::bold));
+    name.setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 255, 210));
     name.setJustificationType (juce::Justification::centredLeft);
 
     juce::String memStr;
@@ -56,13 +96,12 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
         memStr << (ch < 0 ? "-" : resolveName (ch));
     }
     members.setText (memStr, juce::dontSendNotification);
-    members.setFont (juce::FontOptions (10.0f));
-    members.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 170));
-
+    members.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, 0));
+    members.setColour (juce::Label::textColourId, juce::Colour::fromRGB (140, 140, 145));
+ 
     fader.setRange (-60.0, 12.0, 0.1);
     fader.setSkewFactorFromMidPoint (0.0);
     fader.setValue (g->faderDb.load(), juce::dontSendNotification);
-    fader.setColour (juce::Slider::trackColourId, juce::Colour::fromRGB (110, 170, 255));
     fader.setPopupDisplayEnabled (true, true, nullptr);
     fader.setTextValueSuffix (" dB");
     fader.onValueChange = [this, gIdx]
@@ -71,34 +110,28 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
                                                         panel->engine.getRoutingMatrix());
     };
 
+    mute.setName ("mute");
     mute.setClickingTogglesState (true);
     mute.setToggleState (g->muted.load(), juce::dontSendNotification);
-    mute.setColour (juce::TextButton::buttonColourId,   juce::Colour::fromRGB (50, 50, 56));
-    mute.setColour (juce::TextButton::buttonOnColourId, juce::Colour::fromRGB (210, 60, 50));
     mute.onClick = [this, gIdx]
     {
         panel->engine.getGroupManager().setGroupMute (gIdx, mute.getToggleState(),
                                                       panel->engine.getRoutingMatrix());
     };
 
-    popOut.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (50, 50, 56));
-    popOut.onClick = [this] { if (panel->onPopOutRequested) panel->onPopOutRequested(); };
-
     addAndMakeVisible (name);
     addAndMakeVisible (fader);
     addAndMakeVisible (mute);
     addAndMakeVisible (meter);
     addAndMakeVisible (members);
-    addAndMakeVisible (popOut);
 
     for (int s = 0; s < (int) slots.size(); ++s)
     {
         auto row = std::make_unique<SlotRow>();
         row->slotIdx = s;
 
+        row->bypass.setName ("bypass");
         row->bypass.setClickingTogglesState (true);
-        row->bypass.setColour (juce::TextButton::buttonColourId,   juce::Colour::fromRGB (50, 50, 56));
-        row->bypass.setColour (juce::TextButton::buttonOnColourId, juce::Colour::fromRGB (180, 140, 30));
         row->bypass.setTooltip ("Bypass this slot");
         row->bypass.onClick = [this, s]
         {
@@ -109,11 +142,11 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
             }
         };
 
-        row->name.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (40, 40, 46));
+        row->name.setName ("slot");
         row->name.setTooltip ("Click: load / open editor");
         row->name.onClick = [this, s] { onSlotNameClicked (s); };
-
-        row->remove.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (50, 50, 56));
+ 
+        row->remove.setName ("remove");
         row->remove.setTooltip ("Remove plugin");
         row->remove.onClick = [this, s] { onSlotRemoveClicked (s); };
 
@@ -123,7 +156,6 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
         slots[(size_t) s] = std::move (row);
         refreshSlotAppearance (s);
     }
-    updatePopOut (panel->detached);
 }
 
 MultiChannelPluginHost* OutputGroupPanel::Card::getSlotHost (int slotIdx) const
@@ -143,22 +175,23 @@ void OutputGroupPanel::Card::refreshSlotAppearance (int slotIdx)
     if (loaded)
     {
         const float cpu = host->getCpuLoadAvg() * 100.0f;
-        row.name.setButtonText (host->getPlugin()->getName()
-                                + "   " + juce::String (cpu, 1) + "%");
+        const auto newText = host->getPlugin()->getName()
+                              + "   " + juce::String (cpu, 1) + "%";
+        if (row.name.getButtonText() != newText)
+            row.name.setButtonText (newText);
         row.bypass.setToggleState (host->isBypassed(), juce::dontSendNotification);
         row.bypass.setEnabled (true);
         row.remove.setEnabled (true);
-        row.name.setColour (juce::TextButton::buttonColourId,
-                            host->isBypassed() ? juce::Colour::fromRGB (80, 60, 30)
-                                                : juce::Colour::fromRGB (40, 70, 60));
+        row.name.setToggleState (host->isBypassed(), juce::dontSendNotification);
     }
     else
     {
-        row.name.setButtonText ("+ insert");
+        if (row.name.getButtonText() != "+ insert")
+            row.name.setButtonText ("+ insert");
         row.bypass.setToggleState (false, juce::dontSendNotification);
         row.bypass.setEnabled (false);
         row.remove.setEnabled (false);
-        row.name.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (40, 40, 46));
+        row.name.setToggleState (false, juce::dontSendNotification);
     }
 }
 
@@ -195,18 +228,21 @@ void OutputGroupPanel::Card::closeEditorFor (int slotIdx)
     editorWindows[(size_t) slotIdx].reset();
 }
 
-void OutputGroupPanel::Card::updatePopOut (bool detached)
+void OutputGroupPanel::Card::paint (juce::Graphics& g)
 {
-    popOut.setButtonText (detached ? "<-" : "->");
-    popOut.setTooltip (detached ? "Dock panel back into main window"
-                                 : "Pop panel out into its own window");
+    const auto bounds = getLocalBounds().toFloat().reduced (2.0f);
+
+    g.setColour (juce::Colour::fromRGB (20, 20, 24));
+    g.fillRect (bounds);
+
+    g.setColour (juce::Colour::fromRGB (40, 40, 48));
+    g.drawRect (bounds, 1.0f);
 }
 
 void OutputGroupPanel::Card::resized()
 {
     auto r = getLocalBounds().reduced (6);
     auto top = r.removeFromTop (18);
-    popOut.setBounds (top.removeFromRight (28));
     name.setBounds (top);
     r.removeFromTop (4);
 
@@ -256,8 +292,8 @@ void OutputGroupPanel::rebuild()
 
 void OutputGroupPanel::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour::fromRGB (22, 22, 26));
-    g.setColour (juce::Colour::fromRGB (50, 50, 60));
+    g.fillAll (juce::Colour::fromRGB (10, 10, 12)); // Deep black-gray
+    g.setColour (juce::Colour::fromRGB (36, 36, 42)); // Clean tech boundary border
     g.drawRect (getLocalBounds(), 1);
 
     if (cards.isEmpty())
@@ -271,13 +307,25 @@ void OutputGroupPanel::paint (juce::Graphics& g)
 
 void OutputGroupPanel::resized()
 {
-    cardsViewport.setBounds (getLocalBounds());
+    auto r = getLocalBounds().reduced (4, 4);
+
+    // Header row: title left, single pop-out button right.
+    auto header = r.removeFromTop (20);
+    popOutBtn.setBounds (header.removeFromRight (32));
+    panelTitle.setBounds (header);
+    r.removeFromTop (4);
+
+    if (hoverHintLabel.isVisible())
+    {
+        hoverHintLabel.setBounds (r.removeFromBottom (16));
+    }
+    cardsViewport.setBounds (r);
 
     // cardsHolder shrinks scrollbar height off the available area so the
     // bottom of each card stays visible when h-scrollbar appears.
     const int hScrollBarH = cardsViewport.isHorizontalScrollBarShown() ? 14 : 0;
-    const int holderH = juce::jmax (60, getHeight() - hScrollBarH);
-    cardsHolder.setSize (juce::jmax (cards.size() * cardW, getWidth()), holderH);
+    const int holderH = juce::jmax (60, r.getHeight() - hScrollBarH);
+    cardsHolder.setSize (juce::jmax (cards.size() * cardW, r.getWidth()), holderH);
 
     for (int i = 0; i < cards.size(); ++i)
         cards[i]->setBounds (i * cardW, 0, cardW, holderH);
@@ -306,16 +354,24 @@ void OutputGroupPanel::timerCallback()
         cards[i]->mute.setToggleState (g->muted.load(), juce::dontSendNotification);
 
         if (hoverIdx < 0 && cards[i]->isMouseOver (true)) hoverIdx = i;
+    }
 
-        // Refresh per-slot CPU% text (cheap; happens at meter rate).
-        for (int s = 0; s < (int) cards[i]->slots.size(); ++s)
-            cards[i]->refreshSlotAppearance (s);
+    // Per-slot CPU% text gets repainted on every setButtonText - far too
+    // heavy at meter rate (30 Hz x 5 slots x N groups).  Throttle to ~6 Hz.
+    if (++slotRefreshCounter >= 5)
+    {
+        slotRefreshCounter = 0;
+        for (int i = 0; i < cards.size(); ++i)
+            for (int s = 0; s < (int) cards[i]->slots.size(); ++s)
+                cards[i]->refreshSlotAppearance (s);
     }
 
     if (hoverIdx != lastHoveredCardIdx)
     {
         lastHoveredCardIdx = hoverIdx;
-        if (onGroupHover)
+        // Only fire highlight when popped out: otherwise the matrix isn't
+        // visible (different tab) and the highlight goes to a hidden view.
+        if (onGroupHover && detached)
         {
             if (hoverIdx >= 0)
             {

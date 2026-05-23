@@ -9,7 +9,7 @@ class DcoreRouterApp : public juce::JUCEApplication
 public:
     DcoreRouterApp() = default;
 
-    const juce::String getApplicationName()    override { return "dcorerouter"; }
+    const juce::String getApplicationName()    override { return "D-Core Router"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
     bool moreThanOneInstanceAllowed()          override { return false; }
 

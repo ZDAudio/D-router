@@ -34,6 +34,7 @@ target_sources(dcorerouter PRIVATE
     Source/Routing/OutputGroupManager.cpp
     Source/UI/Crosspoint.cpp
     Source/UI/CrosspointGrid.cpp
+    Source/UI/LookAndFeel.cpp
     Source/UI/MatrixView.cpp
     Source/UI/DeviceManagerDialog.cpp
     Source/UI/SettingsDialog.cpp
@@ -71,6 +72,7 @@ target_link_libraries(dcorerouter PRIVATE
     juce::juce_graphics
     juce::juce_gui_basics
     juce::juce_gui_extra
+    juce::juce_opengl
     "-framework AudioToolbox"
     "-framework CoreAudio"
     juce::juce_recommended_config_flags

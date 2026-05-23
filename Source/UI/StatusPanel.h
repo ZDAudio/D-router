@@ -26,6 +26,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void visibilityChanged() override;
 
 private:
     void timerCallback() override { refresh(); }
@@ -36,7 +37,29 @@ private:
 
     juce::Label      title    { {}, "Engine status" };
     juce::TextButton popOutBtn { "->" };
+
+    // Self-painted gauge strip at the top of the panel; the body below is
+    // still a monospaced TextEditor for the latency table.
+    class GaugeStrip : public juce::Component
+    {
+    public:
+        explicit GaugeStrip (StatusPanel& o) : owner (o) {}
+        void paint (juce::Graphics&) override;
+    private:
+        StatusPanel& owner;
+    };
+    GaugeStrip       gauges { *this };
     juce::TextEditor body;
+
+    // Cached metrics for the gauge paint() so we don't refetch on every
+    // expose; updated in refresh().
+    float    lastCpuAvg        = 0.0f;
+    float    lastCpuPeak       = 0.0f;
+    float    lastStalledRatio  = 0.0f;
+    uint64_t lastXrunIn        = 0;
+    uint64_t lastXrunOut       = 0;
+    double   lastDropoutAgoSec = -1.0;   // -1 = never
+    juce::String lastBodyText;            // skip setText when unchanged
 
     // Window-based rate tracking so the displayed ratios reflect the LAST
     // refresh interval, not lifetime cumulative.  Otherwise the startup

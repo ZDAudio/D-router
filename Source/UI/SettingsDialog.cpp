@@ -114,32 +114,65 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "Per-frame multiplicative decay applied to the meter level.  0 = instant fall, "
         "1 = peak hold forever.\n\n"
         "Recommended: 0.92 (around -6 dB / 150 ms at 30 fps).");
-    addIntField   ("Status bar interval", working.statusTimerMs,     50, 5000, "ms",
-        "How often the top status bar (block counter, xrun counter, ring fill) and the "
-        "bottom latency panel are refreshed.\n\n"
-        "Recommended: 250 ms.");
+    addIntField   ("Engine status refresh", working.statusTimerMs,   100, 10000, "ms",
+        "How often the Engine Monitor panel (CPU bar, dropout / xrun counters, ring "
+        "fills, latency table) is refreshed.  Higher = lower CPU spent on the diagnostic "
+        "display.\n\n"
+        "Recommended: 1000 ms (default).  Drop to 250 ms while debugging glitches; raise "
+        "to 5000 ms when you don't care about live diagnostics.");
+
+    // ====== Theme ======
+    addSection ("Theme (6-char RGB hex)");
+    addHexColorField ("Accent color",   working.accentColorRGB,
+        "Primary accent colour used for the title, knob arcs, fader caps, focus rings, "
+        "active text in the status panel, and other 'alive' UI accents.\n\n"
+        "Recommended: 00FFD2 (neon teal), 7AC8FF (cool blue), FFB300 (warm amber).");
+    addHexColorField ("Warning color",  working.warningColorRGB,
+        "Status panel colour when CPU exceeds the warn ratio or stalled exceeds the "
+        "warn ratio.\n\nRecommended: FFCC00 (amber).");
+    addHexColorField ("Critical color", working.criticalColorRGB,
+        "Status panel colour when CPU/stalled exceed the critical ratios or a dropout "
+        "occurred in the last 5 seconds.\n\nRecommended: FF3B30 (red).");
 
     fieldsHolder.setSize (520, nextRowY + 12);
+
+    applyButton.setTooltip ("Apply changes to the running engine for this session only.\n"
+                            "If you close the app, the previously saved values come back.");
+    saveButton .setTooltip ("Apply AND write to disk so these values are the new defaults "
+                            "on every launch.");
+    resetButton.setTooltip ("Restore every field to its built-in default value.\n"
+                            "You still need to click Save afterwards to persist that to disk.");
 
     applyButton .onClick = [this]
     {
         for (auto& a : applyActions) a();
-        if (onClose) onClose (working);
+        if (onClose) onClose (working, /*persistToDisk=*/false);
         if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (1);
+    };
+    saveButton .onClick = [this]
+    {
+        for (auto& a : applyActions) a();
+        if (onClose) onClose (working, /*persistToDisk=*/true);
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (2);
     };
     cancelButton.onClick = [this]
     {
-        if (onClose) onClose (std::nullopt);
+        if (onClose) onClose (std::nullopt, false);
         if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (0);
     };
     resetButton.onClick = [this]
     {
         working = EngineSettings{};
-        if (onClose) onClose (working);
+        // Don't auto-close - user can review defaults and then Apply / Save.
+        // But we DO need to refresh field values to show the defaults.  Easiest:
+        // tell the host so it can re-launch.  For now we just close, treating
+        // reset as an "apply" since the user explicitly chose to wipe.
+        if (onClose) onClose (working, /*persistToDisk=*/false);
         if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (1);
     };
 
     addAndMakeVisible (applyButton);
+    addAndMakeVisible (saveButton);
     addAndMakeVisible (cancelButton);
     addAndMakeVisible (resetButton);
 }
@@ -154,8 +187,10 @@ void SettingsDialog::resized()
     auto r = getLocalBounds().reduced (12);
 
     auto bottom = r.removeFromBottom (36);
+    saveButton  .setBounds (bottom.removeFromRight (90));
+    bottom.removeFromRight (6);
     applyButton .setBounds (bottom.removeFromRight (90));
-    bottom.removeFromRight (8);
+    bottom.removeFromRight (6);
     cancelButton.setBounds (bottom.removeFromRight (90));
     resetButton .setBounds (bottom.removeFromLeft (160));
 
@@ -307,8 +342,52 @@ void SettingsDialog::addUIntComboField (const juce::String& name, unsigned int& 
     nextRowY += rowH;
 }
 
+void SettingsDialog::addHexColorField (const juce::String& name, unsigned int& target,
+                                       const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name);
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* ed = new juce::TextEditor();
+    ed->setInputRestrictions (6, "0123456789abcdefABCDEF");
+    ed->setText (juce::String::toHexString ((int) target).paddedLeft ('0', 6).toUpperCase(),
+                 juce::dontSendNotification);
+    ed->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*ed);
+    editors.add (ed);
+
+    // Small color swatch next to the editor.
+    auto* swatchLbl = new juce::Label ({}, "  ");
+    swatchLbl->setColour (juce::Label::backgroundColourId,
+                          juce::Colour (0xFF000000u | target));
+    swatchLbl->setBounds (leftPad + infoW + gap + labelW + gap + editorW + 6, nextRowY, 24, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*swatchLbl);
+    labels.add (swatchLbl);
+
+    ed->onTextChange = [ed, swatchLbl]
+    {
+        const auto hex = ed->getText().getHexValue32() & 0xFFFFFF;
+        swatchLbl->setColour (juce::Label::backgroundColourId,
+                              juce::Colour (0xFF000000u | (unsigned int) hex));
+        swatchLbl->repaint();
+    };
+
+    applyActions.push_back ([&target, ed]
+    {
+        target = (unsigned int) (ed->getText().getHexValue32() & 0xFFFFFF);
+    });
+
+    nextRowY += rowH;
+}
+
 void SettingsDialog::launch (const EngineSettings& initial,
-                             std::function<void (std::optional<EngineSettings>)> cb)
+                             std::function<void (std::optional<EngineSettings>, bool)> cb)
 {
     auto* content = new SettingsDialog (initial);
     content->onClose = std::move (cb);

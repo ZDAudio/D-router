@@ -21,6 +21,9 @@ namespace
     const juce::Identifier meterTimerHz       ("meterTimerHz");
     const juce::Identifier meterDecayFactor   ("meterDecayFactor");
     const juce::Identifier statusTimerMs      ("statusTimerMs");
+    const juce::Identifier accentColor        ("accentColorRGB");
+    const juce::Identifier warningColor       ("warningColorRGB");
+    const juce::Identifier criticalColor      ("criticalColorRGB");
 }
 
 juce::File SettingsStore::getFile()
@@ -55,6 +58,9 @@ EngineSettings SettingsStore::load()
     s.meterTimerHz          = (int)    t.getProperty (meterTimerHz,          s.meterTimerHz);
     s.meterDecayFactor      = (float) (double) t.getProperty (meterDecayFactor, (double) s.meterDecayFactor);
     s.statusTimerMs         = (int)    t.getProperty (statusTimerMs,         s.statusTimerMs);
+    s.accentColorRGB        = (unsigned int) (int) t.getProperty (accentColor,   (int) s.accentColorRGB);
+    s.warningColorRGB       = (unsigned int) (int) t.getProperty (warningColor,  (int) s.warningColorRGB);
+    s.criticalColorRGB      = (unsigned int) (int) t.getProperty (criticalColor, (int) s.criticalColorRGB);
     return s;
 }
 
@@ -75,6 +81,9 @@ bool SettingsStore::save (const EngineSettings& s)
     t.setProperty (meterTimerHz,          s.meterTimerHz,          nullptr);
     t.setProperty (meterDecayFactor,      (double) s.meterDecayFactor, nullptr);
     t.setProperty (statusTimerMs,         s.statusTimerMs,         nullptr);
+    t.setProperty (accentColor,           (int) s.accentColorRGB,  nullptr);
+    t.setProperty (warningColor,          (int) s.warningColorRGB, nullptr);
+    t.setProperty (criticalColor,         (int) s.criticalColorRGB, nullptr);
 
     auto xml = t.createXml();
     if (xml == nullptr) return false;

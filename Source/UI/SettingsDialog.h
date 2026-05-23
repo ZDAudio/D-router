@@ -26,14 +26,17 @@ class SettingsDialog : public juce::Component
 public:
     explicit SettingsDialog (const EngineSettings& initial);
 
-    // Called with edited settings on Apply, std::nullopt on Cancel.
-    std::function<void (std::optional<EngineSettings>)> onClose;
+    // Three-way close:
+    //   settings has value, persistToDisk = true   -> user clicked SAVE
+    //   settings has value, persistToDisk = false  -> user clicked APPLY (session only)
+    //   settings == std::nullopt                   -> user clicked CANCEL
+    std::function<void (std::optional<EngineSettings> settings, bool persistToDisk)> onClose;
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
     static void launch (const EngineSettings& initial,
-                        std::function<void (std::optional<EngineSettings>)> cb);
+                        std::function<void (std::optional<EngineSettings>, bool)> cb);
 
 private:
     void addSection      (const juce::String& heading);
@@ -47,6 +50,8 @@ private:
                             const juce::StringArray& labels,
                             const std::vector<unsigned int>& values,
                             const juce::String& tooltip);
+    void addHexColorField (const juce::String& name, unsigned int& target,
+                           const juce::String& tooltip);
     void attachInfoIcon (const juce::String& tooltip);
 
     EngineSettings working;
@@ -61,6 +66,7 @@ private:
     juce::TooltipWindow               tooltipWindow { this, 350 };
 
     juce::TextButton applyButton  { "Apply" };
+    juce::TextButton saveButton   { "Save" };
     juce::TextButton cancelButton { "Cancel" };
     juce::TextButton resetButton  { "Reset to defaults" };
 
