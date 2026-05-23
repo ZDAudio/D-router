@@ -1,0 +1,84 @@
+#include "Persistence/SettingsStore.h"
+
+#include <juce_data_structures/juce_data_structures.h>
+
+namespace dcr {
+
+namespace
+{
+    const juce::Identifier rootId             ("dcr_settings");
+    const juce::Identifier engineSampleRate   ("engineSampleRate");
+    const juce::Identifier engineBlockSize    ("engineBlockSize");
+    const juce::Identifier inputRingMultEng   ("inputRingMultEng");
+    const juce::Identifier inputRingMultDev   ("inputRingMultDev");
+    const juce::Identifier outputRingMultEng  ("outputRingMultEng");
+    const juce::Identifier outputRingMultDev  ("outputRingMultDev");
+    const juce::Identifier outputPreFillBlocks ("outputPreFillBlocks");
+    const juce::Identifier srcQuality         ("srcQuality");
+    const juce::Identifier srcComplexity      ("srcComplexity");
+    const juce::Identifier matrixThreadSleepMicros ("matrixThreadSleepMicros");
+    const juce::Identifier matrixDrainPerWake ("matrixDrainPerWake");
+    const juce::Identifier meterTimerHz       ("meterTimerHz");
+    const juce::Identifier meterDecayFactor   ("meterDecayFactor");
+    const juce::Identifier statusTimerMs      ("statusTimerMs");
+}
+
+juce::File SettingsStore::getFile()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("dcorerouter");
+    dir.createDirectory();
+    return dir.getChildFile ("settings.xml");
+}
+
+EngineSettings SettingsStore::load()
+{
+    EngineSettings s;
+    auto file = getFile();
+    if (! file.existsAsFile()) return s;
+    auto xml = juce::parseXML (file);
+    if (xml == nullptr) return s;
+    auto t = juce::ValueTree::fromXml (*xml);
+    if (! t.hasType (rootId)) return s;
+
+    s.engineSampleRate      = (double) t.getProperty (engineSampleRate,      s.engineSampleRate);
+    s.engineBlockSize       = (int)    t.getProperty (engineBlockSize,       s.engineBlockSize);
+    s.inputRingMultEng      = (int)    t.getProperty (inputRingMultEng,      s.inputRingMultEng);
+    s.inputRingMultDev      = (int)    t.getProperty (inputRingMultDev,      s.inputRingMultDev);
+    s.outputRingMultEng     = (int)    t.getProperty (outputRingMultEng,     s.outputRingMultEng);
+    s.outputRingMultDev     = (int)    t.getProperty (outputRingMultDev,     s.outputRingMultDev);
+    s.outputPreFillBlocks   = (int)    t.getProperty (outputPreFillBlocks,   s.outputPreFillBlocks);
+    s.srcQuality            = (unsigned int) (int) t.getProperty (srcQuality,    (int) s.srcQuality);
+    s.srcComplexity         = (unsigned int) (int) t.getProperty (srcComplexity, (int) s.srcComplexity);
+    s.matrixThreadSleepMicros = (int) t.getProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros);
+    s.matrixDrainPerWake    = (int)    t.getProperty (matrixDrainPerWake,    s.matrixDrainPerWake);
+    s.meterTimerHz          = (int)    t.getProperty (meterTimerHz,          s.meterTimerHz);
+    s.meterDecayFactor      = (float) (double) t.getProperty (meterDecayFactor, (double) s.meterDecayFactor);
+    s.statusTimerMs         = (int)    t.getProperty (statusTimerMs,         s.statusTimerMs);
+    return s;
+}
+
+bool SettingsStore::save (const EngineSettings& s)
+{
+    juce::ValueTree t (rootId);
+    t.setProperty (engineSampleRate,      s.engineSampleRate,      nullptr);
+    t.setProperty (engineBlockSize,       s.engineBlockSize,       nullptr);
+    t.setProperty (inputRingMultEng,      s.inputRingMultEng,      nullptr);
+    t.setProperty (inputRingMultDev,      s.inputRingMultDev,      nullptr);
+    t.setProperty (outputRingMultEng,     s.outputRingMultEng,     nullptr);
+    t.setProperty (outputRingMultDev,     s.outputRingMultDev,     nullptr);
+    t.setProperty (outputPreFillBlocks,   s.outputPreFillBlocks,   nullptr);
+    t.setProperty (srcQuality,            (int) s.srcQuality,      nullptr);
+    t.setProperty (srcComplexity,         (int) s.srcComplexity,   nullptr);
+    t.setProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros, nullptr);
+    t.setProperty (matrixDrainPerWake,    s.matrixDrainPerWake,    nullptr);
+    t.setProperty (meterTimerHz,          s.meterTimerHz,          nullptr);
+    t.setProperty (meterDecayFactor,      (double) s.meterDecayFactor, nullptr);
+    t.setProperty (statusTimerMs,         s.statusTimerMs,         nullptr);
+
+    auto xml = t.createXml();
+    if (xml == nullptr) return false;
+    return xml->writeTo (getFile());
+}
+
+} // namespace dcr

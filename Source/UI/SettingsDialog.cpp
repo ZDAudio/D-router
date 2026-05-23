@@ -1,0 +1,326 @@
+#include "UI/SettingsDialog.h"
+
+#include <AudioToolbox/AudioToolbox.h>
+
+namespace dcr {
+
+namespace
+{
+    constexpr int rowH        = 28;
+    constexpr int sectionGap  = 18;
+    constexpr int infoW       = 18;
+    constexpr int labelW      = 230;
+    constexpr int editorW     = 180;
+    constexpr int leftPad     = 12;
+    constexpr int gap         = 6;
+}
+
+void InfoIcon::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (1.5f);
+    g.setColour (juce::Colour::fromRGB (90, 130, 200));
+    g.fillEllipse (r);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText ("i", getLocalBounds(), juce::Justification::centred);
+}
+
+SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initial)
+{
+    setSize (560, 660);
+
+    addAndMakeVisible (viewport);
+    viewport.setViewedComponent (&fieldsHolder, false);
+    viewport.setScrollBarsShown (true, false);
+
+    // ====== Engine clock ======
+    addSection ("Engine clock");
+    addDoubleField ("Engine sample rate",  working.engineSampleRate, 8000.0, 192000.0, "Hz",
+        "All matrix processing happens at this rate.  Per-device SRC converts to/from "
+        "the device's own rate when they differ.\n\n"
+        "Recommended: 48000 (Apple default for modern audio), 44100 (legacy CDs / iTunes).");
+    addIntField    ("Engine block size",   working.engineBlockSize,  16, 8192, "samples",
+        "Number of samples processed per matrix block.  Smaller = lower latency, more "
+        "CPU per second.  Larger = more stable but slower response.\n\n"
+        "Recommended: 128 (default, low latency), 256 (balanced), 64 (ultra-low if CPU allows).");
+
+    // ====== Ring buffers ======
+    addSection ("Ring buffers (per channel)");
+    addIntField ("Input ring x engineBlock",   working.inputRingMultEng,  1, 64, {},
+        "Input ring buffer = max(this x engineBlock, devMult x devBuf x SR_ratio), "
+        "rounded to next power of 2.\n\n"
+        "Recommended: 3.  Increase if you hear input overruns (xrun in counter).");
+    addIntField ("Input ring x devBuf*ratio",  working.inputRingMultDev,  1, 64, {},
+        "Multiplier for device callback bursts in the input ring.\n\n"
+        "Recommended: 4.  Increase for very large device buffer sizes.");
+    addIntField ("Output ring x engineBlock",  working.outputRingMultEng, 1, 64, {},
+        "Output ring engineBlock multiplier.  Output rings need more headroom than "
+        "inputs to absorb clock drift between IO devices.\n\n"
+        "Recommended: 6.  Bump to 8-12 if you hear occasional output dropouts.");
+    addIntField ("Output ring x devBuf*ratio", working.outputRingMultDev, 1, 64, {},
+        "Multiplier for device callback bursts in the output ring.\n\n"
+        "Recommended: 8.");
+    addIntField ("Output pre-fill",            working.outputPreFillBlocks, 0, 256, "engine blocks",
+        "How many engine blocks of silence to pre-fill the output ring with at device "
+        "open.  Each block adds (blockSize / engineSR) seconds of static latency.\n\n"
+        "Recommended: 8 (default).  Lower for less latency; higher for more stability "
+        "during clock drift.");
+
+    // ====== SRC ======
+    addSection ("Sample rate converter");
+    addUIntComboField ("SRC quality",
+        working.srcQuality,
+        { "Min", "Low", "Medium", "High", "Max" },
+        { kAudioConverterQuality_Min,
+          kAudioConverterQuality_Low,
+          kAudioConverterQuality_Medium,
+          kAudioConverterQuality_High,
+          kAudioConverterQuality_Max },
+        "Apple AudioConverter quality.  Higher = better aliasing rejection at higher CPU.  "
+        "Only applies when device SR != engine SR (bypassed otherwise).\n\n"
+        "Recommended: Max for music routing, Medium for ultra-low CPU.");
+    addUIntComboField ("SRC complexity",
+        working.srcComplexity,
+        { "Linear", "Normal", "Mastering", "Minimum phase" },
+        { kAudioConverterSampleRateConverterComplexity_Linear,
+          kAudioConverterSampleRateConverterComplexity_Normal,
+          kAudioConverterSampleRateConverterComplexity_Mastering,
+          kAudioConverterSampleRateConverterComplexity_MinimumPhase },
+        "SRC algorithm flavour.\n"
+        "  Linear: cheapest, audible artifacts.\n"
+        "  Normal: general-purpose.\n"
+        "  Mastering: long linear-phase FIR, highest fidelity, more latency.\n"
+        "  Minimum phase: shorter latency, asymmetric impulse.\n\n"
+        "Recommended: Mastering for music, Normal for live monitoring (lower latency).");
+
+    // ====== Matrix thread ======
+    addSection ("Matrix processor thread");
+    addIntField ("Idle sleep",            working.matrixThreadSleepMicros, 50, 5000, "us",
+        "When no input is ready, the matrix thread sleeps this long before polling again.  "
+        "Shorter = faster response, more CPU.\n\n"
+        "Recommended: 250 us (4000 polls/sec).  Don't go below 100 us without good reason.");
+    addIntField ("Drain blocks per wake", working.matrixDrainPerWake,      1, 256, {},
+        "Maximum blocks to process per wake cycle before yielding.  Prevents the matrix "
+        "thread from monopolising a core if input is rapidly arriving.\n\n"
+        "Recommended: 16.");
+
+    // ====== UI ======
+    addSection ("UI");
+    addIntField   ("Meter refresh rate",  working.meterTimerHz,      1, 120, "Hz",
+        "How often level meters are repainted.\n\n"
+        "Recommended: 30 Hz (smooth and easy on CPU).  60 for snappier feel; lower if "
+        "the UI is sluggish with very many channels.");
+    addFloatField ("Meter decay factor",  working.meterDecayFactor,  0.0f, 0.999f, {},
+        "Per-frame multiplicative decay applied to the meter level.  0 = instant fall, "
+        "1 = peak hold forever.\n\n"
+        "Recommended: 0.92 (around -6 dB / 150 ms at 30 fps).");
+    addIntField   ("Status bar interval", working.statusTimerMs,     50, 5000, "ms",
+        "How often the top status bar (block counter, xrun counter, ring fill) and the "
+        "bottom latency panel are refreshed.\n\n"
+        "Recommended: 250 ms.");
+
+    fieldsHolder.setSize (520, nextRowY + 12);
+
+    applyButton .onClick = [this]
+    {
+        for (auto& a : applyActions) a();
+        if (onClose) onClose (working);
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (1);
+    };
+    cancelButton.onClick = [this]
+    {
+        if (onClose) onClose (std::nullopt);
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (0);
+    };
+    resetButton.onClick = [this]
+    {
+        working = EngineSettings{};
+        if (onClose) onClose (working);
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>()) dw->exitModalState (1);
+    };
+
+    addAndMakeVisible (applyButton);
+    addAndMakeVisible (cancelButton);
+    addAndMakeVisible (resetButton);
+}
+
+void SettingsDialog::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (32, 32, 36));
+}
+
+void SettingsDialog::resized()
+{
+    auto r = getLocalBounds().reduced (12);
+
+    auto bottom = r.removeFromBottom (36);
+    applyButton .setBounds (bottom.removeFromRight (90));
+    bottom.removeFromRight (8);
+    cancelButton.setBounds (bottom.removeFromRight (90));
+    resetButton .setBounds (bottom.removeFromLeft (160));
+
+    r.removeFromBottom (8);
+    viewport.setBounds (r);
+}
+
+void SettingsDialog::addSection (const juce::String& heading)
+{
+    if (nextRowY > 0) nextRowY += sectionGap;
+    auto* h = new juce::Label ({}, heading);
+    h->setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    h->setColour (juce::Label::textColourId, juce::Colour::fromRGB (180, 200, 255));
+    h->setBounds (leftPad, nextRowY, fieldsHolder.getWidth() - leftPad - 8, rowH);
+    fieldsHolder.addAndMakeVisible (*h);
+    sectionHeads.add (h);
+    nextRowY += rowH + 2;
+}
+
+void SettingsDialog::attachInfoIcon (const juce::String& tooltip)
+{
+    auto* icon = new InfoIcon();
+    icon->setTooltip (tooltip);
+    icon->setBounds (leftPad, nextRowY + 4, infoW, infoW);
+    fieldsHolder.addAndMakeVisible (*icon);
+    infoIcons.add (icon);
+}
+
+void SettingsDialog::addIntField (const juce::String& name, int& target,
+                                  int minVal, int maxVal,
+                                  const juce::String& unitHint,
+                                  const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name + (unitHint.isEmpty() ? "" : "  (" + unitHint + ")"));
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* ed = new juce::TextEditor();
+    ed->setInputRestrictions (12, "-0123456789");
+    ed->setText (juce::String (target), juce::dontSendNotification);
+    ed->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*ed);
+    editors.add (ed);
+
+    applyActions.push_back ([&target, ed, minVal, maxVal]
+    {
+        target = juce::jlimit (minVal, maxVal, ed->getText().getIntValue());
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::addDoubleField (const juce::String& name, double& target,
+                                     double minVal, double maxVal,
+                                     const juce::String& unitHint,
+                                     const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name + (unitHint.isEmpty() ? "" : "  (" + unitHint + ")"));
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* ed = new juce::TextEditor();
+    ed->setInputRestrictions (16, "-0123456789.");
+    ed->setText (juce::String (target, 4), juce::dontSendNotification);
+    ed->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*ed);
+    editors.add (ed);
+
+    applyActions.push_back ([&target, ed, minVal, maxVal]
+    {
+        target = juce::jlimit (minVal, maxVal, ed->getText().getDoubleValue());
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::addFloatField (const juce::String& name, float& target,
+                                    float minVal, float maxVal,
+                                    const juce::String& unitHint,
+                                    const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name + (unitHint.isEmpty() ? "" : "  (" + unitHint + ")"));
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* ed = new juce::TextEditor();
+    ed->setInputRestrictions (16, "-0123456789.");
+    ed->setText (juce::String (target, 4), juce::dontSendNotification);
+    ed->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*ed);
+    editors.add (ed);
+
+    applyActions.push_back ([&target, ed, minVal, maxVal]
+    {
+        target = juce::jlimit (minVal, maxVal, (float) ed->getText().getDoubleValue());
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::addUIntComboField (const juce::String& name, unsigned int& target,
+                                        const juce::StringArray& labelsList,
+                                        const std::vector<unsigned int>& values,
+                                        const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name);
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* cb = new juce::ComboBox();
+    int selectId = 1;
+    for (int i = 0; i < labelsList.size() && i < (int) values.size(); ++i)
+    {
+        cb->addItem (labelsList[i], i + 1);
+        if (values[(size_t) i] == target) selectId = i + 1;
+    }
+    cb->setSelectedId (selectId, juce::dontSendNotification);
+    cb->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*cb);
+    combos.add (cb);
+
+    applyActions.push_back ([&target, cb, values]
+    {
+        const int idx = cb->getSelectedId() - 1;
+        if (idx >= 0 && idx < (int) values.size())
+            target = values[(size_t) idx];
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::launch (const EngineSettings& initial,
+                             std::function<void (std::optional<EngineSettings>)> cb)
+{
+    auto* content = new SettingsDialog (initial);
+    content->onClose = std::move (cb);
+
+    juce::DialogWindow::LaunchOptions o;
+    o.dialogTitle                  = "Settings";
+    o.content.setOwned             (content);
+    o.dialogBackgroundColour       = juce::Colour::fromRGB (32, 32, 36);
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar            = true;
+    o.resizable                    = true;
+    o.launchAsync();
+}
+
+} // namespace dcr

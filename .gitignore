@@ -1,0 +1,7 @@
+build/
+build-*/
+.cache/
+.DS_Store
+*.xcodeproj
+JuceLibraryCode/
+cmake-build-*/

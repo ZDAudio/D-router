@@ -1,0 +1,263 @@
+#include "Engine/AudioEngine.h"
+
+namespace dcr {
+
+AudioEngine::AudioEngine()
+{
+    deviceType.reset (juce::AudioIODeviceType::createAudioIODeviceType_CoreAudio());
+    if (deviceType != nullptr)
+    {
+        deviceType->scanForDevices();
+        deviceType->addListener (this);
+    }
+
+    pluginFormatManager.addFormat (new juce::AudioUnitPluginFormat());
+}
+
+AudioEngine::~AudioEngine()
+{
+    if (deviceType != nullptr)
+        deviceType->removeListener (this);
+    stop();
+}
+
+void AudioEngine::audioDeviceListChanged()
+{
+    if (deviceType != nullptr)
+        deviceType->scanForDevices();
+    if (onDeviceListChanged) onDeviceListChanged();
+}
+
+juce::StringArray AudioEngine::getAvailableInputDevices() const
+{
+    if (deviceType == nullptr) return {};
+    return deviceType->getDeviceNames (true);
+}
+juce::StringArray AudioEngine::getAvailableOutputDevices() const
+{
+    if (deviceType == nullptr) return {};
+    return deviceType->getDeviceNames (false);
+}
+
+juce::String AudioEngine::getDefaultInputDeviceName() const
+{
+    if (deviceType == nullptr) return {};
+    auto names = deviceType->getDeviceNames (true);
+    int idx = deviceType->getDefaultDeviceIndex (true);
+    return juce::isPositiveAndBelow (idx, names.size()) ? names[idx] : juce::String{};
+}
+
+juce::String AudioEngine::getDefaultOutputDeviceName() const
+{
+    if (deviceType == nullptr) return {};
+    auto names = deviceType->getDeviceNames (false);
+    int idx = deviceType->getDefaultDeviceIndex (false);
+    return juce::isPositiveAndBelow (idx, names.size()) ? names[idx] : juce::String{};
+}
+
+bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
+{
+    stop();
+    if (deviceType == nullptr) return false;
+    deviceType->scanForDevices();
+
+    workers.clear();
+    deviceInfo.clear();
+
+    int totalIns = 0, totalOuts = 0;
+    for (const auto& spec : devices)
+    {
+        auto w = std::make_unique<DeviceWorker> (*deviceType, spec.name,
+                                                 spec.wantInput, spec.wantOutput);
+        if (! w->open (settings))
+        {
+            DBG ("DeviceWorker open failed for " << spec.name << ": " << w->getLastError());
+            continue;
+        }
+        DeviceInfo info;
+        info.name = w->getName();
+        info.deviceSampleRate = w->getDeviceSampleRate();
+        info.numInputChannels  = w->getNumInputChannels();
+        info.numOutputChannels = w->getNumOutputChannels();
+        if (info.numInputChannels > 0)  { info.globalInputBase  = totalIns;  totalIns  += info.numInputChannels;  }
+        if (info.numOutputChannels > 0) { info.globalOutputBase = totalOuts; totalOuts += info.numOutputChannels; }
+        deviceInfo.push_back (info);
+        workers.push_back (std::move (w));
+    }
+
+    if (totalIns == 0 || totalOuts == 0)
+    {
+        DBG ("AudioEngine: need at least 1 input and 1 output channel");
+        return false;
+    }
+
+    matrix.resize (totalIns, totalOuts);
+
+    // Create per-output plugin hosts.
+    pluginHosts.clear();
+    pluginHosts.reserve ((size_t) totalOuts);
+    for (int i = 0; i < totalOuts; ++i)
+    {
+        auto ph = std::make_unique<PluginHost>();
+        ph->prepare (settings.engineSampleRate, settings.engineBlockSize);
+        pluginHosts.push_back (std::move (ph));
+    }
+
+    // Tell the group manager about the new output channel count, and
+    // re-prepare every plugin slot of every group.
+    groupManager.setNumOutputChannels (totalOuts);
+    for (int gi = 0; gi < groupManager.getNumGroups(); ++gi)
+    {
+        if (auto* g = groupManager.getGroup (gi))
+            for (auto& slot : g->pluginSlots)
+                if (slot) slot->prepare (settings.engineSampleRate,
+                                         settings.engineBlockSize,
+                                         g->channelSet.size());
+    }
+
+    std::vector<MatrixProcessor::GlobalInput>  globalIns;
+    std::vector<MatrixProcessor::GlobalOutput> globalOuts;
+    globalIns .reserve ((size_t) totalIns);
+    globalOuts.reserve ((size_t) totalOuts);
+    int outIdx = 0;
+    for (size_t i = 0; i < workers.size(); ++i)
+    {
+        auto* w = workers[i].get();
+        for (int ch = 0; ch < w->getNumInputChannels();  ++ch) globalIns .push_back ({ w, ch });
+        for (int ch = 0; ch < w->getNumOutputChannels(); ++ch)
+        {
+            globalOuts.push_back ({ w, ch, pluginHosts[(size_t) outIdx].get() });
+            ++outIdx;
+        }
+    }
+    processor.configure (std::move (globalIns), std::move (globalOuts),
+                         &matrix, &groupManager, settings);
+    processor.start();
+    runningFlag = true;
+    return true;
+}
+
+void AudioEngine::stop()
+{
+    if (! runningFlag) return;
+    processor.stop();
+    pluginHosts.clear();
+    workers.clear();
+    deviceInfo.clear();
+    runningFlag = false;
+}
+
+size_t AudioEngine::getInputRingFill (int globalCh) const
+{
+    int acc = 0;
+    for (auto& w : workers)
+    {
+        for (int c = 0; c < w->getNumInputChannels(); ++c, ++acc)
+        {
+            if (acc == globalCh)
+            {
+                auto* ring = const_cast<DeviceWorker&> (*w).getInputRing (c);
+                return ring ? ring->readAvailable() : 0;
+            }
+        }
+    }
+    return 0;
+}
+
+uint64_t AudioEngine::getTotalInputOverruns() const noexcept
+{
+    uint64_t s = 0;
+    for (auto& w : workers) s += w->getInputOverruns();
+    return s;
+}
+
+uint64_t AudioEngine::getTotalOutputUnderruns() const noexcept
+{
+    uint64_t s = 0;
+    for (auto& w : workers) s += w->getOutputUnderruns();
+    return s;
+}
+
+double AudioEngine::getMostRecentUnderrunMs() const noexcept
+{
+    double m = 0.0;
+    for (auto& w : workers) m = juce::jmax (m, w->getLastUnderrunMs());
+    return m;
+}
+
+double AudioEngine::LatencyReport::DeviceItem::getInputLatencyMs (double engineSr) const
+{
+    if (! hasInput || deviceSampleRate <= 0.0 || engineSr <= 0.0) return 0.0;
+    const double devMs = 1000.0 * hwInputSamples / deviceSampleRate;
+    const double srcMs = 1000.0 * srcInLatencyEng / engineSr;
+    return devMs + srcMs;
+}
+
+double AudioEngine::LatencyReport::DeviceItem::getOutputLatencyMs (double engineSr) const
+{
+    if (! hasOutput || deviceSampleRate <= 0.0 || engineSr <= 0.0) return 0.0;
+    const double devMs = 1000.0 * hwOutputSamples / deviceSampleRate;
+    const double srcMs = 1000.0 * srcOutLatencyDev / deviceSampleRate;
+    return devMs + srcMs;
+}
+
+double AudioEngine::LatencyReport::getEngineContributionMs() const
+{
+    if (engineSampleRate <= 0.0) return 0.0;
+    const int blocks = 1 + outputPreFillBlocks;
+    return 1000.0 * blocks * engineBlockSize / engineSampleRate;
+}
+
+double AudioEngine::LatencyReport::getRoundTripMsWorst() const
+{
+    double inMax = 0.0, outMax = 0.0;
+    for (auto& d : devices)
+    {
+        inMax  = juce::jmax (inMax,  d.getInputLatencyMs  (engineSampleRate));
+        outMax = juce::jmax (outMax, d.getOutputLatencyMs (engineSampleRate));
+    }
+    return inMax + getEngineContributionMs() + outMax;
+}
+
+AudioEngine::LatencyReport AudioEngine::getLatencyReport() const
+{
+    LatencyReport r;
+    r.engineSampleRate    = settings.engineSampleRate;
+    r.engineBlockSize     = settings.engineBlockSize;
+    r.outputPreFillBlocks = settings.outputPreFillBlocks;
+
+    for (auto& w : workers)
+    {
+        LatencyReport::DeviceItem item;
+        item.name             = w->getName();
+        item.deviceSampleRate = w->getDeviceSampleRate();
+        item.devBufSamples    = w->getDeviceBufferSize();
+        item.hasInput         = w->getNumInputChannels()  > 0;
+        item.hasOutput        = w->getNumOutputChannels() > 0;
+        item.hwInputSamples   = item.hasInput  ? w->getDeviceInputLatencySamples()  : 0;
+        item.hwOutputSamples  = item.hasOutput ? w->getDeviceOutputLatencySamples() : 0;
+        item.srcInLatencyEng  = item.hasInput  ? w->getInputSrcLatencyEngineSamples()  : 0;
+        item.srcOutLatencyDev = item.hasOutput ? w->getOutputSrcLatencyDeviceSamples() : 0;
+        r.devices.push_back (item);
+    }
+    return r;
+}
+
+size_t AudioEngine::getOutputRingFill (int globalCh) const
+{
+    int acc = 0;
+    for (auto& w : workers)
+    {
+        for (int c = 0; c < w->getNumOutputChannels(); ++c, ++acc)
+        {
+            if (acc == globalCh)
+            {
+                auto* ring = const_cast<DeviceWorker&> (*w).getOutputRing (c);
+                return ring ? ring->readAvailable() : 0;
+            }
+        }
+    }
+    return 0;
+}
+
+} // namespace dcr
