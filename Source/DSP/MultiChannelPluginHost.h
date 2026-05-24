@@ -23,6 +23,11 @@ public:
 
     void clearPlugin();
 
+    // Swap plugin + bypass + cpu-load state with another host of the SAME
+    // channel layout (both must already be prepared with matching numChannels
+    // / blockSize).  Used by the UI's drag-to-reorder.
+    void swapStateWith (MultiChannelPluginHost& other);
+
     juce::AudioPluginInstance* getPlugin() const noexcept { return current.get(); }
 
     void setBypassed (bool b) noexcept { bypassed.store (b, std::memory_order_relaxed); }

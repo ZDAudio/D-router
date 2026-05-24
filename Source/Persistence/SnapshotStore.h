@@ -35,6 +35,7 @@ struct Snapshot
         bool               muted   = false;
     };
     std::vector<Group> outputGroups;
+    std::vector<Group> inputGroups;
 };
 
 // Disk persistence of Snapshots as XML ValueTrees.

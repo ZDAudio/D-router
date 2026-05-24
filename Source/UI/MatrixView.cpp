@@ -74,6 +74,15 @@ void MatrixView::setHighlightedOutputs (std::vector<int> outs)
 {
     highlightedOutputs = std::move (outs);
     if (grid) grid->setHighlightedColumns (highlightedOutputs);
+    topRailContent.repaint();
+    repaint();
+}
+
+void MatrixView::setHighlightedInputs (std::vector<int> ins)
+{
+    highlightedInputs = std::move (ins);
+    if (grid) grid->setHighlightedRows (highlightedInputs);
+    leftRailContent.repaint();
     repaint();
 }
 
@@ -101,13 +110,16 @@ void MatrixView::rebuildFromEngine()
     inputMeters   .clear();
     inputMuteBtns .clear();
     inputSoloBtns .clear();
+    inputFxBtns   .clear();
     outputTrims    .clear();
     outputMeters   .clear();
     outputMuteBtns .clear();
     outputFxBtns   .clear();
     // Close any open plugin editors -- engine restart invalidates instances.
-    for (auto& w : editorWindows) if (w) w->setVisible (false);
-    editorWindows.clear();
+    for (auto& row : outputEditorWindows) for (auto& w : row) if (w) w->setVisible (false);
+    for (auto& row : inputEditorWindows)  for (auto& w : row) if (w) w->setVisible (false);
+    outputEditorWindows.clear();
+    inputEditorWindows.clear();
 
     inputLabels.clear();
     outputLabels.clear();
@@ -152,7 +164,11 @@ void MatrixView::rebuildFromEngine()
         mute->setName ("mute");
         mute->setClickingTogglesState (true);
         mute->setToggleState (matrix.getInputMute (n), juce::dontSendNotification);
-        mute->onClick = [&matrix, mute, n] { matrix.setInputMute (n, mute->getToggleState()); };
+        mute->onClick = [this, &matrix, mute, n]
+        {
+            matrix.setInputMute (n, mute->getToggleState());
+            if (onUserMuteChanged) onUserMuteChanged();
+        };
         leftRailContent.addAndMakeVisible (*mute);
         inputMuteBtns.add (mute);
 
@@ -163,7 +179,15 @@ void MatrixView::rebuildFromEngine()
         solo->onClick = [&matrix, solo, n] { matrix.setInputSolo (n, solo->getToggleState()); };
         leftRailContent.addAndMakeVisible (*solo);
         inputSoloBtns.add (solo);
+
+        auto* infx = new juce::TextButton ("FX");
+        infx->setName ("fx");
+        infx->onClick = [this, n] { openFxMenuFor (/*isInput=*/true, n); };
+        leftRailContent.addAndMakeVisible (*infx);
+        inputFxBtns.add (infx);
     }
+    inputEditorWindows.resize ((size_t) nIn);
+    for (int n = 0; n < nIn; ++n) updateFxButtonAppearance (true, n);
 
     // Output column widgets.
     for (int m = 0; m < nOut; ++m)
@@ -182,18 +206,22 @@ void MatrixView::rebuildFromEngine()
         mute->setName ("mute");
         mute->setClickingTogglesState (true);
         mute->setToggleState (matrix.getOutputMute (m), juce::dontSendNotification);
-        mute->onClick = [&matrix, mute, m] { matrix.setOutputMute (m, mute->getToggleState()); };
+        mute->onClick = [this, &matrix, mute, m]
+        {
+            matrix.setOutputMute (m, mute->getToggleState());
+            if (onUserMuteChanged) onUserMuteChanged();
+        };
         topRailContent.addAndMakeVisible (*mute);
         outputMuteBtns.add (mute);
 
         auto* fx = new juce::TextButton ("FX");
         fx->setName ("fx");
-        fx->onClick = [this, m] { openFxMenuFor (m); };
+        fx->onClick = [this, m] { openFxMenuFor (/*isInput=*/false, m); };
         topRailContent.addAndMakeVisible (*fx);
         outputFxBtns.add (fx);
     }
-    editorWindows.resize ((size_t) nOut);
-    for (int m = 0; m < nOut; ++m) updateFxButtonAppearance (m);
+    outputEditorWindows.resize ((size_t) nOut);
+    for (int m = 0; m < nOut; ++m) updateFxButtonAppearance (false, m);
 
     // Single crosspoint grid inside gridViewport
     grid = std::make_unique<CrosspointGrid> (matrix);
@@ -222,11 +250,13 @@ void MatrixView::layoutLeftRail()
     for (int n = 0; n < (int) inputNames.size(); ++n)
     {
         const int yy = n * cellSize;
-        inputNames   [n]->setBounds (8,   yy + 2,  100, cellSize - 4);
-        inputTrims   [n]->setBounds (108, yy + 2,  32,  32);
-        inputMeters  [n]->setBounds (144, yy + 12, 92,  12);
-        inputMuteBtns[n]->setBounds (240, yy + 7,  18,  22);
-        inputSoloBtns[n]->setBounds (260, yy + 7,  18,  22);
+        inputNames   [n]->setBounds (8,   yy + 2,  96,  cellSize - 4);
+        inputTrims   [n]->setBounds (106, yy + 2,  32,  32);
+        inputMeters  [n]->setBounds (142, yy + 12, 84,  12);
+        inputMuteBtns[n]->setBounds (230, yy + 7,  18,  22);
+        inputSoloBtns[n]->setBounds (250, yy + 7,  18,  22);
+        if (n < (int) inputFxBtns.size())
+            inputFxBtns[n]->setBounds (272, yy + 7, 30, 22);
     }
 }
 
@@ -267,6 +297,15 @@ void MatrixView::paintLeftRail (juce::Graphics& g)
     const int nStart = juce::jmax (0, clip.getY() / cellSize);
     const int nEnd   = juce::jmin ((int) inputLabels.size(),
                                    (clip.getBottom() + cellSize - 1) / cellSize);
+
+    // Hover overlay when an INPUT group is hovered in the bottom panel.
+    if (! highlightedInputs.empty())
+    {
+        g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.18f));
+        for (int n : highlightedInputs)
+            if (n >= nStart && n < nEnd)
+                g.fillRect (0, n * cellSize, leftRailContent.getWidth(), cellSize);
+    }
 
     g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.25f));
     for (int n = nStart; n < nEnd; ++n)
@@ -377,66 +416,191 @@ void MatrixView::timerCallback()
     }
 }
 
-void MatrixView::updateFxButtonAppearance (int m)
+static PluginHost* getHost (AudioEngine& e, bool isInput, int ch)
 {
-    if (m < 0 || m >= (int) outputFxBtns.size()) return;
-    auto* host = engine.getPluginHost (m);
-    auto* btn = outputFxBtns[m];
-    if (host == nullptr || host->getPlugin() == nullptr)
-    {
-        btn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (50, 50, 56));
-        btn->setButtonText ("FX");
-    }
-    else if (host->isBypassed())
-    {
-        btn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (180, 140, 30));
-        btn->setButtonText ("FX");
-    }
-    else
-    {
-        btn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (60, 140, 80));
-        btn->setButtonText ("FX");
-    }
+    return isInput ? e.getInputPluginHost (ch) : e.getPluginHost (ch);
 }
 
-void MatrixView::openFxMenuFor (int m)
+void MatrixView::updateFxButtonAppearance (bool isInput, int ch)
 {
-    auto* host = engine.getPluginHost (m);
+    auto& btns = isInput ? inputFxBtns : outputFxBtns;
+    if (ch < 0 || ch >= btns.size()) return;
+    auto* host = getHost (engine, isInput, ch);
+    auto* btn  = btns[ch];
+
+    // Color states (user-specified):
+    //  - no plugins        : default dark grey (unchanged look)
+    //  - any working plugin: cyan
+    //  - plugins loaded but every one bypassed: dim red
+    juce::Colour col (50, 50, 56);
+    if (host && host->anyLoaded())
+        col = host->anyActive() ? juce::Colour::fromRGB (0,  170, 200)
+                                : juce::Colour::fromRGB (90, 28,  28);
+    btn->setColour (juce::TextButton::buttonColourId,   col);
+    btn->setColour (juce::TextButton::buttonOnColourId, col);
+    btn->setButtonText ("FX");
+}
+
+void MatrixView::openFxMenuFor (bool isInput, int ch)
+{
+    auto* host = getHost (engine, isInput, ch);
     if (host == nullptr) return;
 
-    juce::PopupMenu menu;
-    const bool loaded = host->getPlugin() != nullptr;
+    auto& btns = isInput ? inputFxBtns : outputFxBtns;
+    if (ch < 0 || ch >= btns.size()) return;
 
-    menu.addItem ("Load plugin...", true, false, [this, m] { loadPluginInto (m); });
-    menu.addSeparator();
-    menu.addItem ("Show editor",
-                  loaded,
-                  false,
-                  [this, m] { showEditorFor (m); });
-    menu.addItem ("Bypass",
-                  loaded,
-                  loaded && host->isBypassed(),
-                  [this, m]
-                  {
-                      auto* h = engine.getPluginHost (m);
-                      if (h) h->setBypassed (! h->isBypassed());
-                      updateFxButtonAppearance (m);
-                  });
-    menu.addSeparator();
-    menu.addItem ("Remove",
-                  loaded,
-                  false,
-                  [this, m]
-                  {
-                      closeEditorFor (m);
-                      if (auto* h = engine.getPluginHost (m)) h->clearPlugin();
-                      updateFxButtonAppearance (m);
-                  });
-
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (outputFxBtns[m]));
+    auto popup = std::make_unique<FxChainPopupContent> (*this, isInput, ch);
+    auto bounds = btns[ch]->getScreenBounds();
+    juce::CallOutBox::launchAsynchronously (std::move (popup), bounds, nullptr);
 }
 
-void MatrixView::loadPluginInto (int m)
+// ============================================================================
+// FxChainPopupContent (small 3-row B / name / X plugin chain panel)
+// ============================================================================
+MatrixView::FxChainPopupContent::FxChainPopupContent (MatrixView& o, bool inp, int c)
+    : owner (o), isInput (inp), ch (c)
+{
+    header.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.5f, juce::Font::bold));
+    header.setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 200, 220));
+    header.setText (juce::String (isInput ? "INPUT" : "OUTPUT")
+                    + " ch." + juce::String (ch + 1) + "  FX chain",
+                    juce::dontSendNotification);
+    addAndMakeVisible (header);
+
+    for (int s = 0; s < (int) rows.size(); ++s)
+    {
+        auto& row = rows[(size_t) s];
+        row.bypass.setName ("bypass");
+        row.bypass.setClickingTogglesState (true);
+        row.bypass.setTooltip ("Bypass this slot");
+        row.bypass.onClick = [this, s] { onSlotBypassClicked (s); };
+
+        row.name.setName ("slot");
+        row.name.setTooltip ("Click: load / open editor.  Drag: reorder.");
+        row.name.setButtonText ("+ insert");
+        row.name.slotIdx = s;
+        row.name.onClick = [this, s] { onSlotNameClicked (s); };
+        row.name.onSwap  = [this] (int from, int to)
+        {
+            if (auto* h = getHost (owner.engine, isInput, ch))
+            {
+                h->swapSlots (from, to);
+                owner.updateFxButtonAppearance (isInput, ch);
+                refreshAll();
+            }
+        };
+
+        row.remove.setName ("remove");
+        row.remove.setTooltip ("Remove plugin");
+        row.remove.onClick = [this, s] { onSlotRemoveClicked (s); };
+
+        addAndMakeVisible (row.bypass);
+        addAndMakeVisible (row.name);
+        addAndMakeVisible (row.remove);
+    }
+
+    refreshAll();
+    setSize (240, 16 + 3 * 24 + 6);
+    startTimer (150);   // poll so async plugin loads reflect in the popup
+}
+
+MatrixView::FxChainPopupContent::~FxChainPopupContent() { stopTimer(); }
+
+void MatrixView::FxChainPopupContent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour::fromRGB (20, 20, 24));
+    g.setColour (juce::Colour::fromRGB (40, 40, 48));
+    g.drawRect (getLocalBounds(), 1);
+}
+
+void MatrixView::FxChainPopupContent::resized()
+{
+    auto r = getLocalBounds().reduced (4);
+    header.setBounds (r.removeFromTop (14));
+    r.removeFromTop (2);
+    constexpr int rowH = 22;
+    for (auto& row : rows)
+    {
+        auto rr = r.removeFromTop (rowH);
+        row.bypass.setBounds (rr.removeFromLeft (20));
+        rr.removeFromLeft (2);
+        row.remove.setBounds (rr.removeFromRight (20));
+        rr.removeFromRight (2);
+        row.name  .setBounds (rr);
+        r.removeFromTop (2);
+    }
+}
+
+void MatrixView::FxChainPopupContent::timerCallback() { refreshAll(); }
+
+void MatrixView::FxChainPopupContent::refreshAll()
+{
+    auto* host = getHost (owner.engine, isInput, ch);
+    for (int s = 0; s < (int) rows.size(); ++s)
+    {
+        auto& row = rows[(size_t) s];
+        auto* p = host ? host->getPluginAt (s) : nullptr;
+        const bool loaded = (p != nullptr);
+        if (loaded)
+        {
+            const float cpu = host->getCpuLoadAt (s) * 100.0f;
+            const juce::String txt = p->getName() + "   " + juce::String (cpu, 1) + "%";
+            if (row.name.getButtonText() != txt) row.name.setButtonText (txt);
+            row.bypass.setEnabled (true);
+            row.remove.setEnabled (true);
+            row.bypass.setToggleState (host->isBypassedAt (s), juce::dontSendNotification);
+            row.name.setToggleState (host->isBypassedAt (s), juce::dontSendNotification);
+        }
+        else
+        {
+            if (row.name.getButtonText() != "+ insert") row.name.setButtonText ("+ insert");
+            row.bypass.setToggleState (false, juce::dontSendNotification);
+            row.bypass.setEnabled (false);
+            row.remove.setEnabled (false);
+            row.name.setToggleState (false, juce::dontSendNotification);
+        }
+    }
+}
+
+void MatrixView::FxChainPopupContent::onSlotNameClicked (int slotIdx)
+{
+    auto* host = getHost (owner.engine, isInput, ch);
+    if (host == nullptr) return;
+    if (host->getPluginAt (slotIdx) != nullptr)
+        owner.showEditorFor (isInput, ch, slotIdx);
+    else
+        owner.loadPluginInto (isInput, ch, slotIdx);
+}
+
+void MatrixView::FxChainPopupContent::onSlotBypassClicked (int slotIdx)
+{
+    if (auto* host = getHost (owner.engine, isInput, ch))
+    {
+        host->setBypassedAt (slotIdx, rows[(size_t) slotIdx].bypass.getToggleState());
+        owner.updateFxButtonAppearance (isInput, ch);
+        refreshAll();
+    }
+}
+
+void MatrixView::FxChainPopupContent::onSlotRemoveClicked (int slotIdx)
+{
+    owner.closeEditorFor (isInput, ch, slotIdx);
+    if (auto* host = getHost (owner.engine, isInput, ch))
+        host->clearSlot (slotIdx);
+    owner.updateFxButtonAppearance (isInput, ch);
+    refreshAll();
+}
+
+void MatrixView::refreshMuteButtonStates()
+{
+    auto& m = engine.getRoutingMatrix();
+    for (int n = 0; n < inputMuteBtns.size()  && n < m.getNumInputs();  ++n)
+        inputMuteBtns[n] ->setToggleState (m.getInputMute (n),  juce::dontSendNotification);
+    for (int o = 0; o < outputMuteBtns.size() && o < m.getNumOutputs(); ++o)
+        outputMuteBtns[o]->setToggleState (m.getOutputMute (o), juce::dontSendNotification);
+}
+
+void MatrixView::loadPluginInto (bool isInput, int ch, int slotIdx)
 {
     juce::File startDir ("/Library/Audio/Plug-Ins/Components");
     if (! startDir.isDirectory())
@@ -452,7 +616,7 @@ void MatrixView::loadPluginInto (int m)
         juce::FileBrowserComponent::openMode
       | juce::FileBrowserComponent::canSelectFiles
       | juce::FileBrowserComponent::canSelectDirectories,
-        [this, m] (const juce::FileChooser& fc)
+        [this, isInput, ch, slotIdx] (const juce::FileChooser& fc)
         {
             auto file = fc.getResult();
             if (file == juce::File{}) return;
@@ -472,14 +636,12 @@ void MatrixView::loadPluginInto (int m)
                 return;
             }
 
-            // Pick first (.component usually contains one AU); if multiple,
-            // show a popup to choose.
-            auto chooseDesc = [this, m] (juce::PluginDescription desc)
+            auto chooseDesc = [this, isInput, ch, slotIdx] (juce::PluginDescription desc)
             {
                 engine.getPluginFormatManager().createPluginInstanceAsync (
                     desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
-                    [this, m] (std::unique_ptr<juce::AudioPluginInstance> instance,
-                               const juce::String& error)
+                    [this, isInput, ch, slotIdx] (std::unique_ptr<juce::AudioPluginInstance> instance,
+                                                   const juce::String& error)
                     {
                         if (instance == nullptr)
                         {
@@ -491,11 +653,11 @@ void MatrixView::loadPluginInto (int m)
                                 nullptr);
                             return;
                         }
-                        auto* host = engine.getPluginHost (m);
+                        auto* host = getHost (engine, isInput, ch);
                         if (host == nullptr) return;
-                        closeEditorFor (m);
-                        host->setPlugin (std::move (instance));
-                        updateFxButtonAppearance (m);
+                        closeEditorFor (isInput, ch, slotIdx);
+                        host->setPluginAt (slotIdx, std::move (instance));
+                        updateFxButtonAppearance (isInput, ch);
                     });
             };
 
@@ -512,39 +674,61 @@ void MatrixView::loadPluginInto (int m)
                 for (size_t i = 0; i < copies.size(); ++i)
                 {
                     auto d = copies[i];
-                    pick.addItem (d.name + "  -  " + d.manufacturerName, [d, chooseDesc] { chooseDesc (d); });
+                    pick.addItem (d.name + "  -  " + d.manufacturerName,
+                                  [d, chooseDesc] { chooseDesc (d); });
                 }
-                pick.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (outputFxBtns[m]));
+                auto& btns = isInput ? inputFxBtns : outputFxBtns;
+                pick.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (btns[ch]));
             }
         });
 }
 
-void MatrixView::showEditorFor (int m)
+void MatrixView::showEditorFor (bool isInput, int ch, int slotIdx)
 {
-    if (m < 0 || m >= (int) editorWindows.size()) return;
-    auto* host = engine.getPluginHost (m);
+    auto& wins = isInput ? inputEditorWindows : outputEditorWindows;
+    if (ch < 0 || ch >= (int) wins.size()) return;
+    if (slotIdx < 0 || slotIdx >= PluginHost::kNumSlots) return;
+
+    auto* host = getHost (engine, isInput, ch);
     if (host == nullptr) return;
-    auto* plugin = host->getPlugin();
+    auto* plugin = host->getPluginAt (slotIdx);
     if (plugin == nullptr) return;
 
-    if (editorWindows[(size_t) m])
+    if (wins[(size_t) ch][(size_t) slotIdx])
     {
-        editorWindows[(size_t) m]->toFront (true);
+        wins[(size_t) ch][(size_t) slotIdx]->toFront (true);
         return;
     }
 
-    editorWindows[(size_t) m].reset (new PluginEditorWindow (*plugin,
-        [this, m]
+    // Build a context label like "INPUT BlackHole 2ch ch.1 / slot 2".
+    juce::String ctx;
+    {
+        const auto& labels = isInput ? inputLabels : outputLabels;
+        if (ch >= 0 && ch < (int) labels.size())
         {
-            // Defer the window deletion until after the close button handler returns.
-            juce::MessageManager::callAsync ([this, m] { closeEditorFor (m); });
-        }));
+            ctx << (isInput ? "INPUT " : "OUTPUT ");
+            ctx << labels[(size_t) ch].deviceName;
+            ctx << " ch." << juce::String (labels[(size_t) ch].channelIndex);
+            ctx << "  /  slot " << juce::String (slotIdx + 1);
+        }
+    }
+    wins[(size_t) ch][(size_t) slotIdx].reset (new PluginEditorWindow (*plugin,
+        [this, isInput, ch, slotIdx]
+        {
+            juce::MessageManager::callAsync ([this, isInput, ch, slotIdx]
+            {
+                closeEditorFor (isInput, ch, slotIdx);
+            });
+        },
+        ctx));
 }
 
-void MatrixView::closeEditorFor (int m)
+void MatrixView::closeEditorFor (bool isInput, int ch, int slotIdx)
 {
-    if (m < 0 || m >= (int) editorWindows.size()) return;
-    editorWindows[(size_t) m].reset();
+    auto& wins = isInput ? inputEditorWindows : outputEditorWindows;
+    if (ch < 0 || ch >= (int) wins.size()) return;
+    if (slotIdx < 0 || slotIdx >= PluginHost::kNumSlots) return;
+    wins[(size_t) ch][(size_t) slotIdx].reset();
 }
 
 } // namespace dcr

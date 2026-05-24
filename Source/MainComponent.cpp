@@ -48,10 +48,20 @@ MainComponent::MainComponent()
     };
     saveButton    .onClick = [this] { saveSnapshotInteractive(); };
     loadButton    .onClick = [this] { loadSnapshotInteractive(); };
-    stopButton    .onClick = [this] { stopEngine(); };
+    stopButton    .onClick = [this] { if (inPanic) panicRelease(); else panicActivate(); };
+    stopButton    .setTooltip ("Mute every input and output.  Click again to restore the prior state.");
+    updatePanicButtonAppearance();
     groupsButton.onClick = [this]
     {
-        GroupManagerDialog::launch (engine, [this] { groupPanel.rebuild(); });
+        // Single dialog with an internal Inputs / Outputs toggle.  After
+        // closing we rebuild BOTH panels since either side may have changed.
+        GroupManagerDialog::launch (engine,
+            [this]
+            {
+                groupPanel     .rebuild();
+                inputGroupPanel.rebuild();
+            },
+            GroupManagerDialog::Direction::Outputs);
     };
     addAndMakeVisible (devicesButton);
     addAndMakeVisible (settingsButton);
@@ -100,7 +110,36 @@ MainComponent::MainComponent()
         matrixView.setHighlightedOutputs (outs);
     };
 
+    // Input Group Panel setup
+    addChildComponent (inputGroupPanel);
+    inputGroupPanel.onPopOutRequested = [this] { toggleInputGroupPanelDetach(); };
+    inputGroupPanel.onGroupHover = [this] (const std::vector<int>& ins)
+    {
+        matrixView.setHighlightedInputs (ins);
+    };
+
+    inputGroupsPlaceholder.setText ("INPUT GROUPS DETACHED\n\nPanel is floating in an external window.",
+                                    juce::dontSendNotification);
+    inputGroupsPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
+                                                       13.0f, juce::Font::bold));
+    inputGroupsPlaceholder.setJustificationType (juce::Justification::centred);
+    inputGroupsPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+    addChildComponent (inputGroupsPlaceholder);
+
     addChildComponent (matrixView);
+
+    // When the user clicks any per-channel mute button while a panic is
+    // active, discard the saved pre-panic snapshot so the next panic press
+    // mutes everything from scratch (matches the user's spec: "panic forgets
+    // the prior state once you manually touch a mute").
+    matrixView.onUserMuteChanged = [this]
+    {
+        if (! inPanic) return;
+        inPanic = false;
+        savedInputMutes.clear();
+        savedOutputMutes.clear();
+        updatePanicButtonAppearance();
+    };
 
     // Status Panel setup
     addChildComponent (statusPanel);
@@ -181,7 +220,7 @@ void MainComponent::resized()
     top.removeFromLeft (4);
     settingsButton.setBounds (top.removeFromLeft (90));
     top.removeFromLeft (4);
-    groupsButton.setBounds (top.removeFromLeft (90));
+    groupsButton  .setBounds (top.removeFromLeft (90));
 
     // Right Session Section (Save, Load, Stop)
     stopButton.setBounds (top.removeFromRight (60));
@@ -218,10 +257,16 @@ void MainComponent::resized()
     }
     else if (currentTab == GroupsTab)
     {
-        if (groupPanelDetached)
-            groupsPlaceholder.setBounds (r);
-        else
-            groupPanel.setBounds (r);
+        // Top half: INPUT GROUPS  /  Bottom half: OUTPUT GROUPS
+        auto topHalf = r.removeFromTop (r.getHeight() / 2);
+        r.removeFromTop (6);
+        auto bottomHalf = r;
+
+        if (inputGroupPanelDetached) inputGroupsPlaceholder.setBounds (topHalf);
+        else                          inputGroupPanel.setBounds (topHalf);
+
+        if (groupPanelDetached) groupsPlaceholder.setBounds (bottomHalf);
+        else                    groupPanel.setBounds (bottomHalf);
     }
     else if (currentTab == StatusTab)
     {
@@ -283,6 +328,37 @@ void MainComponent::toggleStatusPanelDetach()
     switchTab (currentTab);
 }
 
+void MainComponent::toggleInputGroupPanelDetach()
+{
+    inputGroupPanelDetached = ! inputGroupPanelDetached;
+
+    if (inputGroupPanelDetached)
+    {
+        removeChildComponent (&inputGroupPanel);
+        inputGroupWindow.reset (new GroupFloatingWindow ([this]
+        {
+            if (inputGroupPanelDetached) toggleInputGroupPanelDetach();
+        }));
+        inputGroupWindow->setName ("Input groups");
+        inputGroupWindow->setContentNonOwned (&inputGroupPanel, false);
+        inputGroupWindow->centreWithSize (juce::jmax (820, cards_default_width()), 240);
+        inputGroupWindow->setVisible (true);
+        inputGroupPanel.setVisible (true);
+        inputGroupPanel.setDetached (true);
+    }
+    else
+    {
+        if (inputGroupWindow)
+        {
+            inputGroupWindow->clearContentComponent();
+            inputGroupWindow.reset();
+        }
+        addAndMakeVisible (inputGroupPanel);
+        inputGroupPanel.setDetached (false);
+    }
+    switchTab (currentTab);
+}
+
 void MainComponent::toggleGroupPanelDetach()
 {
     groupPanelDetached = ! groupPanelDetached;
@@ -331,6 +407,57 @@ void MainComponent::stopEngine()
     refreshStatus();
 }
 
+void MainComponent::panicActivate()
+{
+    auto& m = engine.getRoutingMatrix();
+    const int nIn  = m.getNumInputs();
+    const int nOut = m.getNumOutputs();
+    if (nIn == 0 && nOut == 0) return;
+
+    savedInputMutes .assign ((size_t) nIn,  0);
+    savedOutputMutes.assign ((size_t) nOut, 0);
+    for (int n = 0; n < nIn;  ++n)
+    {
+        savedInputMutes [(size_t) n] = m.getInputMute (n) ? 1 : 0;
+        m.setInputMute  (n, true);
+    }
+    for (int o = 0; o < nOut; ++o)
+    {
+        savedOutputMutes[(size_t) o] = m.getOutputMute (o) ? 1 : 0;
+        m.setOutputMute (o, true);
+    }
+    inPanic = true;
+    matrixView.refreshMuteButtonStates();
+    updatePanicButtonAppearance();
+}
+
+void MainComponent::panicRelease()
+{
+    auto& m = engine.getRoutingMatrix();
+    const int nIn  = juce::jmin ((int) savedInputMutes .size(), m.getNumInputs());
+    const int nOut = juce::jmin ((int) savedOutputMutes.size(), m.getNumOutputs());
+    for (int n = 0; n < nIn;  ++n) m.setInputMute  (n, savedInputMutes [(size_t) n] != 0);
+    for (int o = 0; o < nOut; ++o) m.setOutputMute (o, savedOutputMutes[(size_t) o] != 0);
+    savedInputMutes .clear();
+    savedOutputMutes.clear();
+    inPanic = false;
+    matrixView.refreshMuteButtonStates();
+    updatePanicButtonAppearance();
+}
+
+void MainComponent::updatePanicButtonAppearance()
+{
+    // Bright red when active so the user always knows panic is engaged.
+    stopButton.setButtonText (inPanic ? "PANIC*" : "PANIC");
+    stopButton.setColour (juce::TextButton::buttonColourId,
+                          inPanic ? juce::Colour::fromRGB (180, 30, 30)
+                                  : juce::Colour::fromRGB (50, 50, 56));
+    stopButton.setColour (juce::TextButton::buttonOnColourId,
+                          inPanic ? juce::Colour::fromRGB (180, 30, 30)
+                                  : juce::Colour::fromRGB (50, 50, 56));
+    stopButton.repaint();
+}
+
 void MainComponent::openDeviceDialog()
 {
     DeviceManagerDialog::launch (engine, currentSpecs,
@@ -344,6 +471,16 @@ void MainComponent::openDeviceDialog()
 void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs)
 {
     if (isReconfiguring.exchange (true)) return;  // ignore concurrent calls
+
+    // Matrix is about to be rebuilt - any saved-panic indices would point at
+    // the old channel layout, so drop the panic state cleanly.
+    if (inPanic || ! savedInputMutes.empty() || ! savedOutputMutes.empty())
+    {
+        inPanic = false;
+        savedInputMutes.clear();
+        savedOutputMutes.clear();
+        updatePanicButtonAppearance();
+    }
 
     // Capture current state on message thread (cheap), then offload the slow
     // CoreAudio open/close to a worker thread.
@@ -364,6 +501,18 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     auto specs = std::move (newSpecs);
     reconfigThread = std::thread ([this, specs, preserved]
     {
+        // Graceful fade-out before tearing the engine down.  Setting all
+        // output trims to 0 makes the smoothing in MatrixProcessor ramp
+        // every active route to silence; we then sleep long enough (~5*tau)
+        // for the ramp to complete before stopping devices.
+        {
+            const int smoothMs = juce::jmax (5, engine.getSettings().gainSmoothingMs);
+            auto& mtx = engine.getRoutingMatrix();
+            const int nOut = mtx.getNumOutputs();
+            for (int o = 0; o < nOut; ++o) mtx.setOutputTrim (o, 0.0f);
+            std::this_thread::sleep_for (std::chrono::milliseconds (smoothMs * 5));
+        }
+
         engine.stop();
         const bool started = specs.empty() ? true : engine.start (specs);
 
@@ -378,6 +527,7 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             matrixView.rebuildFromEngine();
             matrixView.resumeUpdates();
             groupPanel.rebuild();
+            inputGroupPanel.rebuild();
             startTimer (engine.getSettings().statusTimerMs);
             refreshStatus();
 
@@ -427,20 +577,23 @@ Snapshot MainComponent::gatherCurrentSnapshot() const
     s.engineBlockSize  = engine.getEngineBlockSize();
     s.devices          = currentSpecs;
 
-    // Output groups
-    const auto& mgr = engine.getGroupManager();
-    for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
+    auto gatherFromManager = [&] (auto& mgr, std::vector<Snapshot::Group>& dest)
     {
-        const auto* g = mgr.getGroup (gi);
-        if (g == nullptr) continue;
-        Snapshot::Group gs;
-        gs.name           = g->name;
-        gs.layoutName     = layoutName (g->channelSet);
-        gs.memberChannels = g->memberChannels;
-        gs.faderDb        = g->faderDb.load();
-        gs.muted          = g->muted.load();
-        s.outputGroups.push_back (std::move (gs));
-    }
+        for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
+        {
+            const auto* g = mgr.getGroup (gi);
+            if (g == nullptr) continue;
+            Snapshot::Group gs;
+            gs.name           = g->name;
+            gs.layoutName     = layoutName (g->channelSet);
+            gs.memberChannels = g->memberChannels;
+            gs.faderDb        = g->faderDb.load();
+            gs.muted          = g->muted.load();
+            dest.push_back (std::move (gs));
+        }
+    };
+    gatherFromManager (engine.getGroupManager(),      s.outputGroups);
+    gatherFromManager (engine.getInputGroupManager(), s.inputGroups);
 
     const auto& m = engine.getRoutingMatrix();
     const int nIn  = m.getNumInputs();
@@ -482,21 +635,25 @@ void MainComponent::applySnapshot (const Snapshot& s)
 
     // Wipe and re-create groups from the snapshot BEFORE restarting the
     // engine -- the engine restart will then prepare their plugin hosts.
-    auto& mgr = engine.getGroupManager();
-    while (mgr.getNumGroups() > 0) mgr.removeGroup (0);
-    for (const auto& gs : s.outputGroups)
+    auto restoreToManager = [&] (auto& mgr, const std::vector<Snapshot::Group>& src)
     {
-        const int gi = mgr.createGroup (gs.name, layoutFromName (gs.layoutName));
-        if (auto* g = mgr.getGroup (gi))
+        while (mgr.getNumGroups() > 0) mgr.removeGroup (0);
+        for (const auto& gs : src)
         {
-            const int n = juce::jmin ((int) gs.memberChannels.size(),
-                                      (int) g->memberChannels.size());
-            for (int i = 0; i < n; ++i)
-                g->memberChannels[(size_t) i] = gs.memberChannels[(size_t) i];
-            g->faderDb.store (gs.faderDb);
-            g->muted  .store (gs.muted);
+            const int gi = mgr.createGroup (gs.name, layoutFromName (gs.layoutName));
+            if (auto* g = mgr.getGroup (gi))
+            {
+                const int n = juce::jmin ((int) gs.memberChannels.size(),
+                                          (int) g->memberChannels.size());
+                for (int i = 0; i < n; ++i)
+                    g->memberChannels[(size_t) i] = gs.memberChannels[(size_t) i];
+                g->faderDb.store (gs.faderDb);
+                g->muted  .store (gs.muted);
+            }
         }
-    }
+    };
+    restoreToManager (engine.getGroupManager(),      s.outputGroups);
+    restoreToManager (engine.getInputGroupManager(), s.inputGroups);
 
     // Restart engine with snapshot's devices.
     applyDeviceSelection (s.devices);    // this rebuilds matrix UI and starts engine
@@ -675,49 +832,37 @@ void MainComponent::switchTab (Tab newTab)
     if (statusPanelDetached)
         statusPanel.setVisible (true);
 
+    // Keep detached panels themselves visible (they live in their own windows).
+    if (groupPanelDetached)       groupPanel     .setVisible (true);
+    if (inputGroupPanelDetached)  inputGroupPanel.setVisible (true);
+    if (statusPanelDetached)      statusPanel    .setVisible (true);
+
     if (currentTab == GroupsTab)
     {
-        if (groupPanelDetached)
-        {
-            groupsPlaceholder.setVisible (true);
-        }
-        else
-        {
-            groupsPlaceholder.setVisible (false);
-            groupPanel.setVisible (true);
-        }
-        
-        if (! statusPanelDetached)
-            statusPanel.setVisible (false);
-            
+        groupsPlaceholder     .setVisible (groupPanelDetached);
+        inputGroupsPlaceholder.setVisible (inputGroupPanelDetached);
+        if (! groupPanelDetached)      groupPanel     .setVisible (true);
+        if (! inputGroupPanelDetached) inputGroupPanel.setVisible (true);
+        if (! statusPanelDetached)     statusPanel    .setVisible (false);
         statusPlaceholder.setVisible (false);
     }
     else if (currentTab == StatusTab)
     {
-        if (statusPanelDetached)
-        {
-            statusPlaceholder.setVisible (true);
-        }
-        else
-        {
-            statusPlaceholder.setVisible (false);
-            statusPanel.setVisible (true);
-        }
-        
-        if (! groupPanelDetached)
-            groupPanel.setVisible (false);
-            
-        groupsPlaceholder.setVisible (false);
+        statusPlaceholder.setVisible (statusPanelDetached);
+        if (! statusPanelDetached)     statusPanel    .setVisible (true);
+        if (! groupPanelDetached)      groupPanel     .setVisible (false);
+        if (! inputGroupPanelDetached) inputGroupPanel.setVisible (false);
+        groupsPlaceholder     .setVisible (false);
+        inputGroupsPlaceholder.setVisible (false);
     }
     else // RoutingTab
     {
-        if (! groupPanelDetached)
-            groupPanel.setVisible (false);
-        if (! statusPanelDetached)
-            statusPanel.setVisible (false);
-            
-        groupsPlaceholder.setVisible (false);
-        statusPlaceholder.setVisible (false);
+        if (! groupPanelDetached)      groupPanel     .setVisible (false);
+        if (! inputGroupPanelDetached) inputGroupPanel.setVisible (false);
+        if (! statusPanelDetached)     statusPanel    .setVisible (false);
+        groupsPlaceholder     .setVisible (false);
+        inputGroupsPlaceholder.setVisible (false);
+        statusPlaceholder     .setVisible (false);
     }
 
     resized();

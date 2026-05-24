@@ -8,21 +8,32 @@
 
 namespace dcr {
 
+struct OutputGroup;
+
+
 // CRUD UI for output groups.  Each group has a layout (stereo / 5.1 / 7.1.4
 // etc) and a per-slot member channel.  Assigning a channel that's already in
 // another group auto-removes it from there.
 class GroupManagerDialog : public juce::Component
 {
 public:
-    explicit GroupManagerDialog (AudioEngine& engine);
+    enum class Direction { Outputs, Inputs };
 
-    // Called when the dialog closes; signals the host to refresh its UI.
+    explicit GroupManagerDialog (AudioEngine& engine, Direction dir = Direction::Outputs);
+
+    // Switch which side (input vs output) the dialog is editing.  Called by
+    // the in-dialog toggle row.
+    void setDirection (Direction d);
+
+    // Called when the dialog closes; signals the host to refresh BOTH panels
+    // (user may have edited either side during the session).
     std::function<void()> onClose;
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static void launch (AudioEngine& engine, std::function<void()> onClose);
+    static void launch (AudioEngine& engine, std::function<void()> onClose,
+                        Direction dir = Direction::Outputs);
 
 private:
     void rebuildGroupList();
@@ -32,12 +43,22 @@ private:
     void onDeleteClicked();
 
     AudioEngine& engine;
+    Direction    direction;
     int selectedGroup = -1;
 
-    juce::Label      title       { {}, "Output groups" };
+    // Direction-aware dispatch (input vs output manager + matching channel list).
+    int          dGetNumGroups() const;
+    OutputGroup* dGetGroup (int idx);
+    int          dCreateGroup (juce::String name, juce::AudioChannelSet cs);
+    void         dRemoveGroup (int idx);
+    void         dAssignChannel (int gIdx, int slot, int globalCh);
+
+    juce::Label      title       { {}, "GROUPS" };
+    juce::TextButton inSideBtn   { "INPUTS" };
+    juce::TextButton outSideBtn  { "OUTPUTS" };
     juce::ListBox    groupList;
-    juce::TextButton createBtn   { "Create" };
-    juce::TextButton deleteBtn   { "Delete" };
+    juce::TextButton createBtn   { "+" };
+    juce::TextButton deleteBtn   { "-" };
     juce::TextButton doneBtn     { "Done" };
 
     // Editor panel (right side)

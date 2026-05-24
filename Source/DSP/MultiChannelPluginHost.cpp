@@ -65,6 +65,27 @@ void MultiChannelPluginHost::setPlugin (std::unique_ptr<juce::AudioPluginInstanc
     // old destructed outside lock
 }
 
+void MultiChannelPluginHost::swapStateWith (MultiChannelPluginHost& other)
+{
+    if (this == &other) return;
+    // Deterministic lock order by address — avoids deadlock against another
+    // concurrent swap.
+    auto* lo = (this < &other) ? this  : &other;
+    auto* hi = (this < &other) ? &other : this;
+    const juce::SpinLock::ScopedLockType llk (lo->lock);
+    const juce::SpinLock::ScopedLockType hlk (hi->lock);
+
+    std::swap (current, other.current);
+
+    const bool byp = bypassed.load (std::memory_order_relaxed);
+    bypassed.store (other.bypassed.load (std::memory_order_relaxed), std::memory_order_relaxed);
+    other.bypassed.store (byp, std::memory_order_relaxed);
+
+    const float cpu = cpuLoadAvg.load (std::memory_order_relaxed);
+    cpuLoadAvg.store (other.cpuLoadAvg.load (std::memory_order_relaxed), std::memory_order_relaxed);
+    other.cpuLoadAvg.store (cpu, std::memory_order_relaxed);
+}
+
 void MultiChannelPluginHost::clearPlugin()
 {
     std::unique_ptr<juce::AudioPluginInstance> old;

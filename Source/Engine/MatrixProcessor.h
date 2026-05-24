@@ -14,6 +14,7 @@ namespace dcr {
 class DeviceWorker;
 class PluginHost;
 class OutputGroupManager;
+class InputGroupManager;
 
 // Pulls one engine block from each global input channel, runs the routing
 // matrix to produce each global output channel, and pushes to the corresponding
@@ -21,13 +22,14 @@ class OutputGroupManager;
 class MatrixProcessor
 {
 public:
-    struct GlobalInput  { DeviceWorker* device; int channelIndex; };
+    struct GlobalInput  { DeviceWorker* device; int channelIndex; PluginHost* plugin = nullptr; };
     struct GlobalOutput { DeviceWorker* device; int channelIndex; PluginHost* plugin = nullptr; };
 
     void configure (std::vector<GlobalInput>  inputs,
                     std::vector<GlobalOutput> outputs,
                     RoutingMatrix*            matrix,
                     OutputGroupManager*       groupManager,
+                    InputGroupManager*        inputGroupManager,
                     const EngineSettings&     settings);
 
     void start();
@@ -54,6 +56,7 @@ private:
     std::vector<GlobalOutput> outputs;
     RoutingMatrix*            matrix = nullptr;
     OutputGroupManager*       groupManager = nullptr;
+    InputGroupManager*        inputGroupManager = nullptr;
     int                       blockSize = 128;
     int                       threadSleepMicros = 250;
     int                       drainPerWake = 16;
@@ -75,10 +78,14 @@ private:
     std::vector<std::atomic<float>> outputPeaks;
 
     // Cached sparse routing list - rebuilt only when matrix dirtyGen changes.
-    struct ActiveRoute { int outIdx; int inIdx; float gain; };
+    // currentGain is the smoothed actual gain applied this block; it
+    // interpolates toward targetGain each block.  Routes whose target is 0
+    // are kept until currentGain drops below epsilon (smooth fade-out).
+    struct ActiveRoute { int outIdx; int inIdx; float targetGain; float currentGain; };
     std::vector<ActiveRoute> activeRoutes;
     std::vector<float>       inputEffGain;   // per-input mute/solo-aware trim
     uint64_t lastSnapGen = 0;
+    float    smoothCoeff = 1.0f;             // 1.0 = no smoothing (instant)
 
     void refreshSnapshotIfDirty();
 };

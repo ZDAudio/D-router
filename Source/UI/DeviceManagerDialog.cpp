@@ -18,6 +18,9 @@ DeviceManagerDialog::DeviceManagerDialog (AudioEngine& e,
     juce::StringArray allNames;
     for (auto& n : ins)  allNames.addIfNotAlreadyThere (n);
     for (auto& n : outs) allNames.addIfNotAlreadyThere (n);
+    // Alphabetical sort (case-insensitive) so the device list is predictable
+    // regardless of CoreAudio's discovery order.
+    allNames.sortNatural();
 
     for (auto& name : allNames)
     {

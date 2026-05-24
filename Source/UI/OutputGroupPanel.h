@@ -1,15 +1,18 @@
 #pragma once
 
+#include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <functional>
 
+#include "UI/DragSlotButton.h"
 #include "UI/LevelMeter.h"
 
 namespace dcr {
 
 class AudioEngine;
 class MultiChannelPluginHost;
+struct OutputGroup;
 
 // Bottom panel (or floating window) listing one card per output group.
 // Each card has: name, linked fader, mute, meter, members, "pop out"
@@ -17,8 +20,12 @@ class MultiChannelPluginHost;
 class OutputGroupPanel : public juce::Component, private juce::Timer
 {
 public:
-    explicit OutputGroupPanel (AudioEngine& engine);
+    enum class Direction { Outputs, Inputs };
+
+    explicit OutputGroupPanel (AudioEngine& engine, Direction dir = Direction::Outputs);
     ~OutputGroupPanel() override;
+
+    Direction getDirection() const noexcept { return direction; }
 
     // Call after the engine restarts or groups are added/removed/renamed.
     void rebuild();
@@ -44,24 +51,41 @@ private:
     void timerCallback() override;
 
     AudioEngine& engine;
+    Direction    direction;
     bool detached = false;
 
-    // One row in a slot column.
+    // Direction-aware accessors used by the card widgets.  All other code can
+    // ignore which side it's painting.
+    int          mgrNumGroups() const;
+    OutputGroup* mgrGetGroup (int idx);
+    const OutputGroup* mgrGetGroup (int idx) const;
+    int          mgrCreateGroup (juce::String name, juce::AudioChannelSet cs);
+    void         mgrRemoveGroup (int idx);
+    void         mgrAssignChannel (int gIdx, int slot, int globalCh);
+    void         mgrMoveFader (int gIdx, float db);
+    void         mgrSetMute   (int gIdx, bool m);
+    float        srcPeak (int globalCh) const;
+    juce::String resolveChannelName (int globalCh) const;
+
+    // One row in a slot column.  `name` is a DragSlotButton so the user can
+    // drag it onto another row's name to reorder the plugin chain within the
+    // owning Card (which acts as the DragAndDropContainer).
     struct SlotRow
     {
         int slotIdx = 0;
         juce::TextButton bypass { "B" };
-        juce::TextButton name   { "+ insert" };
+        DragSlotButton   name;
         juce::TextButton remove { "X" };
     };
 
-    struct Card : public juce::Component
+    struct Card : public juce::Component,
+                  public juce::DragAndDropContainer
     {
         int groupIdx = 0;
         OutputGroupPanel* panel = nullptr;
 
         juce::Label      name;
-        juce::Slider     fader { juce::Slider::LinearVertical, juce::Slider::NoTextBox };
+        juce::Slider     fader { juce::Slider::LinearVertical, juce::Slider::TextBoxBelow };
         juce::TextButton mute  { "M" };
         juce::TextButton popOut { "Win" };
         LevelMeter       meter { LevelMeter::Orientation::Vertical };

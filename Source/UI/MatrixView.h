@@ -2,10 +2,13 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
+#include "DSP/PluginHost.h"
 #include "UI/CrosspointGrid.h"
+#include "UI/DragSlotButton.h"
 #include "UI/LevelMeter.h"
 
 namespace dcr {
@@ -31,16 +34,30 @@ public:
     void pauseUpdates()  { stopTimer(); }
     void resumeUpdates();
 
-    // Highlight a set of output column indices.  Called when a group card is
-    // hovered.  Pass an empty list to clear.
+    // Re-read every mute button's toggle state from the routing matrix.
+    // Used by MainComponent's PANIC handler when it programmatically flips
+    // mutes on the matrix side; this keeps the UI buttons in sync without
+    // firing any onClick callbacks.
+    void refreshMuteButtonStates();
+
+    // Fires when the user clicks one of the per-row mute buttons (input or
+    // output side).  MainComponent uses this to detect manual mute changes
+    // while panic is active, so the saved pre-panic state can be discarded.
+    std::function<void()> onUserMuteChanged;
+
+    // Highlight a set of output column indices.  Called when an OUTPUT group
+    // card is hovered.  Pass an empty list to clear.
     void setHighlightedOutputs (std::vector<int> outs);
+
+    // Same for INPUT group hover -> input rows highlighted.
+    void setHighlightedInputs  (std::vector<int> ins);
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
     // Layout constants
     static constexpr int cellSize       = 36;
-    static constexpr int labelColWidth  = 280;
+    static constexpr int labelColWidth  = 310;   // widened to fit input FX button
     static constexpr int labelRowHeight = 184;
 
 private:
@@ -53,6 +70,45 @@ private:
         juce::String deviceName;
         int channelIndex = 0;        // 1-based for display
         bool startsNewGroup = true;
+    };
+
+    // Small floating component shown by CallOutBox when the user clicks a
+    // per-channel "FX" button.  Three rows of [B] [slot name] [X] — same
+    // layout as the per-group plugin chain in OutputGroupPanel::Card.  The
+    // popup self-refreshes every 150 ms so it picks up async plugin loads
+    // without needing a manual hook from the loader callback.
+    //
+    // Inherits DragAndDropContainer so the user can drag a slot's name
+    // button onto another slot's name button to reorder the chain.
+    class FxChainPopupContent : public juce::Component,
+                                public  juce::DragAndDropContainer,
+                                private juce::Timer
+    {
+    public:
+        FxChainPopupContent (MatrixView& owner, bool isInput, int ch);
+        ~FxChainPopupContent() override;
+        void resized() override;
+        void paint (juce::Graphics&) override;
+    private:
+        void timerCallback() override;
+        void refreshAll();
+        void onSlotNameClicked   (int slotIdx);
+        void onSlotBypassClicked (int slotIdx);
+        void onSlotRemoveClicked (int slotIdx);
+
+        struct Row
+        {
+            juce::TextButton bypass { "B" };
+            // 'name' is a DragSlotButton so the user can drag it onto another
+            // row's name button to reorder the plugin chain.
+            DragSlotButton   name;
+            juce::TextButton remove { "X" };
+        };
+        std::array<Row, 3> rows;     // kNumSlots in PluginHost == 3
+        juce::Label        header;
+        MatrixView& owner;
+        bool isInput;
+        int  ch;
     };
 
     // Excel-style freezing sub-components
@@ -108,6 +164,7 @@ private:
 
     std::unique_ptr<CrosspointGrid> grid;
     std::vector<int> highlightedOutputs;
+    std::vector<int> highlightedInputs;
 
     // Scroll areas
     juce::Viewport gridViewport;
@@ -118,13 +175,21 @@ private:
     TopRailContent  topRailContent  { *this };
     CornerCell      cornerCell      { *this };
 
-    void openFxMenuFor (int outputCh);
-    void loadPluginInto (int outputCh);
-    void showEditorFor  (int outputCh);
-    void closeEditorFor (int outputCh);
-    void updateFxButtonAppearance (int outputCh);
+    // Direction-aware FX helpers.  isInput = true addresses input plugin
+    // hosts (engine.getInputPluginHost), false the output ones.
+    void openFxMenuFor (bool isInput, int ch);
+    void loadPluginInto (bool isInput, int ch, int slotIdx);
+    void showEditorFor  (bool isInput, int ch, int slotIdx);
+    void closeEditorFor (bool isInput, int ch, int slotIdx);
+    void updateFxButtonAppearance (bool isInput, int ch);
 
-    std::vector<std::unique_ptr<juce::DocumentWindow>> editorWindows;
+    // Per-slot editor windows keyed by (direction, channel, slot).  A simple
+    // 2D array per direction since both channel count and slot count are
+    // small.
+    std::vector<std::array<std::unique_ptr<juce::DocumentWindow>, 3>> outputEditorWindows;
+    std::vector<std::array<std::unique_ptr<juce::DocumentWindow>, 3>> inputEditorWindows;
+
+    juce::OwnedArray<juce::TextButton> inputFxBtns;
     std::unique_ptr<juce::FileChooser> pluginFileChooser;
 };
 

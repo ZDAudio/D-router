@@ -36,8 +36,11 @@ void PluginEditorWindow::ScalableHolder::resized()
 }
 
 PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
-                                        std::function<void()> cb)
-    : DocumentWindow (p.getName(),
+                                        std::function<void()> cb,
+                                        const juce::String& contextLabel)
+    : DocumentWindow (contextLabel.isNotEmpty()
+                          ? (contextLabel + "  -  " + p.getName())
+                          : p.getName(),
                       juce::Colour::fromRGB (40, 40, 46),
                       DocumentWindow::closeButton),
       plugin (p),

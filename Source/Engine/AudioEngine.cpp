@@ -93,7 +93,7 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
 
     matrix.resize (totalIns, totalOuts);
 
-    // Create per-output plugin hosts.
+    // Create per-output and per-input plugin hosts.
     pluginHosts.clear();
     pluginHosts.reserve ((size_t) totalOuts);
     for (int i = 0; i < totalOuts; ++i)
@@ -102,13 +102,30 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
         ph->prepare (settings.engineSampleRate, settings.engineBlockSize);
         pluginHosts.push_back (std::move (ph));
     }
+    inputPluginHosts.clear();
+    inputPluginHosts.reserve ((size_t) totalIns);
+    for (int i = 0; i < totalIns; ++i)
+    {
+        auto ph = std::make_unique<PluginHost>();
+        ph->prepare (settings.engineSampleRate, settings.engineBlockSize);
+        inputPluginHosts.push_back (std::move (ph));
+    }
 
-    // Tell the group manager about the new output channel count, and
-    // re-prepare every plugin slot of every group.
-    groupManager.setNumOutputChannels (totalOuts);
+    // Tell the group managers about the new channel counts, and re-prepare
+    // every plugin slot of every group on both sides.
+    groupManager     .setNumOutputChannels (totalOuts);
+    inputGroupManager.setNumInputChannels  (totalIns);
     for (int gi = 0; gi < groupManager.getNumGroups(); ++gi)
     {
         if (auto* g = groupManager.getGroup (gi))
+            for (auto& slot : g->pluginSlots)
+                if (slot) slot->prepare (settings.engineSampleRate,
+                                         settings.engineBlockSize,
+                                         g->channelSet.size());
+    }
+    for (int gi = 0; gi < inputGroupManager.getNumGroups(); ++gi)
+    {
+        if (auto* g = inputGroupManager.getGroup (gi))
             for (auto& slot : g->pluginSlots)
                 if (slot) slot->prepare (settings.engineSampleRate,
                                          settings.engineBlockSize,
@@ -119,11 +136,15 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
     std::vector<MatrixProcessor::GlobalOutput> globalOuts;
     globalIns .reserve ((size_t) totalIns);
     globalOuts.reserve ((size_t) totalOuts);
-    int outIdx = 0;
+    int outIdx = 0, inIdx = 0;
     for (size_t i = 0; i < workers.size(); ++i)
     {
         auto* w = workers[i].get();
-        for (int ch = 0; ch < w->getNumInputChannels();  ++ch) globalIns .push_back ({ w, ch });
+        for (int ch = 0; ch < w->getNumInputChannels();  ++ch)
+        {
+            globalIns .push_back ({ w, ch, inputPluginHosts[(size_t) inIdx].get() });
+            ++inIdx;
+        }
         for (int ch = 0; ch < w->getNumOutputChannels(); ++ch)
         {
             globalOuts.push_back ({ w, ch, pluginHosts[(size_t) outIdx].get() });
@@ -131,7 +152,7 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
         }
     }
     processor.configure (std::move (globalIns), std::move (globalOuts),
-                         &matrix, &groupManager, settings);
+                         &matrix, &groupManager, &inputGroupManager, settings);
     processor.start();
     runningFlag = true;
     return true;
@@ -142,6 +163,7 @@ void AudioEngine::stop()
     if (! runningFlag) return;
     processor.stop();
     pluginHosts.clear();
+    inputPluginHosts.clear();
     workers.clear();
     deviceInfo.clear();
     runningFlag = false;

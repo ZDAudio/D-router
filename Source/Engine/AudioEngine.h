@@ -7,6 +7,7 @@
 #include "Engine/MatrixProcessor.h"
 #include "Routing/RoutingMatrix.h"
 #include "Routing/OutputGroupManager.h"
+#include "Routing/InputGroupManager.h"
 #include "DSP/PluginHost.h"
 
 #include <memory>
@@ -85,13 +86,21 @@ public:
         if (globalOutputCh < 0 || globalOutputCh >= (int) pluginHosts.size()) return nullptr;
         return pluginHosts[(size_t) globalOutputCh].get();
     }
+    PluginHost* getInputPluginHost (int globalInputCh) noexcept
+    {
+        if (globalInputCh < 0 || globalInputCh >= (int) inputPluginHosts.size()) return nullptr;
+        return inputPluginHosts[(size_t) globalInputCh].get();
+    }
     int getNumPluginHosts() const noexcept { return (int) pluginHosts.size(); }
+    int getNumInputPluginHosts() const noexcept { return (int) inputPluginHosts.size(); }
 
     juce::AudioPluginFormatManager& getPluginFormatManager() { return pluginFormatManager; }
     juce::KnownPluginList&          getKnownPluginList()     { return knownPlugins; }
 
     OutputGroupManager&       getGroupManager()       noexcept { return groupManager; }
     const OutputGroupManager& getGroupManager() const noexcept { return groupManager; }
+    InputGroupManager&        getInputGroupManager()       noexcept { return inputGroupManager; }
+    const InputGroupManager&  getInputGroupManager() const noexcept { return inputGroupManager; }
 
     // Sum of overruns / underruns across all open devices.
     uint64_t getTotalInputOverruns()   const noexcept;
@@ -145,10 +154,12 @@ private:
     EngineSettings settings;
 
     std::vector<std::unique_ptr<DeviceWorker>> workers;
-    std::vector<std::unique_ptr<PluginHost>>   pluginHosts;   // one per output channel
+    std::vector<std::unique_ptr<PluginHost>>   pluginHosts;       // one per output channel
+    std::vector<std::unique_ptr<PluginHost>>   inputPluginHosts;  // one per input channel
     std::vector<DeviceInfo>                    deviceInfo;
     RoutingMatrix                              matrix;
     OutputGroupManager                         groupManager;
+    InputGroupManager                          inputGroupManager;
     MatrixProcessor                            processor;
     juce::AudioPluginFormatManager             pluginFormatManager;
     juce::KnownPluginList                      knownPlugins;

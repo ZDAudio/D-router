@@ -42,6 +42,13 @@ struct EngineSettings
     int matrixThreadSleepMicros = 250;     // sleep between polls when idle
     int matrixDrainPerWake       = 16;     // max blocks to process per wake
 
+    // Per-route gain smoothing.  Any time a trim / crosspoint / mute changes,
+    // the route's effective gain interpolates toward the new value with this
+    // time constant (one-pole, block-level).  0 disables (instant jumps -
+    // expect zipper noise).  Also applies during device reconfigure so the
+    // output fades out before the engine restarts.
+    int gainSmoothingMs          = 25;
+
     // ===== UI ===============================================================
     int   meterTimerHz       = 30;          // level meter repaint rate
     float meterDecayFactor   = 0.92f;       // per-frame multiplicative decay
@@ -77,7 +84,8 @@ struct EngineSettings
             && srcQuality            == o.srcQuality
             && srcComplexity         == o.srcComplexity
             && matrixThreadSleepMicros == o.matrixThreadSleepMicros
-            && matrixDrainPerWake    == o.matrixDrainPerWake;
+            && matrixDrainPerWake    == o.matrixDrainPerWake
+            && gainSmoothingMs       == o.gainSmoothingMs;
     }
 };
 

@@ -2,53 +2,100 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <array>
 #include <atomic>
 #include <memory>
 
 namespace dcr {
 
-// Per-channel plugin slot. Holds at most one juce::AudioPluginInstance.
-// The audio thread calls processBlock(); the UI thread can swap plugins via
-// setPlugin(). A SpinLock serialises the rare swap; audio thread try-locks and
-// skips processing if a swap is in progress (one block of "dry" pass-through).
+// Per-channel mono plugin chain.  Holds up to kNumSlots plugins processed
+// sequentially in slot order; each slot has its own bypass + CPU readout.
+// The audio thread calls processBlock(); the UI thread mutates a single slot
+// via setPluginAt() / clearSlot().  A SpinLock per slot serialises the rare
+// swap so the audio thread only stalls on the slot currently being changed.
 class PluginHost
 {
 public:
-    // Engine-side configuration (sample rate / block size). Call once per
-    // host before processBlock is invoked.
+    static constexpr int kNumSlots = 3;
+
     void prepare (double sr, int blockSize);
 
-    // Swap in a new plugin instance (or nullptr to remove). prepareToPlay is
-    // called on the incoming plugin *before* taking the lock so we don't hold
-    // it across allocation. UI thread only.
-    void setPlugin (std::unique_ptr<juce::AudioPluginInstance> p);
+    void setPluginAt (int slotIdx, std::unique_ptr<juce::AudioPluginInstance> p);
+    void clearSlot   (int slotIdx) { setPluginAt (slotIdx, nullptr); }
 
-    // Convenience.
-    void clearPlugin() { setPlugin (nullptr); }
+    // Swap two slots' plugin + bypass + cpu-load state.  Both slot locks are
+    // taken in a deterministic order to avoid deadlock with audio thread.
+    // Scratch buffers stay in place (same size/prepare state).
+    void swapSlots (int a, int b);
 
-    // Returns the currently loaded plugin, or nullptr. Pointer is owned by
-    // PluginHost; do not delete. UI thread only.
-    juce::AudioPluginInstance* getPlugin() const noexcept { return current.get(); }
+    juce::AudioPluginInstance* getPluginAt (int slotIdx) const noexcept
+    {
+        return (slotIdx >= 0 && slotIdx < kNumSlots) ? slots[(size_t) slotIdx].current.get() : nullptr;
+    }
 
-    void setBypassed (bool b) noexcept { bypassed.store (b, std::memory_order_relaxed); }
-    bool isBypassed()  const noexcept   { return bypassed.load (std::memory_order_relaxed); }
+    void setBypassedAt (int slotIdx, bool b) noexcept
+    {
+        if (slotIdx >= 0 && slotIdx < kNumSlots)
+            slots[(size_t) slotIdx].bypassed.store (b, std::memory_order_relaxed);
+    }
+    bool isBypassedAt (int slotIdx) const noexcept
+    {
+        return slotIdx >= 0 && slotIdx < kNumSlots
+            && slots[(size_t) slotIdx].bypassed.load (std::memory_order_relaxed);
+    }
 
-    // Audio thread: process numSamples of mono audio in-place. If the slot is
-    // empty, bypassed, or the lock can't be acquired, the buffer is left
-    // unchanged.
+    float getCpuLoadAt (int slotIdx) const noexcept
+    {
+        return (slotIdx >= 0 && slotIdx < kNumSlots)
+            ? slots[(size_t) slotIdx].cpuLoadAvg.load (std::memory_order_relaxed) : 0.0f;
+    }
+
+    // True if any slot is currently loaded (regardless of bypass).
+    bool anyLoaded() const noexcept
+    {
+        for (auto const& s : slots) if (s.current) return true;
+        return false;
+    }
+
+    // True if any loaded-and-not-bypassed slot exists.
+    bool anyActive() const noexcept
+    {
+        for (auto const& s : slots)
+            if (s.current && ! s.bypassed.load (std::memory_order_relaxed)) return true;
+        return false;
+    }
+
+    // True if any slot is bypassed.
+    bool anyBypassed() const noexcept
+    {
+        for (auto const& s : slots)
+            if (s.current && s.bypassed.load (std::memory_order_relaxed)) return true;
+        return false;
+    }
+
+    // Audio thread: run the whole chain in-place on a mono buffer.
     void processBlock (float* buf, int numSamples);
 
-    // EMA load 0..1 of the plugin's per-block CPU time relative to block
-    // period.  Zero when bypassed/empty.
-    float getCpuLoadAvg() const noexcept { return cpuLoadAvg.load (std::memory_order_relaxed); }
+    // Total CPU across all slots.
+    float getCpuLoadAvg() const noexcept
+    {
+        float s = 0.0f;
+        for (int i = 0; i < kNumSlots; ++i) s += getCpuLoadAt (i);
+        return s;
+    }
 
 private:
-    juce::SpinLock                              lock;
-    std::unique_ptr<juce::AudioPluginInstance>  current;
-    juce::AudioBuffer<float>                    scratch;
+    struct Slot
+    {
+        juce::SpinLock                              lock;
+        std::unique_ptr<juce::AudioPluginInstance>  current;
+        juce::AudioBuffer<float>                    scratch;
+        std::atomic<bool>                           bypassed { false };
+        std::atomic<float>                          cpuLoadAvg { 0.0f };
+    };
+
+    std::array<Slot, kNumSlots>                 slots;
     juce::MidiBuffer                            dummyMidi;
-    std::atomic<bool>                           bypassed { false };
-    std::atomic<float>                          cpuLoadAvg { 0.0f };
     double                                      sampleRate = 48000.0;
     int                                         blockSize  = 128;
 };

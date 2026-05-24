@@ -13,8 +13,12 @@ namespace dcr {
 class PluginEditorWindow : public juce::DocumentWindow
 {
 public:
+    // `contextLabel`, if non-empty, is prepended to the window title so
+    // popped-out plugin editors visibly identify which track / group / slot
+    // they belong to (e.g. "OUTPUT BlackHole 2ch ch.1 / slot 2 — AUCompressor").
     PluginEditorWindow (juce::AudioPluginInstance& p,
-                        std::function<void()> onCloseCallback);
+                        std::function<void()> onCloseCallback,
+                        const juce::String& contextLabel = {});
     ~PluginEditorWindow() override;
 
     void closeButtonPressed() override;

@@ -35,6 +35,17 @@ private:
     void applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs);
     void refreshStatus();
     void stopEngine();
+
+    // PANIC: first press mutes every input + output (saving the prior state);
+    // second press restores it.  If the user manually flips any mute button
+    // while panic is active, the saved state is discarded so the next panic
+    // press just re-mutes everything fresh.
+    void panicActivate();
+    void panicRelease();
+    void updatePanicButtonAppearance();
+    bool inPanic = false;
+    std::vector<unsigned char> savedInputMutes;
+    std::vector<unsigned char> savedOutputMutes;
     Snapshot gatherCurrentSnapshot() const;
     void     applySnapshot (const Snapshot& s);
     void     saveSnapshotInteractive();
@@ -70,32 +81,37 @@ private:
     juce::Label      title { {}, "D-Core Router" };
     juce::TextButton devicesButton  { "Devices..." };
     juce::TextButton settingsButton { "Settings..." };
-    juce::TextButton groupsButton   { "Groups..." };
+    juce::TextButton groupsButton    { "Groups..." };
     juce::TextButton saveButton     { "Save..." };
     juce::TextButton loadButton     { "Load..." };
-    juce::TextButton stopButton     { "Stop" };
+    juce::TextButton stopButton     { "PANIC" };
 
     // Top Navigation Tabs
     enum Tab { RoutingTab, GroupsTab, StatusTab };
     Tab currentTab = RoutingTab;
 
     juce::TextButton matrixTabBtn { "MATRIX ROUTING" };
-    juce::TextButton groupsTabBtn { "OUTPUT GROUPS" };
+    juce::TextButton groupsTabBtn { "IN / OUT GROUPS" };
     juce::TextButton statusTabBtn { "ENGINE MONITOR" };
 
     juce::Label groupsPlaceholder;
+    juce::Label inputGroupsPlaceholder;
     juce::Label statusPlaceholder;
 
     MatrixView       matrixView { engine };
-    OutputGroupPanel groupPanel  { engine };
+    OutputGroupPanel groupPanel       { engine, OutputGroupPanel::Direction::Outputs };
+    OutputGroupPanel inputGroupPanel  { engine, OutputGroupPanel::Direction::Inputs  };
     StatusPanel      statusPanel { engine };
 
-    bool groupPanelDetached  = false;
-    bool statusPanelDetached = false;
+    bool groupPanelDetached       = false;
+    bool inputGroupPanelDetached  = false;
+    bool statusPanelDetached      = false;
     std::unique_ptr<juce::DocumentWindow> groupWindow;
+    std::unique_ptr<juce::DocumentWindow> inputGroupWindow;
     std::unique_ptr<juce::DocumentWindow> statusWindow;
     
     void toggleGroupPanelDetach();
+    void toggleInputGroupPanelDetach();
     void toggleStatusPanelDetach();
     void switchTab (Tab newTab);
     static int cards_default_width();

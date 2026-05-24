@@ -36,6 +36,9 @@ public:
     // channels in the matrix.
     void setHighlightedColumns (std::vector<int> cols);
 
+    // Same idea for INPUT rows (input groups hover -> rows highlight).
+    void setHighlightedRows    (std::vector<int> rows);
+
     // Set boundaries between different devices to draw visual separators across the grid
     void setDeviceBoundaries (std::vector<int> ins, std::vector<int> outs);
 
@@ -69,6 +72,7 @@ private:
     int shiftStartIn  = -1;
 
     std::vector<int> highlightedColumns;
+    std::vector<int> highlightedRows;
     std::vector<int> inputDeviceBoundaries;
     std::vector<int> outputDeviceBoundaries;
 };

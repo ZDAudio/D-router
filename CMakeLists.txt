@@ -32,6 +32,7 @@ target_sources(dcorerouter PRIVATE
     Source/Engine/AudioEngine.cpp
     Source/Routing/RoutingMatrix.cpp
     Source/Routing/OutputGroupManager.cpp
+    Source/Routing/InputGroupManager.cpp
     Source/UI/Crosspoint.cpp
     Source/UI/CrosspointGrid.cpp
     Source/UI/LookAndFeel.cpp

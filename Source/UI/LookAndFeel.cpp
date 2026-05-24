@@ -56,6 +56,14 @@ void LookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
         else // active loaded slot
             baseColor = juce::Colour::fromRGB (25, 48, 42); // Dark teal-green active tint
     }
+    else if (button.getName() == "fx")
+    {
+        // Honor the per-button colour MatrixView sets via setColour(buttonColourId).
+        // States: dark grey (no plugin) / cyan (any active) / dim red (all bypassed).
+        baseColor = button.findColour (juce::TextButton::buttonColourId);
+        if (shouldDrawButtonAsDown)             baseColor = baseColor.darker  (0.30f);
+        else if (shouldDrawButtonAsHighlighted) baseColor = baseColor.brighter (0.15f);
+    }
     else if (shouldDrawButtonAsDown)
         baseColor = juce::Colour::fromRGB (16, 16, 20);
     else if (shouldDrawButtonAsHighlighted)

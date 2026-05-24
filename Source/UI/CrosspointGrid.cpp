@@ -58,6 +58,12 @@ void CrosspointGrid::setHighlightedColumns (std::vector<int> cols)
     repaint();
 }
 
+void CrosspointGrid::setHighlightedRows (std::vector<int> rows)
+{
+    highlightedRows = std::move (rows);
+    repaint();
+}
+
 void CrosspointGrid::setDeviceBoundaries (std::vector<int> ins, std::vector<int> outs)
 {
     inputDeviceBoundaries = std::move (ins);
@@ -157,6 +163,13 @@ void CrosspointGrid::paint (juce::Graphics& g)
         for (int m : highlightedColumns)
             if (m >= 0 && m < numOuts)
                 g.fillRect (m * cellSize, 0, cellSize, getHeight());
+    }
+    if (! highlightedRows.empty())
+    {
+        g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.08f));
+        for (int n : highlightedRows)
+            if (n >= 0 && n < numIns)
+                g.fillRect (0, n * cellSize, getWidth(), cellSize);
     }
 
     // Draw device separation lines inside the grid (Requirement 2)

@@ -4,6 +4,7 @@
 #include "Engine/AudioEngine.h"
 #include "Routing/OutputGroup.h"
 #include "Routing/OutputGroupManager.h"
+#include "Routing/InputGroupManager.h"
 #include "UI/PluginEditorWindow.h"
 
 namespace dcr {
@@ -14,9 +15,81 @@ namespace
     constexpr int slotH = 22;
 }
 
-OutputGroupPanel::OutputGroupPanel (AudioEngine& e) : engine (e)
+// ============================================================================
+// Direction-aware accessor dispatch
+// ============================================================================
+int OutputGroupPanel::mgrNumGroups() const
 {
-    panelTitle.setText ("OUTPUT GROUPS", juce::dontSendNotification);
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().getNumGroups()
+        : engine.getGroupManager().getNumGroups();
+}
+OutputGroup* OutputGroupPanel::mgrGetGroup (int idx)
+{
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().getGroup (idx)
+        : engine.getGroupManager().getGroup (idx);
+}
+const OutputGroup* OutputGroupPanel::mgrGetGroup (int idx) const
+{
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().getGroup (idx)
+        : engine.getGroupManager().getGroup (idx);
+}
+int OutputGroupPanel::mgrCreateGroup (juce::String name, juce::AudioChannelSet cs)
+{
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().createGroup (std::move (name), cs)
+        : engine.getGroupManager().createGroup (std::move (name), cs);
+}
+void OutputGroupPanel::mgrRemoveGroup (int idx)
+{
+    if (direction == Direction::Inputs) engine.getInputGroupManager().removeGroup (idx);
+    else                                engine.getGroupManager().removeGroup (idx);
+}
+void OutputGroupPanel::mgrAssignChannel (int gIdx, int slot, int globalCh)
+{
+    if (direction == Direction::Inputs) engine.getInputGroupManager().assignChannel (gIdx, slot, globalCh);
+    else                                engine.getGroupManager().assignChannel (gIdx, slot, globalCh);
+}
+void OutputGroupPanel::mgrMoveFader (int gIdx, float db)
+{
+    if (direction == Direction::Inputs)
+        engine.getInputGroupManager().moveGroupFader (gIdx, db, engine.getRoutingMatrix());
+    else
+        engine.getGroupManager().moveGroupFader (gIdx, db, engine.getRoutingMatrix());
+}
+void OutputGroupPanel::mgrSetMute (int gIdx, bool m)
+{
+    if (direction == Direction::Inputs)
+        engine.getInputGroupManager().setGroupMute (gIdx, m, engine.getRoutingMatrix());
+    else
+        engine.getGroupManager().setGroupMute (gIdx, m, engine.getRoutingMatrix());
+}
+float OutputGroupPanel::srcPeak (int globalCh) const
+{
+    return direction == Direction::Inputs
+        ? engine.getInputPeak (globalCh)
+        : engine.getOutputPeak (globalCh);
+}
+juce::String OutputGroupPanel::resolveChannelName (int globalCh) const
+{
+    int idx = 0;
+    for (auto& d : engine.getDeviceInfo())
+    {
+        const int n = (direction == Direction::Inputs) ? d.numInputChannels : d.numOutputChannels;
+        for (int ci = 0; ci < n; ++ci, ++idx)
+            if (idx == globalCh) return d.name + " " + juce::String (ci + 1);
+    }
+    return "?";
+}
+
+// ============================================================================
+OutputGroupPanel::OutputGroupPanel (AudioEngine& e, Direction dir)
+    : engine (e), direction (dir)
+{
+    panelTitle.setText (dir == Direction::Inputs ? "INPUT GROUPS" : "OUTPUT GROUPS",
+                        juce::dontSendNotification);
     panelTitle.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::bold));
     panelTitle.setColour (juce::Label::textColourId,
                           juce::Colour (0xFF000000u | engine.getSettings().accentColorRGB));
@@ -71,7 +144,7 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
 {
     panel    = &p;
     groupIdx = gIdx;
-    auto* g = p.engine.getGroupManager().getGroup (gIdx);
+    auto* g = p.mgrGetGroup (gIdx);
     if (g == nullptr) return;
 
     name.setText (g->name, juce::dontSendNotification);
@@ -80,34 +153,41 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
     name.setJustificationType (juce::Justification::centredLeft);
 
     juce::String memStr;
-    auto& info = p.engine.getDeviceInfo();
-    auto resolveName = [&info] (int globalCh) -> juce::String
-    {
-        int idx = 0;
-        for (auto& d : info)
-            for (int ci = 0; ci < d.numOutputChannels; ++ci, ++idx)
-                if (idx == globalCh) return d.name + " " + juce::String (ci + 1);
-        return "?";
-    };
     for (size_t i = 0; i < g->memberChannels.size(); ++i)
     {
         if (i > 0) memStr << ", ";
         const int ch = g->memberChannels[i];
-        memStr << (ch < 0 ? "-" : resolveName (ch));
+        memStr << (ch < 0 ? "-" : p.resolveChannelName (ch));
     }
     members.setText (memStr, juce::dontSendNotification);
     members.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, 0));
     members.setColour (juce::Label::textColourId, juce::Colour::fromRGB (140, 140, 145));
- 
-    fader.setRange (-60.0, 12.0, 0.1);
+
+    // Range goes one notch below -60 (visible as "-inf") so the user can drag
+    // the fader to a true silence position; OutputGroupManager's dB->linear
+    // already clamps values <= -60 to gain 0, so anywhere in (-inf .. -60]
+    // mutes the group's member channels.
+    fader.setRange (-65.0, 12.0, 0.1);
     fader.setSkewFactorFromMidPoint (0.0);
+    fader.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 14);   // editable numeric
+    fader.setDoubleClickReturnValue (true, 0.0);                          // double-click resets to 0 dB
+    fader.textFromValueFunction = [] (double v)
+    {
+        if (v <= -60.0) return juce::String ("-inf");
+        if (std::abs (v) < 0.05) return juce::String ("0.0 dB");
+        return juce::String (v, 1) + " dB";
+    };
+    fader.valueFromTextFunction = [] (const juce::String& s) -> double
+    {
+        auto t = s.trim().toLowerCase();
+        if (t.contains ("inf") || t == "mute") return -65.0;
+        return t.removeCharacters (" dB").getDoubleValue();
+    };
     fader.setValue (g->faderDb.load(), juce::dontSendNotification);
-    fader.setPopupDisplayEnabled (true, true, nullptr);
-    fader.setTextValueSuffix (" dB");
+    fader.updateText();   // force initial numeric to render instead of "..."
     fader.onValueChange = [this, gIdx]
     {
-        panel->engine.getGroupManager().moveGroupFader (gIdx, (float) fader.getValue(),
-                                                        panel->engine.getRoutingMatrix());
+        panel->mgrMoveFader (gIdx, (float) fader.getValue());
     };
 
     mute.setName ("mute");
@@ -115,8 +195,7 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
     mute.setToggleState (g->muted.load(), juce::dontSendNotification);
     mute.onClick = [this, gIdx]
     {
-        panel->engine.getGroupManager().setGroupMute (gIdx, mute.getToggleState(),
-                                                      panel->engine.getRoutingMatrix());
+        panel->mgrSetMute (gIdx, mute.getToggleState());
     };
 
     addAndMakeVisible (name);
@@ -143,9 +222,22 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
         };
 
         row->name.setName ("slot");
-        row->name.setTooltip ("Click: load / open editor");
+        row->name.setTooltip ("Click: load / open editor.  Drag: reorder.");
+        row->name.setButtonText ("+ insert");
+        row->name.slotIdx = s;
         row->name.onClick = [this, s] { onSlotNameClicked (s); };
- 
+        row->name.onSwap  = [this] (int from, int to)
+        {
+            auto* a = getSlotHost (from);
+            auto* b = getSlotHost (to);
+            if (a != nullptr && b != nullptr)
+            {
+                a->swapStateWith (*b);
+                refreshSlotAppearance (from);
+                refreshSlotAppearance (to);
+            }
+        };
+
         row->remove.setName ("remove");
         row->remove.setTooltip ("Remove plugin");
         row->remove.onClick = [this, s] { onSlotRemoveClicked (s); };
@@ -160,7 +252,7 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
 
 MultiChannelPluginHost* OutputGroupPanel::Card::getSlotHost (int slotIdx) const
 {
-    auto* g = panel->engine.getGroupManager().getGroup (groupIdx);
+    auto* g = panel->mgrGetGroup (groupIdx);
     if (g == nullptr) return nullptr;
     if (slotIdx < 0 || slotIdx >= (int) g->pluginSlots.size()) return nullptr;
     return g->pluginSlots[(size_t) slotIdx].get();
@@ -218,9 +310,18 @@ void OutputGroupPanel::Card::openEditorFor (int slotIdx)
         editorWindows[(size_t) slotIdx]->toFront (true);
         return;
     }
+    // Title prefix identifies which group / slot owns this editor.
+    juce::String ctx;
+    if (auto* g = panel->mgrGetGroup (groupIdx))
+    {
+        ctx << (panel->getDirection() == Direction::Inputs ? "INPUT GROUP " : "OUTPUT GROUP ");
+        ctx << g->name;
+        ctx << "  /  slot " << juce::String (slotIdx + 1);
+    }
     editorWindows[(size_t) slotIdx].reset (new PluginEditorWindow (
         *host->getPlugin(),
-        [this, slotIdx] { juce::MessageManager::callAsync ([this, slotIdx] { closeEditorFor (slotIdx); }); }));
+        [this, slotIdx] { juce::MessageManager::callAsync ([this, slotIdx] { closeEditorFor (slotIdx); }); },
+        ctx));
 }
 
 void OutputGroupPanel::Card::closeEditorFor (int slotIdx)
@@ -246,8 +347,10 @@ void OutputGroupPanel::Card::resized()
     name.setBounds (top);
     r.removeFromTop (4);
 
-    auto leftCol = r.removeFromLeft (90);
-    fader.setBounds (leftCol.removeFromLeft (24).withTrimmedTop (4).withTrimmedBottom (4));
+    // Wider left column so the fader's text box can display "0.0 dB"
+    // instead of getting truncated to "...".
+    auto leftCol = r.removeFromLeft (110);
+    fader.setBounds (leftCol.removeFromLeft (50).withTrimmedTop (4).withTrimmedBottom (4));
     leftCol.removeFromLeft (4);
     meter.setBounds (leftCol.removeFromLeft (14).withTrimmedTop (4).withTrimmedBottom (4));
     leftCol.removeFromLeft (4);
@@ -277,8 +380,7 @@ void OutputGroupPanel::Card::resized()
 void OutputGroupPanel::rebuild()
 {
     cards.clear();
-    auto& mgr = engine.getGroupManager();
-    const int n = mgr.getNumGroups();
+    const int n = mgrNumGroups();
     for (int i = 0; i < n; ++i)
     {
         auto* c = new Card();
@@ -333,17 +435,16 @@ void OutputGroupPanel::resized()
 
 void OutputGroupPanel::timerCallback()
 {
-    auto& mgr = engine.getGroupManager();
     int hoverIdx = -1;
 
     for (int i = 0; i < cards.size(); ++i)
     {
-        auto* g = mgr.getGroup (cards[i]->groupIdx);
+        auto* g = mgrGetGroup (cards[i]->groupIdx);
         if (g == nullptr) continue;
 
         float pk = 0.0f;
         for (int ch : g->memberChannels)
-            if (ch >= 0) pk = juce::jmax (pk, engine.getOutputPeak (ch));
+            if (ch >= 0) pk = juce::jmax (pk, srcPeak (ch));
         cards[i]->meter.pushPeak (pk);
         cards[i]->meter.tickDecay (engine.getSettings().meterDecayFactor);
 
@@ -375,7 +476,7 @@ void OutputGroupPanel::timerCallback()
         {
             if (hoverIdx >= 0)
             {
-                if (auto* g = mgr.getGroup (cards[hoverIdx]->groupIdx))
+                if (auto* g = mgrGetGroup (cards[hoverIdx]->groupIdx))
                     onGroupHover (g->memberChannels);
                 else
                     onGroupHover ({});
@@ -443,7 +544,7 @@ void OutputGroupPanel::requestLoadPlugin (int cardIdx, int slotIdx)
                             nullptr);
                         return;
                     }
-                    auto* g = engine.getGroupManager().getGroup (gIdx);
+                    auto* g = mgrGetGroup (gIdx);
                     if (g == nullptr) return;
                     if (sIdx < 0 || sIdx >= (int) g->pluginSlots.size()) return;
                     auto& host = g->pluginSlots[(size_t) sIdx];

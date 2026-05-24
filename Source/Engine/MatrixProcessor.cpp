@@ -4,12 +4,15 @@
 #include "DSP/PluginHost.h"
 #include "Routing/OutputGroup.h"
 #include "Routing/OutputGroupManager.h"
+#include "Routing/InputGroupManager.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 namespace dcr {
 
@@ -17,12 +20,14 @@ void MatrixProcessor::configure (std::vector<GlobalInput>  ins,
                                  std::vector<GlobalOutput> outs,
                                  RoutingMatrix*            m,
                                  OutputGroupManager*       gm,
+                                 InputGroupManager*        igm,
                                  const EngineSettings&     settings)
 {
-    inputs       = std::move (ins);
-    outputs      = std::move (outs);
-    matrix       = m;
-    groupManager = gm;
+    inputs            = std::move (ins);
+    outputs           = std::move (outs);
+    matrix            = m;
+    groupManager      = gm;
+    inputGroupManager = igm;
     blockSize         = settings.engineBlockSize;
     threadSleepMicros = settings.matrixThreadSleepMicros;
     drainPerWake      = settings.matrixDrainPerWake;
@@ -30,6 +35,18 @@ void MatrixProcessor::configure (std::vector<GlobalInput>  ins,
     groupSilenceRow.assign ((size_t) blockSize, 0.0f);
     cpuLoadAvg .store (0.0f, std::memory_order_relaxed);
     cpuLoadPeak.store (0.0f, std::memory_order_relaxed);
+
+    // Per-block one-pole smoothing coefficient toward target gain.
+    if (settings.gainSmoothingMs > 0 && sampleRate > 0.0)
+    {
+        const float blockDur = (float) blockSize / (float) sampleRate;
+        const float tau      = (float) settings.gainSmoothingMs * 1.0e-3f;
+        smoothCoeff = 1.0f - std::exp (-blockDur / tau);
+    }
+    else
+    {
+        smoothCoeff = 1.0f;  // instant
+    }
 
     inBuf .assign (inputs .size() * (size_t) blockSize, 0.0f);
     outBuf.assign (outputs.size() * (size_t) blockSize, 0.0f);
@@ -44,6 +61,9 @@ void MatrixProcessor::configure (std::vector<GlobalInput>  ins,
     activeRoutes.clear();
     activeRoutes.reserve (inputs.size() * outputs.size());
     lastSnapGen = 0;   // force refresh on first block
+
+    // First-build routes have currentGain = 0 so they fade IN smoothly when
+    // the engine starts.  No special action needed beyond the clear above.
 }
 
 float MatrixProcessor::getInputPeak (int n) const noexcept
@@ -94,8 +114,14 @@ void MatrixProcessor::refreshSnapshotIfDirty()
         inputEffGain[(size_t) n] = matrix->getInputTrim (n);
     }
 
-    // Rebuild sparse route list, reading crosspoints directly from atomics
-    // (no flat snap.crosspoint copy -- saves O(N*M) floats of RAM).
+    // Snapshot existing currentGains so they survive the rebuild and the
+    // matrix processor never jumps a gain value abruptly.
+    std::unordered_map<uint64_t, float> oldGains;
+    oldGains.reserve (activeRoutes.size());
+    for (auto& r : activeRoutes)
+        oldGains[((uint64_t) (uint32_t) r.outIdx << 32) | (uint32_t) r.inIdx] = r.currentGain;
+
+    // Build the new active route list with currentGain carried forward.
     activeRoutes.clear();
     for (int m = 0; m < nOut; ++m)
     {
@@ -111,7 +137,28 @@ void MatrixProcessor::refreshSnapshotIfDirty()
             if (xp == 0.0f) continue;
             const float g = outG * inG * xp;
             if (g == 0.0f) continue;
-            activeRoutes.push_back ({ m, n, g });
+
+            const uint64_t key = ((uint64_t) (uint32_t) m << 32) | (uint32_t) n;
+            float carriedCurrent = 0.0f;
+            auto it = oldGains.find (key);
+            if (it != oldGains.end())
+            {
+                carriedCurrent = it->second;
+                oldGains.erase (it);
+            }
+            activeRoutes.push_back ({ m, n, g, carriedCurrent });
+        }
+    }
+
+    // Routes that disappeared but still have audible signal become ghost
+    // fade-outs (target 0, currentGain != 0).  They drop off via smoothing.
+    for (auto& kv : oldGains)
+    {
+        if (kv.second > 1.0e-5f)
+        {
+            const int m = (int) (kv.first >> 32);
+            const int n = (int) (kv.first & 0xFFFFFFFFu);
+            activeRoutes.push_back ({ m, n, 0.0f, kv.second });
         }
     }
 }
@@ -146,18 +193,63 @@ bool MatrixProcessor::tryProcessOneBlock()
         inputPeaks[i].store (peak, std::memory_order_relaxed);
     }
 
+    // Per-input single-channel plugin chains (3 slots each), run BEFORE
+    // the input group multi-channel chain and the matrix mix.
+    for (size_t i = 0; i < inputs.size(); ++i)
+    {
+        if (inputs[i].plugin != nullptr)
+            inputs[i].plugin->processBlock (inBuf.data() + i * (size_t) blockSize, blockSize);
+    }
+
     refreshSnapshotIfDirty();
+
+    // Input-side multi-channel plugin chains, run BEFORE the matrix mix so
+    // the routed signal already includes any input-group processing.
+    if (inputGroupManager != nullptr)
+    {
+        const int nIn = (int) inputs.size();
+        const size_t maxGroupCh = 16;
+        std::array<float*, maxGroupCh> chPtrs{};
+
+        inputGroupManager->forEachGroupForAudio ([&] (OutputGroup& g)
+        {
+            const int n = (int) g.memberChannels.size();
+            if (n <= 0 || n > (int) maxGroupCh) return;
+
+            bool anyActive = false;
+            for (auto& s : g.pluginSlots)
+                if (s && s->getPlugin() && ! s->isBypassed()) { anyActive = true; break; }
+            if (! anyActive) return;
+
+            for (int slot = 0; slot < n; ++slot)
+            {
+                const int ch = g.memberChannels[(size_t) slot];
+                if (ch >= 0 && ch < nIn)
+                    chPtrs[(size_t) slot] = inBuf.data() + (size_t) ch * (size_t) blockSize;
+                else
+                    chPtrs[(size_t) slot] = groupSilenceRow.data();
+            }
+            for (auto& s : g.pluginSlots)
+                if (s && s->getPlugin() && ! s->isBypassed())
+                    s->processBlock (chPtrs.data(), blockSize);
+        });
+    }
 
     // Zero output bus (one memset for the whole buffer is faster than per-row).
     if (! outBuf.empty())
         std::memset (outBuf.data(), 0, sizeof (float) * outBuf.size());
 
-    // Mix - iterate only active (non-zero) routes, SIMD inner.
-    for (const auto& rt : activeRoutes)
+    // Mix - iterate only active (non-zero) routes, SIMD inner.  Smooth each
+    // route's gain toward its target so trim moves / mutes / fader sweeps
+    // never produce zipper noise.
+    for (auto& rt : activeRoutes)
     {
+        rt.currentGain += (rt.targetGain - rt.currentGain) * smoothCoeff;
+        if (rt.currentGain <= 1.0e-7f && rt.targetGain == 0.0f) continue;
+
         float* outRow = outBuf.data() + (size_t) rt.outIdx * (size_t) blockSize;
         const float* inRow = inBuf.data() + (size_t) rt.inIdx * (size_t) blockSize;
-        juce::FloatVectorOperations::addWithMultiply (outRow, inRow, rt.gain, blockSize);
+        juce::FloatVectorOperations::addWithMultiply (outRow, inRow, rt.currentGain, blockSize);
     }
 
     // Per-output plugin DSP (single-channel inserts).

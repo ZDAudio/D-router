@@ -28,6 +28,7 @@ namespace ids {
     static const juce::Identifier version        ("version");
 
     static const juce::Identifier groups         ("groups");
+    static const juce::Identifier inputGroups    ("inputGroups");
     static const juce::Identifier group          ("group");
     static const juce::Identifier layout         ("layout");
     static const juce::Identifier members        ("members");
@@ -117,26 +118,32 @@ juce::ValueTree SnapshotStore::toValueTree (const Snapshot& s)
 
     root.addChild (mat, -1, nullptr);
 
-    // Groups
-    juce::ValueTree gs (ids::groups);
-    for (const auto& g : s.outputGroups)
+    auto writeGroupList = [] (const juce::Identifier& parentId,
+                              const std::vector<Snapshot::Group>& src,
+                              juce::ValueTree& parent)
     {
-        juce::ValueTree gv (ids::group);
-        gv.setProperty (ids::name,      g.name,       nullptr);
-        gv.setProperty (ids::layout,    g.layoutName, nullptr);
-        gv.setProperty (ids::faderDb,   (double) g.faderDb, nullptr);
-        gv.setProperty (ids::mutedProp, g.muted,      nullptr);
-        juce::ValueTree mv (ids::members);
-        for (int m : g.memberChannels)
+        juce::ValueTree gs (parentId);
+        for (const auto& g : src)
         {
-            juce::ValueTree e (ids::member);
-            e.setProperty (ids::ch, m, nullptr);
-            mv.addChild (e, -1, nullptr);
+            juce::ValueTree gv (ids::group);
+            gv.setProperty (ids::name,      g.name,       nullptr);
+            gv.setProperty (ids::layout,    g.layoutName, nullptr);
+            gv.setProperty (ids::faderDb,   (double) g.faderDb, nullptr);
+            gv.setProperty (ids::mutedProp, g.muted,      nullptr);
+            juce::ValueTree mv (ids::members);
+            for (int m : g.memberChannels)
+            {
+                juce::ValueTree e (ids::member);
+                e.setProperty (ids::ch, m, nullptr);
+                mv.addChild (e, -1, nullptr);
+            }
+            gv.addChild (mv, -1, nullptr);
+            gs.addChild (gv, -1, nullptr);
         }
-        gv.addChild (mv, -1, nullptr);
-        gs.addChild (gv, -1, nullptr);
-    }
-    root.addChild (gs, -1, nullptr);
+        parent.addChild (gs, -1, nullptr);
+    };
+    writeGroupList (ids::groups,      s.outputGroups, root);
+    writeGroupList (ids::inputGroups, s.inputGroups,  root);
 
     return root;
 }
@@ -209,21 +216,27 @@ Snapshot SnapshotStore::fromValueTree (const juce::ValueTree& root)
         }
     }
 
-    auto gs = root.getChildWithName (ids::groups);
-    for (auto child : gs)
+    auto readGroupList = [&] (const juce::Identifier& parentId,
+                              std::vector<Snapshot::Group>& dest)
     {
-        if (! child.hasType (ids::group)) continue;
-        Snapshot::Group g;
-        g.name       = child.getProperty (ids::name).toString();
-        g.layoutName = child.getProperty (ids::layout).toString();
-        g.faderDb    = (float) (double) child.getProperty (ids::faderDb, 0.0);
-        g.muted      = (bool) child.getProperty (ids::mutedProp);
-        auto mv = child.getChildWithName (ids::members);
-        for (auto e : mv)
-            if (e.hasType (ids::member))
-                g.memberChannels.push_back ((int) e.getProperty (ids::ch, -1));
-        s.outputGroups.push_back (std::move (g));
-    }
+        auto gs = root.getChildWithName (parentId);
+        for (auto child : gs)
+        {
+            if (! child.hasType (ids::group)) continue;
+            Snapshot::Group g;
+            g.name       = child.getProperty (ids::name).toString();
+            g.layoutName = child.getProperty (ids::layout).toString();
+            g.faderDb    = (float) (double) child.getProperty (ids::faderDb, 0.0);
+            g.muted      = (bool) child.getProperty (ids::mutedProp);
+            auto mv = child.getChildWithName (ids::members);
+            for (auto e : mv)
+                if (e.hasType (ids::member))
+                    g.memberChannels.push_back ((int) e.getProperty (ids::ch, -1));
+            dest.push_back (std::move (g));
+        }
+    };
+    readGroupList (ids::groups,      s.outputGroups);
+    readGroupList (ids::inputGroups, s.inputGroups);
     return s;
 }
 

@@ -103,6 +103,12 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "Maximum blocks to process per wake cycle before yielding.  Prevents the matrix "
         "thread from monopolising a core if input is rapidly arriving.\n\n"
         "Recommended: 16.");
+    addIntField ("Gain smoothing", working.gainSmoothingMs,     0, 500, "ms",
+        "Time constant for per-route gain ramps.  Any time a trim / crosspoint / mute / "
+        "group fader changes, the effective gain interpolates toward the new value with "
+        "this time constant -- prevents the click / zipper noise of a sudden jump.\n"
+        "Also makes device add/remove fade out gracefully before the engine restarts.\n\n"
+        "Recommended: 25 ms.  Set to 0 for instant jumps (you will hear clicks).");
 
     // ====== UI ======
     addSection ("UI");

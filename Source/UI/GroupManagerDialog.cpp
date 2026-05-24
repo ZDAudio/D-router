@@ -2,6 +2,7 @@
 
 #include "Routing/OutputGroup.h"
 #include "Routing/OutputGroupManager.h"
+#include "Routing/InputGroupManager.h"
 
 namespace dcr {
 
@@ -23,26 +24,79 @@ namespace
     }
 
     // Build (deviceName, ch.X) labels in same order as AudioEngine's global
-    // output channel index.
+    // channel index, on whichever direction is requested.
     struct ChannelLabel { int globalIdx; juce::String text; };
 
-    std::vector<ChannelLabel> buildOutputChannelLabels (const AudioEngine& engine)
+    std::vector<ChannelLabel> buildChannelLabels (const AudioEngine& engine,
+                                                  GroupManagerDialog::Direction dir)
     {
         std::vector<ChannelLabel> out;
         int idx = 0;
         for (auto& d : engine.getDeviceInfo())
-            for (int c = 0; c < d.numOutputChannels; ++c, ++idx)
+        {
+            const int n = (dir == GroupManagerDialog::Direction::Inputs)
+                            ? d.numInputChannels : d.numOutputChannels;
+            for (int c = 0; c < n; ++c, ++idx)
                 out.push_back ({ idx, d.name + "  ch." + juce::String (c + 1) });
+        }
         return out;
     }
 }
 
-GroupManagerDialog::GroupManagerDialog (AudioEngine& e) : engine (e)
+// =========================================================================
+// Direction dispatch
+// =========================================================================
+int GroupManagerDialog::dGetNumGroups() const
 {
-    setSize (760, 520);
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().getNumGroups()
+        : engine.getGroupManager().getNumGroups();
+}
+OutputGroup* GroupManagerDialog::dGetGroup (int idx)
+{
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().getGroup (idx)
+        : engine.getGroupManager().getGroup (idx);
+}
+int GroupManagerDialog::dCreateGroup (juce::String name, juce::AudioChannelSet cs)
+{
+    return direction == Direction::Inputs
+        ? engine.getInputGroupManager().createGroup (std::move (name), cs)
+        : engine.getGroupManager().createGroup (std::move (name), cs);
+}
+void GroupManagerDialog::dRemoveGroup (int idx)
+{
+    if (direction == Direction::Inputs) engine.getInputGroupManager().removeGroup (idx);
+    else                                engine.getGroupManager().removeGroup (idx);
+}
+void GroupManagerDialog::dAssignChannel (int gIdx, int slot, int globalCh)
+{
+    if (direction == Direction::Inputs) engine.getInputGroupManager().assignChannel (gIdx, slot, globalCh);
+    else                                engine.getGroupManager().assignChannel (gIdx, slot, globalCh);
+}
 
+GroupManagerDialog::GroupManagerDialog (AudioEngine& e, Direction dir)
+    : engine (e), direction (dir)
+{
+    setSize (760, 540);
+
+    title.setText ("GROUPS", juce::dontSendNotification);
     title.setFont (juce::FontOptions (16.0f, juce::Font::bold));
     addAndMakeVisible (title);
+
+    createBtn.setTooltip ("Create new group in the currently selected side");
+    deleteBtn.setTooltip ("Delete the selected group");
+
+    inSideBtn .setClickingTogglesState (true);
+    outSideBtn.setClickingTogglesState (true);
+    inSideBtn .setRadioGroupId (911);
+    outSideBtn.setRadioGroupId (911);
+    inSideBtn .setToggleState (direction == Direction::Inputs,  juce::dontSendNotification);
+    outSideBtn.setToggleState (direction == Direction::Outputs, juce::dontSendNotification);
+    inSideBtn .onClick = [this] { if (inSideBtn .getToggleState()) setDirection (Direction::Inputs); };
+    outSideBtn.onClick = [this] { if (outSideBtn.getToggleState()) setDirection (Direction::Outputs); };
+    addAndMakeVisible (inSideBtn);
+    addAndMakeVisible (outSideBtn);
 
     groupList.setModel (&listModel);
     groupList.setRowHeight (28);
@@ -76,7 +130,7 @@ GroupManagerDialog::GroupManagerDialog (AudioEngine& e) : engine (e)
 
     nameEd.onTextChange = [this]
     {
-        if (auto* g = engine.getGroupManager().getGroup (selectedGroup))
+        if (auto* g = dGetGroup (selectedGroup))
         {
             g->name = nameEd.getText();
             groupList.repaint();
@@ -87,8 +141,7 @@ GroupManagerDialog::GroupManagerDialog (AudioEngine& e) : engine (e)
     for (const auto& opt : getLayoutOptions()) layoutCombo.addItem (opt.name, id++);
     layoutCombo.onChange = [this]
     {
-        auto& mgr = engine.getGroupManager();
-        auto* g = mgr.getGroup (selectedGroup);
+        auto* g = dGetGroup (selectedGroup);
         if (g == nullptr) return;
         auto opts = getLayoutOptions();
         const int sel = layoutCombo.getSelectedId() - 1;
@@ -112,18 +165,39 @@ void GroupManagerDialog::paint (juce::Graphics& g)
     g.fillAll (juce::Colour::fromRGB (32, 32, 36));
 }
 
+void GroupManagerDialog::setDirection (Direction d)
+{
+    if (direction == d) return;
+    direction = d;
+    // Auto-select first group on the new side (if any) so the editor on the
+    // right shows its members immediately instead of going blank.
+    selectedGroup = (dGetNumGroups() > 0) ? 0 : -1;
+    inSideBtn .setToggleState (d == Direction::Inputs,  juce::dontSendNotification);
+    outSideBtn.setToggleState (d == Direction::Outputs, juce::dontSendNotification);
+    rebuildGroupList();
+    rebuildEditor();
+}
+
 void GroupManagerDialog::resized()
 {
     auto r = getLocalBounds().reduced (12);
-    title.setBounds (r.removeFromTop (28));
+    auto headerRow = r.removeFromTop (28);
+
+    // Left: GROUPS title + Create (+) / Delete (-) right next to it.
+    title.setBounds (headerRow.removeFromLeft (90));
+    headerRow.removeFromLeft (4);
+    createBtn.setBounds (headerRow.removeFromLeft (28));
+    headerRow.removeFromLeft (2);
+    deleteBtn.setBounds (headerRow.removeFromLeft (28));
+
+    // Right: side toggle.
+    outSideBtn.setBounds (headerRow.removeFromRight (90));
+    headerRow.removeFromRight (4);
+    inSideBtn .setBounds (headerRow.removeFromRight (90));
     r.removeFromTop (6);
 
     auto bottom = r.removeFromBottom (32);
     doneBtn  .setBounds (bottom.removeFromRight (80));
-    bottom.removeFromRight (8);
-    deleteBtn.setBounds (bottom.removeFromRight (80));
-    bottom.removeFromRight (8);
-    createBtn.setBounds (bottom.removeFromRight (80));
     r.removeFromBottom (8);
 
     auto left = r.removeFromLeft (260);
@@ -144,7 +218,7 @@ void GroupManagerDialog::resized()
     slotsHdr.setBounds (er.removeFromTop (20));
     slotsViewport.setBounds (er);
 
-    if (auto* g = engine.getGroupManager().getGroup (selectedGroup))
+    if (auto* g = dGetGroup (selectedGroup))
     {
         const int n = (int) g->memberChannels.size();
         const int rowH = 28;
@@ -160,8 +234,8 @@ void GroupManagerDialog::resized()
 void GroupManagerDialog::rebuildGroupList()
 {
     groupList.updateContent();
-    if (selectedGroup >= engine.getGroupManager().getNumGroups())
-        selectedGroup = engine.getGroupManager().getNumGroups() - 1;
+    if (selectedGroup >= dGetNumGroups())
+        selectedGroup = dGetNumGroups() - 1;
     if (selectedGroup >= 0)
         groupList.selectRow (selectedGroup);
     rebuildEditor();
@@ -169,7 +243,7 @@ void GroupManagerDialog::rebuildGroupList()
 
 void GroupManagerDialog::rebuildEditor()
 {
-    auto* g = engine.getGroupManager().getGroup (selectedGroup);
+    auto* g = dGetGroup (selectedGroup);
     const bool enabled = g != nullptr;
     nameEd.setEnabled (enabled);
     layoutCombo.setEnabled (enabled);
@@ -194,7 +268,7 @@ void GroupManagerDialog::rebuildEditor()
             break;
         }
 
-    auto allChannels = buildOutputChannelLabels (engine);
+    auto allChannels = buildChannelLabels (engine, direction);
 
     const auto chTypes = g->channelSet.getChannelTypes();
     const int n = juce::jmin ((int) chTypes.size(), (int) g->memberChannels.size());
@@ -221,12 +295,31 @@ void GroupManagerDialog::rebuildEditor()
         {
             const int id = cb->getSelectedId();
             const int globalCh = (id <= 1) ? -1 : allChannels[(size_t) (id - 2)].globalIdx;
-            engine.getGroupManager().assignChannel (selectedGroup, i, globalCh);
-            // Auto-rebuild whole editor so reassignment is reflected across groups.
-            juce::MessageManager::callAsync ([this]
+            dAssignChannel (selectedGroup, i, globalCh);
+
+            // Auto-fill subsequent empty slots: pick the channels that come
+            // after the one just chosen, in order.
+            if (globalCh >= 0)
             {
-                rebuildGroupList();
-            });
+                int chPos = -1;
+                for (int c = 0; c < (int) allChannels.size(); ++c)
+                    if (allChannels[(size_t) c].globalIdx == globalCh) { chPos = c; break; }
+
+                if (auto* g = dGetGroup (selectedGroup); g != nullptr && chPos >= 0)
+                {
+                    const int nSlots = (int) g->memberChannels.size();
+                    for (int slot = i + 1; slot < nSlots; ++slot)
+                    {
+                        if (g->memberChannels[(size_t) slot] >= 0) continue;   // already set
+                        const int nextPos = chPos + (slot - i);
+                        if (nextPos >= (int) allChannels.size()) break;
+                        dAssignChannel (selectedGroup, slot,
+                                        allChannels[(size_t) nextPos].globalIdx);
+                    }
+                }
+            }
+
+            juce::MessageManager::callAsync ([this] { rebuildGroupList(); });
         };
 
         slotsHolder.addAndMakeVisible (*cb);
@@ -244,10 +337,10 @@ void GroupManagerDialog::onSelectionChanged (int newRow)
 
 void GroupManagerDialog::onCreateClicked()
 {
-    auto& mgr = engine.getGroupManager();
-    const int gi = mgr.createGroup ("Group " + juce::String (mgr.getNumGroups() + 1),
-                                    juce::AudioChannelSet::stereo());
-    if (auto* g = mgr.getGroup (gi))
+    const juce::String prefix = direction == Direction::Inputs ? "IN Group " : "OUT Group ";
+    const int gi = dCreateGroup (prefix + juce::String (dGetNumGroups() + 1),
+                                 juce::AudioChannelSet::stereo());
+    if (auto* g = dGetGroup (gi))
         for (auto& slot : g->pluginSlots)
             if (slot) slot->prepare (engine.getEngineSampleRate(),
                                      engine.getEngineBlockSize(),
@@ -259,21 +352,21 @@ void GroupManagerDialog::onCreateClicked()
 void GroupManagerDialog::onDeleteClicked()
 {
     if (selectedGroup < 0) return;
-    engine.getGroupManager().removeGroup (selectedGroup);
-    if (selectedGroup >= engine.getGroupManager().getNumGroups())
-        selectedGroup = engine.getGroupManager().getNumGroups() - 1;
+    dRemoveGroup (selectedGroup);
+    if (selectedGroup >= dGetNumGroups())
+        selectedGroup = dGetNumGroups() - 1;
     rebuildGroupList();
 }
 
 int GroupManagerDialog::ListModel::getNumRows()
 {
-    return dlg.engine.getGroupManager().getNumGroups();
+    return dlg.dGetNumGroups();
 }
 
 void GroupManagerDialog::ListModel::paintListBoxItem (int row, juce::Graphics& g,
                                                       int w, int h, bool sel)
 {
-    auto* gp = dlg.engine.getGroupManager().getGroup (row);
+    auto* gp = dlg.dGetGroup (row);
     if (gp == nullptr) return;
     if (sel) g.fillAll (juce::Colour::fromRGB (60, 90, 140));
     else if (row % 2) g.fillAll (juce::Colour::fromRGB (28, 28, 32));
@@ -283,13 +376,14 @@ void GroupManagerDialog::ListModel::paintListBoxItem (int row, juce::Graphics& g
                 8, 0, w - 16, h, juce::Justification::centredLeft, true);
 }
 
-void GroupManagerDialog::launch (AudioEngine& engine, std::function<void()> onClose)
+void GroupManagerDialog::launch (AudioEngine& engine, std::function<void()> onClose,
+                                 Direction dir)
 {
-    auto* content = new GroupManagerDialog (engine);
+    auto* content = new GroupManagerDialog (engine, dir);
     content->onClose = std::move (onClose);
 
     juce::DialogWindow::LaunchOptions o;
-    o.dialogTitle                  = "Output groups";
+    o.dialogTitle                  = "Groups";
     o.content.setOwned             (content);
     o.dialogBackgroundColour       = juce::Colour::fromRGB (32, 32, 36);
     o.escapeKeyTriggersCloseButton = true;
