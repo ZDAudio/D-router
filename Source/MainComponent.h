@@ -65,6 +65,25 @@ private:
     MatrixStateByName captureMatrixByName() const;
     void              restoreMatrixByName (const MatrixStateByName& s);
 
+    // Snapshot apply runs in two phases: the synchronous bit (settings,
+    // groups) plus kicking applyDeviceSelection(), then the async tail that
+    // touches the matrix AFTER engine.start() has resized it.  pendingSnap
+    // bridges the two -- the reconfig's callAsync drains it.
+    struct PendingSnapshotApply
+    {
+        std::vector<float>         inputTrim;
+        std::vector<float>         outputTrim;
+        std::vector<unsigned char> inputMute;
+        std::vector<unsigned char> outputMute;
+        std::vector<unsigned char> inputSolo;
+        std::vector<Snapshot::Crosspoint> crosspoints;
+        std::vector<Snapshot::ChannelChain> channelChains;
+        std::vector<Snapshot::GroupChain>   groupChains;
+        bool valid = false;
+    };
+    PendingSnapshotApply pendingSnap;
+    void restorePluginChainsAsync();
+
     AudioEngine engine;
     std::vector<AudioEngine::DeviceSpec> currentSpecs;
     std::unique_ptr<juce::FileChooser> activeChooser;

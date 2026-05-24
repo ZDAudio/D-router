@@ -1,6 +1,10 @@
 #include "MainComponent.h"
 
+#include "DSP/PluginHost.h"
+#include "DSP/MultiChannelPluginHost.h"
+#include "Persistence/CrashGuard.h"
 #include "Persistence/SettingsStore.h"
+#include "Routing/InputGroupManager.h"
 #include "Routing/OutputGroup.h"
 #include "Routing/OutputGroupManager.h"
 #include "UI/DeviceManagerDialog.h"
@@ -14,7 +18,12 @@ MainComponent::MainComponent()
     juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);
     setLookAndFeel (&customLookAndFeel);
 
-    openGLContext.setContinuousRepainting (false);
+    // Continuous repainting eliminates the violent live-resize jitter on
+    // macOS: with it OFF, the GL framebuffer only refreshes on damage
+    // events, so during a drag-resize the user sees the previous frame
+    // stretched against the new bounds between ticks.  On modern hardware
+    // a 60 Hz refresh through OpenGL is essentially free.
+    openGLContext.setContinuousRepainting (true);
 
     setSize (1100, 700);
 
@@ -31,16 +40,32 @@ MainComponent::MainComponent()
             {
                 if (! s.has_value()) return;        // Cancel
                 const bool needsRestart = ! s->audioPathEquals (engine.getSettings());
-                engine.setSettings (*s);
-                if (persistToDisk)
-                    SettingsStore::save (*s);
+
                 if (needsRestart && ! currentSpecs.empty())
+                {
+                    // Engine restart needed: applyDeviceSelection() will tear
+                    // down workers + matrix-processor and rebuild on a worker
+                    // thread, then resume meter / status timers from its own
+                    // callAsync().  We MUST NOT touch any engine-reading UI
+                    // timer here, or it will fire mid-rebuild and read a
+                    // moved-from inputPeaks / outputPeaks vector -> crash.
+                    engine.setSettings (*s);
+                    if (persistToDisk) SettingsStore::save (*s);
                     applyDeviceSelection (currentSpecs);
-                // Update UI-only timers immediately.
-                startTimer (engine.getSettings().statusTimerMs);
-                matrixView.pauseUpdates();
-                matrixView.resumeUpdates();
-                // Re-apply theme colours and force a global repaint.
+                }
+                else
+                {
+                    // UI-only or no-active-device change.  Safe to refresh
+                    // timers immediately since the audio thread isn't being
+                    // torn down.
+                    engine.setSettings (*s);
+                    if (persistToDisk) SettingsStore::save (*s);
+                    startTimer (engine.getSettings().statusTimerMs);
+                    matrixView.pauseUpdates();
+                    matrixView.resumeUpdates();
+                }
+
+                // Theme + repaint are pure UI; safe in either path.
                 customLookAndFeel.applyTheme (engine.getSettings());
                 title.setColour (juce::Label::textColourId, customLookAndFeel.getAccent());
                 repaint();
@@ -168,10 +193,53 @@ MainComponent::MainComponent()
         applyDeviceSelection (filtered);
     };
 
-    // Auto-restore last session.
-    Snapshot s;
-    if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
-        applySnapshot (s);
+    // Crash-guard: if the previous launch never reached markCleanExit() the
+    // marker file is still there.  In that case ASK the user whether to
+    // restore the last auto-saved session or start fresh, instead of silently
+    // re-applying potentially-toxic state.  The marker is then re-armed for
+    // this launch and only cleared in ~MainComponent after a successful save.
+    const bool previousLaunchCrashed = CrashGuard::wasUnclean();
+    const bool haveSnapshot = SnapshotStore::getLastUsedFile().existsAsFile();
+    CrashGuard::markRunning();
+
+    if (previousLaunchCrashed && haveSnapshot)
+    {
+        // Defer the ask to the next event loop tick so the main window is
+        // already on screen when the dialog appears.
+        juce::MessageManager::callAsync ([this]
+        {
+            juce::NativeMessageBox::showAsync (
+                juce::MessageBoxOptions()
+                    .withIconType (juce::MessageBoxIconType::WarningIcon)
+                    .withTitle ("Recover previous session?")
+                    .withMessage ("The last session of D-Core Router ended unexpectedly "
+                                  "(likely a crash or force-quit).\n\n"
+                                  "Would you like to restore the previous routing, "
+                                  "groups and settings, or start with a blank project?")
+                    .withButton ("Restore previous")
+                    .withButton ("Start blank"),
+                [this] (int result)
+                {
+                    if (result == 1)   // first button => Restore
+                    {
+                        Snapshot s;
+                        if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
+                            applySnapshot (s);
+                    }
+                    // "Start blank" leaves the engine with no devices selected;
+                    // the user's snapshot stays on disk so they can still
+                    // hand-load it via the Load... button if they change their
+                    // mind later.
+                });
+        });
+    }
+    else
+    {
+        // Normal clean-exit path: auto-restore last session immediately.
+        Snapshot s;
+        if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
+            applySnapshot (s);
+    }
 
     refreshStatus();
     switchTab (RoutingTab);
@@ -189,9 +257,13 @@ MainComponent::~MainComponent()
     juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
 
     if (reconfigThread.joinable()) reconfigThread.join();
-    // Auto-save on shutdown.
+    // Auto-save on shutdown.  Only mark the clean-exit marker AFTER the
+    // snapshot write has been requested; if save() throws or the process
+    // is killed before this line, the marker stays on disk and next launch
+    // will prompt the user.
     SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
     engine.stop();
+    CrashGuard::markCleanExit();
 }
 
 void MainComponent::parentHierarchyChanged()
@@ -482,6 +554,11 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
         updatePanicButtonAppearance();
     }
 
+    // Close any open per-channel plugin editors NOW (message thread) before
+    // the worker tears down PluginHosts.  Skipping this lets ~PluginEditor
+    // call editorBeingDeleted() on a dead AudioPluginInstance -> segfault.
+    matrixView.closeAllPluginEditors();
+
     // Capture current state on message thread (cheap), then offload the slow
     // CoreAudio open/close to a worker thread.
     auto preserved = captureMatrixByName();
@@ -493,7 +570,14 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     loadButton   .setEnabled (false);
     stopButton   .setEnabled (false);
     // Status panel will pick this up on its next refresh tick.
+    // Freeze EVERY UI-thread reader of engine state -- not just matrixView --
+    // for the duration of the reconfigure.  Otherwise StatusPanel /
+    // OutputGroupPanel timers can fire during processor.configure()'s
+    // inputPeaks / outputPeaks move-assignment and hit a moved-from vector.
     matrixView.pauseUpdates();
+    statusPanel.pauseUpdates();
+    groupPanel.pauseUpdates();
+    inputGroupPanel.pauseUpdates();
     stopTimer();
 
     if (reconfigThread.joinable()) reconfigThread.join();
@@ -524,10 +608,44 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             else
                 restoreMatrixByName (preserved);
 
+            // Snapshot apply (cold-start or Load...): drain pendingSnap NOW,
+            // after engine.start() resized the matrix to the new (in, out)
+            // size.  If we did this earlier the resize would have zeroed
+            // our writes.
+            if (pendingSnap.valid)
+            {
+                auto& m = engine.getRoutingMatrix();
+                const int nIn  = m.getNumInputs();
+                const int nOut = m.getNumOutputs();
+                for (size_t n = 0; n < pendingSnap.inputTrim.size()  && (int) n < nIn;  ++n)
+                    m.setInputTrim  ((int) n, pendingSnap.inputTrim [n]);
+                for (size_t n = 0; n < pendingSnap.outputTrim.size() && (int) n < nOut; ++n)
+                    m.setOutputTrim ((int) n, pendingSnap.outputTrim[n]);
+                for (size_t n = 0; n < pendingSnap.inputMute.size()  && (int) n < nIn;  ++n)
+                    m.setInputMute  ((int) n, pendingSnap.inputMute [n] != 0);
+                for (size_t n = 0; n < pendingSnap.outputMute.size() && (int) n < nOut; ++n)
+                    m.setOutputMute ((int) n, pendingSnap.outputMute[n] != 0);
+                for (size_t n = 0; n < pendingSnap.inputSolo.size()  && (int) n < nIn;  ++n)
+                    m.setInputSolo  ((int) n, pendingSnap.inputSolo [n] != 0);
+                for (const auto& xp : pendingSnap.crosspoints)
+                    if (xp.outputCh < nOut && xp.inputCh < nIn)
+                        m.setCrosspoint (xp.outputCh, xp.inputCh, xp.gain);
+
+                // Plugin instantiation is async; fire it off and let each
+                // callback land back here over the next few hundred ms.
+                restorePluginChainsAsync();
+
+                pendingSnap = {};
+            }
+
             matrixView.rebuildFromEngine();
             matrixView.resumeUpdates();
             groupPanel.rebuild();
             inputGroupPanel.rebuild();
+            // Resume the panels that were paused at the top of this call.
+            statusPanel.resumeUpdates();
+            groupPanel.resumeUpdates();
+            inputGroupPanel.resumeUpdates();
             startTimer (engine.getSettings().statusTimerMs);
             refreshStatus();
 
@@ -621,6 +739,81 @@ Snapshot MainComponent::gatherCurrentSnapshot() const
             if (g > 1.0e-6f)
                 s.crosspoints.push_back ({ o, i, g });
         }
+
+    // ===== Plugin chains: per-channel ========================================
+    auto gatherSlot = [] (juce::AudioPluginInstance* p, bool bypassed) -> Snapshot::PluginSlotState
+    {
+        Snapshot::PluginSlotState ps;
+        if (p == nullptr) return ps;
+        if (auto xml = p->getPluginDescription().createXml())
+            ps.descriptionXml = xml->toString (juce::XmlElement::TextFormat().singleLine());
+        juce::MemoryBlock blob;
+        p->getStateInformation (blob);
+        if (blob.getSize() > 0)
+            ps.stateB64 = juce::Base64::toBase64 (blob.getData(), blob.getSize());
+        ps.bypassed = bypassed;
+        return ps;
+    };
+
+    for (int ch = 0; ch < nIn; ++ch)
+    {
+        auto* host = const_cast<AudioEngine&> (engine).getInputPluginHost (ch);
+        if (host == nullptr) continue;
+        Snapshot::ChannelChain cc;
+        cc.globalIdx = ch;
+        cc.isInput   = true;
+        cc.slots.resize ((size_t) PluginHost::kNumSlots);
+        bool any = false;
+        for (int sl = 0; sl < PluginHost::kNumSlots; ++sl)
+        {
+            cc.slots[(size_t) sl] = gatherSlot (host->getPluginAt (sl), host->isBypassedAt (sl));
+            if (! cc.slots[(size_t) sl].isEmpty()) any = true;
+        }
+        if (any) s.channelChains.push_back (std::move (cc));
+    }
+    for (int ch = 0; ch < nOut; ++ch)
+    {
+        auto* host = const_cast<AudioEngine&> (engine).getPluginHost (ch);
+        if (host == nullptr) continue;
+        Snapshot::ChannelChain cc;
+        cc.globalIdx = ch;
+        cc.isInput   = false;
+        cc.slots.resize ((size_t) PluginHost::kNumSlots);
+        bool any = false;
+        for (int sl = 0; sl < PluginHost::kNumSlots; ++sl)
+        {
+            cc.slots[(size_t) sl] = gatherSlot (host->getPluginAt (sl), host->isBypassedAt (sl));
+            if (! cc.slots[(size_t) sl].isEmpty()) any = true;
+        }
+        if (any) s.channelChains.push_back (std::move (cc));
+    }
+
+    // ===== Plugin chains: per-group ==========================================
+    auto gatherGroupChains = [&] (auto& mgr, bool isInput, std::vector<Snapshot::GroupChain>& out)
+    {
+        for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
+        {
+            auto* g = mgr.getGroup (gi);
+            if (g == nullptr) continue;
+            Snapshot::GroupChain gc;
+            gc.groupIdx = gi;
+            gc.isInput  = isInput;
+            gc.slots.resize (g->pluginSlots.size());
+            bool any = false;
+            for (size_t sl = 0; sl < g->pluginSlots.size(); ++sl)
+            {
+                if (auto& host = g->pluginSlots[sl])
+                {
+                    gc.slots[sl] = gatherSlot (host->getPlugin(), host->isBypassed());
+                    if (! gc.slots[sl].isEmpty()) any = true;
+                }
+            }
+            if (any) out.push_back (std::move (gc));
+        }
+    };
+    gatherGroupChains (const_cast<AudioEngine&> (engine).getGroupManager(),      false, s.groupChains);
+    gatherGroupChains (const_cast<AudioEngine&> (engine).getInputGroupManager(), true,  s.groupChains);
+
     return s;
 }
 
@@ -655,25 +848,139 @@ void MainComponent::applySnapshot (const Snapshot& s)
     restoreToManager (engine.getGroupManager(),      s.outputGroups);
     restoreToManager (engine.getInputGroupManager(), s.inputGroups);
 
-    // Restart engine with snapshot's devices.
-    applyDeviceSelection (s.devices);    // this rebuilds matrix UI and starts engine
+    // Cannot write the matrix here -- engine.start() is about to run on the
+    // reconfig worker thread and will resize the matrix to (totalIns,
+    // totalOuts), zeroing everything.  Stash the values; the reconfig
+    // callAsync drains pendingSnap AFTER the new matrix is live.
+    pendingSnap.inputTrim    = s.inputTrim;
+    pendingSnap.outputTrim   = s.outputTrim;
+    pendingSnap.inputMute    = s.inputMute;
+    pendingSnap.outputMute   = s.outputMute;
+    pendingSnap.inputSolo    = s.inputSolo;
+    pendingSnap.crosspoints  = s.crosspoints;
+    pendingSnap.channelChains = s.channelChains;
+    pendingSnap.groupChains   = s.groupChains;
+    pendingSnap.valid = true;
 
-    // Now apply gains (defensively, in case channel counts don't match).
-    auto& m = engine.getRoutingMatrix();
-    const int nIn  = m.getNumInputs();
-    const int nOut = m.getNumOutputs();
-    for (size_t n = 0; n < s.inputTrim.size()  && (int) n < nIn;  ++n) m.setInputTrim  ((int) n, s.inputTrim [n]);
-    for (size_t n = 0; n < s.outputTrim.size() && (int) n < nOut; ++n) m.setOutputTrim ((int) n, s.outputTrim[n]);
-    for (size_t n = 0; n < s.inputMute.size()  && (int) n < nIn;  ++n) m.setInputMute  ((int) n, s.inputMute [n] != 0);
-    for (size_t n = 0; n < s.outputMute.size() && (int) n < nOut; ++n) m.setOutputMute ((int) n, s.outputMute[n] != 0);
-    for (size_t n = 0; n < s.inputSolo.size()  && (int) n < nIn;  ++n) m.setInputSolo  ((int) n, s.inputSolo [n] != 0);
-    for (const auto& xp : s.crosspoints)
-        if (xp.outputCh < nOut && xp.inputCh < nIn)
-            m.setCrosspoint (xp.outputCh, xp.inputCh, xp.gain);
+    applyDeviceSelection (s.devices);
+    // Don't touch the matrix or rebuildFromEngine() here.  applyDeviceSelection
+    // does both, then drains pendingSnap, then rebuilds the UI.
+}
 
-    // Update UI to reflect new gains.
-    matrixView.rebuildFromEngine();
-    refreshStatus();
+void MainComponent::restorePluginChainsAsync()
+{
+    if (pendingSnap.channelChains.empty() && pendingSnap.groupChains.empty())
+        return;
+
+    auto& fmt = engine.getPluginFormatManager();
+    const double sr = engine.getEngineSampleRate();
+    const int    bs = engine.getEngineBlockSize();
+
+    // ----- per-channel chains -----------------------------------------------
+    for (auto& ch : pendingSnap.channelChains)
+    {
+        for (int slotIdx = 0; slotIdx < (int) ch.slots.size(); ++slotIdx)
+        {
+            const auto& ps = ch.slots[(size_t) slotIdx];
+            if (ps.isEmpty()) continue;
+
+            auto descXml = juce::parseXML (ps.descriptionXml);
+            if (descXml == nullptr) continue;
+            juce::PluginDescription desc;
+            if (! desc.loadFromXml (*descXml)) continue;
+
+            // Decode plugin's own state once on the message thread; the captured
+            // copy is then moved into the async callback below.
+            juce::MemoryBlock state;
+            if (ps.stateB64.isNotEmpty())
+            {
+                juce::MemoryOutputStream mos (state, false);
+                juce::Base64::convertFromBase64 (mos, ps.stateB64);
+            }
+            const bool wasBypassed = ps.bypassed;
+            const bool isInput     = ch.isInput;
+            const int  globalIdx   = ch.globalIdx;
+
+            fmt.createPluginInstanceAsync (desc, sr, bs,
+                [this, isInput, globalIdx, slotIdx, state, wasBypassed]
+                (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
+                {
+                    if (instance == nullptr)
+                    {
+                        DBG ("restore: failed to load plugin for ch " << globalIdx << " slot " << slotIdx
+                             << ": " << err);
+                        return;
+                    }
+                    if (state.getSize() > 0)
+                        instance->setStateInformation (state.getData(), (int) state.getSize());
+                    auto* host = isInput ? engine.getInputPluginHost (globalIdx)
+                                         : engine.getPluginHost     (globalIdx);
+                    if (host == nullptr) return;
+                    host->setPluginAt (slotIdx, std::move (instance));
+                    host->setBypassedAt (slotIdx, wasBypassed);
+                    matrixView.updateFxButtonAppearance (isInput, globalIdx);
+                });
+        }
+    }
+
+    // ----- per-group chains -------------------------------------------------
+    // OutputGroupManager and InputGroupManager are sibling classes (no shared
+    // base), so the lookup is duplicated rather than dispatched via a cast.
+    auto getGroupForChain = [this] (bool isInput, int groupIdx) -> OutputGroup*
+    {
+        return isInput ? engine.getInputGroupManager().getGroup (groupIdx)
+                       : engine.getGroupManager()     .getGroup (groupIdx);
+    };
+
+    for (auto& gc : pendingSnap.groupChains)
+    {
+        auto* g = getGroupForChain (gc.isInput, gc.groupIdx);
+        if (g == nullptr) continue;
+        const auto channelSet = g->channelSet;
+        for (int slotIdx = 0; slotIdx < (int) gc.slots.size(); ++slotIdx)
+        {
+            const auto& ps = gc.slots[(size_t) slotIdx];
+            if (ps.isEmpty()) continue;
+
+            auto descXml = juce::parseXML (ps.descriptionXml);
+            if (descXml == nullptr) continue;
+            juce::PluginDescription desc;
+            if (! desc.loadFromXml (*descXml)) continue;
+
+            juce::MemoryBlock state;
+            if (ps.stateB64.isNotEmpty())
+            {
+                juce::MemoryOutputStream mos (state, false);
+                juce::Base64::convertFromBase64 (mos, ps.stateB64);
+            }
+            const bool wasBypassed = ps.bypassed;
+            const bool isInput     = gc.isInput;
+            const int  groupIdx    = gc.groupIdx;
+
+            fmt.createPluginInstanceAsync (desc, sr, bs,
+                [this, isInput, groupIdx, slotIdx, state, wasBypassed, channelSet, getGroupForChain]
+                (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
+                {
+                    if (instance == nullptr)
+                    {
+                        DBG ("restore: failed to load group plugin for grp " << groupIdx
+                             << " slot " << slotIdx << ": " << err);
+                        return;
+                    }
+                    if (state.getSize() > 0)
+                        instance->setStateInformation (state.getData(), (int) state.getSize());
+                    auto* g2 = getGroupForChain (isInput, groupIdx);
+                    if (g2 == nullptr) return;
+                    if (slotIdx < 0 || slotIdx >= (int) g2->pluginSlots.size()) return;
+                    auto& host = g2->pluginSlots[(size_t) slotIdx];
+                    if (! host) return;
+                    host->setPlugin (std::move (instance), channelSet);
+                    host->setBypassed (wasBypassed);
+                    if (isInput) inputGroupPanel.rebuild();
+                    else         groupPanel.rebuild();
+                });
+        }
+    }
 }
 
 MainComponent::MatrixStateByName MainComponent::captureMatrixByName() const

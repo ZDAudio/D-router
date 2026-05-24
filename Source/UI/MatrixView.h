@@ -34,6 +34,12 @@ public:
     void pauseUpdates()  { stopTimer(); }
     void resumeUpdates();
 
+    // Close every open per-channel plugin editor window.  MUST be called from
+    // the message thread BEFORE AudioEngine::stop() drops the PluginHosts,
+    // otherwise the editor's destructor calls editorBeingDeleted() on an
+    // already-destroyed AudioPluginInstance and segfaults.
+    void closeAllPluginEditors();
+
     // Re-read every mute button's toggle state from the routing matrix.
     // Used by MainComponent's PANIC handler when it programmatically flips
     // mutes on the matrix side; this keeps the UI buttons in sync without
@@ -44,6 +50,11 @@ public:
     // output side).  MainComponent uses this to detect manual mute changes
     // while panic is active, so the saved pre-panic state can be discarded.
     std::function<void()> onUserMuteChanged;
+
+    // Update the FX button's tint (grey/cyan/dim-red) for one channel.
+    // Public so snapshot restore can refresh the appearance after each
+    // async plugin reload.
+    void updateFxButtonAppearance (bool isInput, int ch);
 
     // Highlight a set of output column indices.  Called when an OUTPUT group
     // card is hovered.  Pass an empty list to clear.
@@ -181,7 +192,8 @@ private:
     void loadPluginInto (bool isInput, int ch, int slotIdx);
     void showEditorFor  (bool isInput, int ch, int slotIdx);
     void closeEditorFor (bool isInput, int ch, int slotIdx);
-    void updateFxButtonAppearance (bool isInput, int ch);
+    // updateFxButtonAppearance lives in the public section now -- it's called
+    // from MainComponent's snapshot-restore async callbacks.
 
     // Per-slot editor windows keyed by (direction, channel, slot).  A simple
     // 2D array per direction since both channel count and slot count are

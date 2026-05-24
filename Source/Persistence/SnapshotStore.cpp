@@ -35,6 +35,18 @@ namespace ids {
     static const juce::Identifier member         ("member");
     static const juce::Identifier faderDb        ("faderDb");
     static const juce::Identifier mutedProp      ("muted");
+
+    static const juce::Identifier channelChains  ("channelChains");
+    static const juce::Identifier groupChains    ("groupChains");
+    static const juce::Identifier chain          ("chain");
+    static const juce::Identifier slot           ("slot");
+    static const juce::Identifier globalIdx      ("globalIdx");
+    static const juce::Identifier groupIdx       ("groupIdx");
+    static const juce::Identifier isInput        ("isInput");
+    static const juce::Identifier slotIdx        ("slotIdx");
+    static const juce::Identifier descXml        ("descXml");
+    static const juce::Identifier stateB64       ("stateB64");
+    static const juce::Identifier bypassed       ("bypassed");
 }
 
 static juce::File getAppSupportDir()
@@ -145,6 +157,46 @@ juce::ValueTree SnapshotStore::toValueTree (const Snapshot& s)
     writeGroupList (ids::groups,      s.outputGroups, root);
     writeGroupList (ids::inputGroups, s.inputGroups,  root);
 
+    // ===== Plugin chains =====================================================
+    auto writeSlot = [] (juce::ValueTree& parent, int idx, const Snapshot::PluginSlotState& ps)
+    {
+        if (ps.isEmpty()) return;
+        juce::ValueTree sv (ids::slot);
+        sv.setProperty (ids::slotIdx,  idx,              nullptr);
+        sv.setProperty (ids::descXml,  ps.descriptionXml, nullptr);
+        sv.setProperty (ids::stateB64, ps.stateB64,      nullptr);
+        sv.setProperty (ids::bypassed, ps.bypassed,      nullptr);
+        parent.addChild (sv, -1, nullptr);
+    };
+
+    juce::ValueTree cc (ids::channelChains);
+    for (const auto& ch : s.channelChains)
+    {
+        bool anyPlugin = false;
+        for (const auto& ps : ch.slots) if (! ps.isEmpty()) { anyPlugin = true; break; }
+        if (! anyPlugin) continue;
+        juce::ValueTree cv (ids::chain);
+        cv.setProperty (ids::globalIdx, ch.globalIdx, nullptr);
+        cv.setProperty (ids::isInput,   ch.isInput,   nullptr);
+        for (size_t i = 0; i < ch.slots.size(); ++i) writeSlot (cv, (int) i, ch.slots[i]);
+        cc.addChild (cv, -1, nullptr);
+    }
+    root.addChild (cc, -1, nullptr);
+
+    juce::ValueTree gc (ids::groupChains);
+    for (const auto& g : s.groupChains)
+    {
+        bool anyPlugin = false;
+        for (const auto& ps : g.slots) if (! ps.isEmpty()) { anyPlugin = true; break; }
+        if (! anyPlugin) continue;
+        juce::ValueTree gv (ids::chain);
+        gv.setProperty (ids::groupIdx, g.groupIdx, nullptr);
+        gv.setProperty (ids::isInput,  g.isInput,  nullptr);
+        for (size_t i = 0; i < g.slots.size(); ++i) writeSlot (gv, (int) i, g.slots[i]);
+        gc.addChild (gv, -1, nullptr);
+    }
+    root.addChild (gc, -1, nullptr);
+
     return root;
 }
 
@@ -237,6 +289,44 @@ Snapshot SnapshotStore::fromValueTree (const juce::ValueTree& root)
     };
     readGroupList (ids::groups,      s.outputGroups);
     readGroupList (ids::inputGroups, s.inputGroups);
+
+    auto readSlots = [] (const juce::ValueTree& parent, std::vector<Snapshot::PluginSlotState>& out)
+    {
+        // Resize lazily based on slotIdx so future kNumSlots changes don't break old snapshots.
+        for (auto sv : parent)
+        {
+            if (! sv.hasType (ids::slot)) continue;
+            const int idx = (int) sv.getProperty (ids::slotIdx, -1);
+            if (idx < 0) continue;
+            if ((int) out.size() <= idx) out.resize ((size_t) idx + 1);
+            auto& ps = out[(size_t) idx];
+            ps.descriptionXml = sv.getProperty (ids::descXml).toString();
+            ps.stateB64       = sv.getProperty (ids::stateB64).toString();
+            ps.bypassed       = (bool) sv.getProperty (ids::bypassed, false);
+        }
+    };
+    auto cc = root.getChildWithName (ids::channelChains);
+    for (auto cv : cc)
+    {
+        if (! cv.hasType (ids::chain)) continue;
+        Snapshot::ChannelChain ch;
+        ch.globalIdx = (int) cv.getProperty (ids::globalIdx, -1);
+        ch.isInput   = (bool) cv.getProperty (ids::isInput, true);
+        if (ch.globalIdx < 0) continue;
+        readSlots (cv, ch.slots);
+        s.channelChains.push_back (std::move (ch));
+    }
+    auto gc = root.getChildWithName (ids::groupChains);
+    for (auto gv : gc)
+    {
+        if (! gv.hasType (ids::chain)) continue;
+        Snapshot::GroupChain g;
+        g.groupIdx = (int) gv.getProperty (ids::groupIdx, -1);
+        g.isInput  = (bool) gv.getProperty (ids::isInput, false);
+        if (g.groupIdx < 0) continue;
+        readSlots (gv, g.slots);
+        s.groupChains.push_back (std::move (g));
+    }
     return s;
 }
 

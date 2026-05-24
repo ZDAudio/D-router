@@ -1,6 +1,9 @@
 #include "UI/SettingsDialog.h"
 
 #include <AudioToolbox/AudioToolbox.h>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
 
 namespace dcr {
 
@@ -35,32 +38,42 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
 
     // ====== Engine clock ======
     addSection ("Engine clock");
-    addDoubleField ("Engine sample rate",  working.engineSampleRate, 8000.0, 192000.0, "Hz",
+    addDoubleChoiceField ("Engine sample rate", working.engineSampleRate,
+        { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 }, "Hz",
         "All matrix processing happens at this rate.  Per-device SRC converts to/from "
         "the device's own rate when they differ.\n\n"
         "Recommended: 48000 (Apple default for modern audio), 44100 (legacy CDs / iTunes).");
-    addIntField    ("Engine block size",   working.engineBlockSize,  16, 8192, "samples",
+    addIntChoiceField ("Engine block size", working.engineBlockSize,
+        { 64, 128, 256, 512, 1024, 2048 }, "samples",
         "Number of samples processed per matrix block.  Smaller = lower latency, more "
         "CPU per second.  Larger = more stable but slower response.\n\n"
         "Recommended: 128 (default, low latency), 256 (balanced), 64 (ultra-low if CPU allows).");
 
     // ====== Ring buffers ======
+    //  Free-form integers here used to allow values that produced gigabyte-
+    //  sized rings on multi-channel devices; ComboBoxes limit the user to a
+    //  curated set the engine is known to allocate without OOM.
     addSection ("Ring buffers (per channel)");
-    addIntField ("Input ring x engineBlock",   working.inputRingMultEng,  1, 64, {},
+    addIntChoiceField ("Input ring x engineBlock", working.inputRingMultEng,
+        { 2, 3, 4, 6, 8, 12, 16 }, {},
         "Input ring buffer = max(this x engineBlock, devMult x devBuf x SR_ratio), "
         "rounded to next power of 2.\n\n"
         "Recommended: 3.  Increase if you hear input overruns (xrun in counter).");
-    addIntField ("Input ring x devBuf*ratio",  working.inputRingMultDev,  1, 64, {},
+    addIntChoiceField ("Input ring x devBuf*ratio", working.inputRingMultDev,
+        { 2, 3, 4, 6, 8, 12, 16 }, {},
         "Multiplier for device callback bursts in the input ring.\n\n"
         "Recommended: 4.  Increase for very large device buffer sizes.");
-    addIntField ("Output ring x engineBlock",  working.outputRingMultEng, 1, 64, {},
+    addIntChoiceField ("Output ring x engineBlock", working.outputRingMultEng,
+        { 4, 6, 8, 12, 16, 24, 32 }, {},
         "Output ring engineBlock multiplier.  Output rings need more headroom than "
         "inputs to absorb clock drift between IO devices.\n\n"
         "Recommended: 6.  Bump to 8-12 if you hear occasional output dropouts.");
-    addIntField ("Output ring x devBuf*ratio", working.outputRingMultDev, 1, 64, {},
+    addIntChoiceField ("Output ring x devBuf*ratio", working.outputRingMultDev,
+        { 4, 6, 8, 12, 16, 24, 32 }, {},
         "Multiplier for device callback bursts in the output ring.\n\n"
         "Recommended: 8.");
-    addIntField ("Output pre-fill",            working.outputPreFillBlocks, 0, 256, "engine blocks",
+    addIntChoiceField ("Output pre-fill", working.outputPreFillBlocks,
+        { 0, 1, 2, 4, 8, 16, 32 }, "engine blocks",
         "How many engine blocks of silence to pre-fill the output ring with at device "
         "open.  Each block adds (blockSize / engineSR) seconds of static latency.\n\n"
         "Recommended: 8 (default).  Lower for less latency; higher for more stability "
@@ -334,6 +347,82 @@ void SettingsDialog::addUIntComboField (const juce::String& name, unsigned int& 
         if (values[(size_t) i] == target) selectId = i + 1;
     }
     cb->setSelectedId (selectId, juce::dontSendNotification);
+    cb->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*cb);
+    combos.add (cb);
+
+    applyActions.push_back ([&target, cb, values]
+    {
+        const int idx = cb->getSelectedId() - 1;
+        if (idx >= 0 && idx < (int) values.size())
+            target = values[(size_t) idx];
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::addIntChoiceField (const juce::String& name, int& target,
+                                        const std::vector<int>& values,
+                                        const juce::String& unitHint,
+                                        const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name + (unitHint.isEmpty() ? "" : "  (" + unitHint + ")"));
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* cb = new juce::ComboBox();
+    int snapId = 1;
+    int bestDiff = std::numeric_limits<int>::max();
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        cb->addItem (juce::String (values[i]), (int) i + 1);
+        const int d = std::abs (values[i] - target);
+        if (d < bestDiff) { bestDiff = d; snapId = (int) i + 1; }
+    }
+    cb->setSelectedId (snapId, juce::dontSendNotification);
+    cb->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*cb);
+    combos.add (cb);
+
+    applyActions.push_back ([&target, cb, values]
+    {
+        const int idx = cb->getSelectedId() - 1;
+        if (idx >= 0 && idx < (int) values.size())
+            target = values[(size_t) idx];
+    });
+
+    nextRowY += rowH;
+}
+
+void SettingsDialog::addDoubleChoiceField (const juce::String& name, double& target,
+                                           const std::vector<double>& values,
+                                           const juce::String& unitHint,
+                                           const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, name + (unitHint.isEmpty() ? "" : "  (" + unitHint + ")"));
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* cb = new juce::ComboBox();
+    int snapId = 1;
+    double bestDiff = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        cb->addItem (juce::String (values[i]), (int) i + 1);
+        const double d = std::abs (values[i] - target);
+        if (d < bestDiff) { bestDiff = d; snapId = (int) i + 1; }
+    }
+    cb->setSelectedId (snapId, juce::dontSendNotification);
     cb->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
     fieldsHolder.addAndMakeVisible (*cb);
     combos.add (cb);

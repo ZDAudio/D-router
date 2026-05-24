@@ -63,6 +63,23 @@ EngineSettings SettingsStore::load()
     s.accentColorRGB        = (unsigned int) (int) t.getProperty (accentColor,   (int) s.accentColorRGB);
     s.warningColorRGB       = (unsigned int) (int) t.getProperty (warningColor,  (int) s.warningColorRGB);
     s.criticalColorRGB      = (unsigned int) (int) t.getProperty (criticalColor, (int) s.criticalColorRGB);
+
+    // Defensive clamp -- a tampered settings file or values left over from a
+    // prior version with wider ranges must never produce a ring/pre-fill big
+    // enough to crash the engine on the next start().
+    s.engineSampleRate      = juce::jlimit (8000.0, 192000.0, s.engineSampleRate);
+    s.engineBlockSize       = juce::jlimit (32,    4096,      s.engineBlockSize);
+    s.inputRingMultEng      = juce::jlimit (2,     32,        s.inputRingMultEng);
+    s.inputRingMultDev      = juce::jlimit (2,     32,        s.inputRingMultDev);
+    s.outputRingMultEng     = juce::jlimit (2,     32,        s.outputRingMultEng);
+    s.outputRingMultDev     = juce::jlimit (2,     32,        s.outputRingMultDev);
+    s.outputPreFillBlocks   = juce::jlimit (0,     64,        s.outputPreFillBlocks);
+    s.matrixThreadSleepMicros = juce::jlimit (50, 5000,       s.matrixThreadSleepMicros);
+    s.matrixDrainPerWake    = juce::jlimit (1,   256,         s.matrixDrainPerWake);
+    s.gainSmoothingMs       = juce::jlimit (0,   500,         s.gainSmoothingMs);
+    s.meterTimerHz          = juce::jlimit (1,   120,         s.meterTimerHz);
+    s.meterDecayFactor      = juce::jlimit (0.0f, 0.999f,     s.meterDecayFactor);
+    s.statusTimerMs         = juce::jlimit (100, 10000,       s.statusTimerMs);
     return s;
 }
 

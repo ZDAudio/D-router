@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 
 namespace dcr {
 
@@ -74,18 +75,37 @@ bool DeviceWorker::open (const EngineSettings& settings)
     const int    devBuf = device->getCurrentBufferSizeSamples();
 
     // Ring sizing comes from settings.  No magic constants here.
-    const size_t inRingSize  = (size_t) std::max (
+    // Per-channel cap so a misconfigured multiplier (very large engineBlock x
+    // very large mult, or a huge ratio between device and engine rates) can't
+    // request a gigabyte ring and crash the app with std::bad_alloc.
+    static constexpr size_t kMaxRingSamplesPerChannel = 256 * 1024;  // ~1 MB / ch
+    size_t inRingSize  = (size_t) std::max (
         settings.inputRingMultEng * engineBlockSize,
         (int) std::ceil ((double) settings.inputRingMultDev * devBuf * engineSampleRate / devSr));
-    const size_t outRingSize = (size_t) std::max (
+    size_t outRingSize = (size_t) std::max (
         settings.outputRingMultEng * engineBlockSize,
         (int) std::ceil ((double) settings.outputRingMultDev * devBuf * engineSampleRate / devSr));
+    inRingSize  = std::min (inRingSize,  kMaxRingSamplesPerChannel);
+    outRingSize = std::min (outRingSize, kMaxRingSamplesPerChannel);
 
-    inputRings.clear(); inputRings.resize ((size_t) numInputChannels);
-    for (auto& r : inputRings) r.resize (inRingSize);
+    try
+    {
+        inputRings.clear(); inputRings.resize ((size_t) numInputChannels);
+        for (auto& r : inputRings) r.resize (inRingSize);
 
-    outputRings.clear(); outputRings.resize ((size_t) numOutputChannels);
-    for (auto& r : outputRings) r.resize (outRingSize);
+        outputRings.clear(); outputRings.resize ((size_t) numOutputChannels);
+        for (auto& r : outputRings) r.resize (outRingSize);
+    }
+    catch (const std::bad_alloc&)
+    {
+        lastError = "Out of memory allocating ring buffers for '" + requestedName
+                  + "' (in=" + juce::String ((juce::int64) inRingSize)
+                  + " out=" + juce::String ((juce::int64) outRingSize)
+                  + " spl x " + juce::String (numInputChannels + numOutputChannels) + " ch).  "
+                  + "Lower ring multipliers in Settings.";
+        close();
+        return false;
+    }
 
     inputSRCs.clear();
     for (int i = 0; i < numInputChannels; ++i)

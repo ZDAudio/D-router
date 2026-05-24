@@ -45,6 +45,7 @@ target_sources(dcorerouter PRIVATE
     Source/UI/LevelMeter.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp
+    Source/Persistence/CrashGuard.cpp
     Source/DSP/PluginHost.cpp
     Source/DSP/MultiChannelPluginHost.cpp
     Source/UI/PluginEditorWindow.cpp

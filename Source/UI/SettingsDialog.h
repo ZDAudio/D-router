@@ -50,6 +50,19 @@ private:
                             const juce::StringArray& labels,
                             const std::vector<unsigned int>& values,
                             const juce::String& tooltip);
+    // ComboBox over a curated list of int / double values.  Replaces the
+    // free-form text editor for ring / pre-fill / block-size knobs so the
+    // user can only pick values the engine is known to handle without
+    // crashing.  If `target` doesn't match any list entry, snaps to the
+    // closest value.
+    void addIntChoiceField    (const juce::String& name, int&    target,
+                               const std::vector<int>&    values,
+                               const juce::String& unitHint,
+                               const juce::String& tooltip);
+    void addDoubleChoiceField (const juce::String& name, double& target,
+                               const std::vector<double>& values,
+                               const juce::String& unitHint,
+                               const juce::String& tooltip);
     void addHexColorField (const juce::String& name, unsigned int& target,
                            const juce::String& tooltip);
     void attachInfoIcon (const juce::String& tooltip);

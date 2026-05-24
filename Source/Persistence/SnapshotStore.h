@@ -36,6 +36,33 @@ struct Snapshot
     };
     std::vector<Group> outputGroups;
     std::vector<Group> inputGroups;
+
+    // ===== Plugin chain persistence =========================================
+    // Each PluginSlotState carries everything needed to re-instantiate one
+    // plugin: the AU PluginDescription serialized as XML (looked up via the
+    // AudioPluginFormatManager on restore) and the plugin's own persistent
+    // state from getStateInformation(), base64'd.
+    struct PluginSlotState
+    {
+        juce::String descriptionXml;
+        juce::String stateB64;
+        bool         bypassed = false;
+        bool isEmpty() const noexcept { return descriptionXml.isEmpty(); }
+    };
+    struct ChannelChain
+    {
+        int  globalIdx = 0;
+        bool isInput   = true;
+        std::vector<PluginSlotState> slots;   // size = PluginHost::kNumSlots
+    };
+    struct GroupChain
+    {
+        int  groupIdx = 0;
+        bool isInput  = false;
+        std::vector<PluginSlotState> slots;   // size = OutputGroup::kNumPluginSlots
+    };
+    std::vector<ChannelChain> channelChains;
+    std::vector<GroupChain>   groupChains;
 };
 
 // Disk persistence of Snapshots as XML ValueTrees.

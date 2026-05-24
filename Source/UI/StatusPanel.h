@@ -24,6 +24,12 @@ public:
     // Force an immediate refresh (e.g. after engine restart).
     void refreshNow() { refresh(); }
 
+    // Freeze polling while the engine is being reconfigured -- otherwise the
+    // timer can iterate workers / read inputPeaks while they're being torn
+    // down / moved by AudioEngine::stop()+start() on the worker thread.
+    void pauseUpdates()  { stopTimer(); }
+    void resumeUpdates();
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void visibilityChanged() override;

@@ -137,6 +137,12 @@ void OutputGroupPanel::visibilityChanged()
         stopTimer();
 }
 
+void OutputGroupPanel::resumeUpdates()
+{
+    if (isVisible())
+        startTimerHz (juce::jmax (1, engine.getSettings().meterTimerHz));
+}
+
 // ============================================================================
 // Card
 // ============================================================================

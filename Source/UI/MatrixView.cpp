@@ -591,6 +591,12 @@ void MatrixView::FxChainPopupContent::onSlotRemoveClicked (int slotIdx)
     refreshAll();
 }
 
+void MatrixView::closeAllPluginEditors()
+{
+    for (auto& row : outputEditorWindows) for (auto& w : row) w.reset();
+    for (auto& row : inputEditorWindows)  for (auto& w : row) w.reset();
+}
+
 void MatrixView::refreshMuteButtonStates()
 {
     auto& m = engine.getRoutingMatrix();

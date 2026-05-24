@@ -61,6 +61,12 @@ void StatusPanel::visibilityChanged()
         stopTimer();
 }
 
+void StatusPanel::resumeUpdates()
+{
+    if (isVisible())
+        startTimer (juce::jmax (50, engine.getSettings().statusTimerMs));
+}
+
 void StatusPanel::refresh()
 {
     juce::String s;
@@ -168,10 +174,23 @@ void StatusPanel::refresh()
               << pad (juce::String (d.getOutputLatencyMs (eng), 2), 10) << "\n";
         }
     }
-    s << "\nEngine path  = " << juce::String (rep.getEngineContributionMs(), 2) << " ms  ("
+    // Break the round-trip down so the math "2.67 + 24.00 + 20.04 = 46.71"
+    // is visible -- people see two devices at small ms and are surprised by
+    // the larger total without realising the engine itself adds blocks.
+    double inMaxMs = 0.0, outMaxMs = 0.0;
+    for (auto& d : rep.devices)
+    {
+        inMaxMs  = juce::jmax (inMaxMs,  d.getInputLatencyMs  (eng));
+        outMaxMs = juce::jmax (outMaxMs, d.getOutputLatencyMs (eng));
+    }
+    const double engMs = rep.getEngineContributionMs();
+    s << "\nEngine path  = " << juce::String (engMs, 2) << " ms  ("
       << "1 wait block + " << rep.outputPreFillBlocks << " pre-fill @ "
       << (int) rep.engineBlockSize << " spl / " << (int) eng << " Hz)\n";
-    s << "Round-trip worst = " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
+    s << "Round-trip worst = " << juce::String (inMaxMs, 2) << " (worst IN)"
+      << " + " << juce::String (engMs, 2)    << " (engine)"
+      << " + " << juce::String (outMaxMs, 2) << " (worst OUT)"
+      << " = " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
 
     if (s != lastBodyText)
     {

@@ -40,6 +40,13 @@ public:
 
     void visibilityChanged() override;
 
+    // Freeze polling while AudioEngine is being reconfigured.  The timer's
+    // srcPeak() reads the per-channel peak array which gets moved-from inside
+    // MatrixProcessor::configure(); polling at that instant is a use-after-
+    // free.  MainComponent calls these around applyDeviceSelection().
+    void pauseUpdates()  { stopTimer(); }
+    void resumeUpdates();
+
     // Fires when the mouse hovers into / out of a group card.  Argument is
     // the group's member output channels (or empty when no card is hovered).
     std::function<void (const std::vector<int>&)> onGroupHover;
