@@ -33,8 +33,13 @@ MatrixProcessor::MatrixProcessor()
 
 MatrixProcessor::~MatrixProcessor()
 {
-    // Matrix thread should already be stopped by AudioEngine::stop().
-    // Pool dtor joins its workers cleanly.
+    // Defensive: AudioEngine::stop() already calls processor.stop() in the
+    // normal shutdown path, but a partially-constructed AudioEngine, an
+    // exception during start(), or a future refactor could destroy us with
+    // the matrix thread still running.  Stop here so the thread is joined
+    // before the pool member (declared after thread in MatrixProcessor.h)
+    // tears down any worker the matrix thread might still be waiting on.
+    stop();
 }
 
 void MatrixProcessor::configure (std::vector<GlobalInput>  ins,

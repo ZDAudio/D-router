@@ -86,6 +86,14 @@ MainComponent::MainComponent()
     updatePanicButtonAppearance();
     groupsButton.onClick = [this]
     {
+        // The dialog lets the user remove groups, which immediately destroys
+        // their MultiChannelPluginHosts (and the AudioPluginInstances inside).
+        // Close any open group plugin editors BEFORE the dialog can do that
+        // -- otherwise the Card dtor later runs editor.reset() against a
+        // dead AudioProcessor and segfaults.
+        groupPanel     .closeAllPluginEditors();
+        inputGroupPanel.closeAllPluginEditors();
+
         // Single dialog with an internal Inputs / Outputs toggle.  After
         // closing we rebuild BOTH panels since either side may have changed.
         GroupManagerDialog::launch (engine,
@@ -267,12 +275,24 @@ MainComponent::~MainComponent()
     juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
 
     if (reconfigThread.joinable()) reconfigThread.join();
-    // Auto-save on shutdown.  Only mark the clean-exit marker AFTER the
-    // snapshot write has been requested; if save() throws or the process
-    // is killed before this line, the marker stays on disk and next launch
-    // will prompt the user.
-    SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
+
+    // Flip the alive sentinel FIRST so any in-flight async plugin-restore
+    // callbacks that haven't fired yet bail at their entry check instead of
+    // touching us / engine / matrixView through dangling references.
+    aliveToken->store (false, std::memory_order_release);
+
+    // CRITICAL ORDER: stop the audio engine BEFORE harvesting the snapshot.
+    // gatherCurrentSnapshot() reads every PluginHost's getStateInformation()
+    // -- a non-RT API that mutates plugin internals -- and the matrix audio
+    // thread is meanwhile calling processBlock() on the same instances.
+    // Concurrent getStateInformation + processBlock is undefined per JUCE
+    // contract; we have seen plugins corrupt their parameter caches and
+    // crash here.  Stop first, then read state safely.
     engine.stop();
+    SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
+    // Only mark the clean-exit marker AFTER the snapshot write has been
+    // requested; if save() throws or the process is killed before this
+    // line, the marker stays on disk and next launch will prompt the user.
     CrashGuard::markCleanExit();
 }
 
@@ -552,7 +572,15 @@ void MainComponent::openDeviceDialog()
 
 void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs)
 {
-    if (isReconfiguring.exchange (true)) return;  // ignore concurrent calls
+    if (isReconfiguring.exchange (true))
+    {
+        // Concurrent call rejected.  If applySnapshot stuffed pendingSnap
+        // expecting THIS call to drain it, that data now belongs to the
+        // dropped request -- clear it so the in-flight reconfig's tail
+        // doesn't apply the wrong gains / mutes / plugin chains.
+        pendingSnap = {};
+        return;
+    }
 
     // Matrix is about to be rebuilt - any saved-panic indices would point at
     // the old channel layout, so drop the panic state cleanly.
@@ -589,6 +617,15 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     groupPanel.pauseUpdates();
     inputGroupPanel.pauseUpdates();
     stopTimer();
+
+    // Disable INPUT to the matrix grid + group cards too, not just the timers.
+    // While engine.start() runs matrix.resize() on the worker thread, any UI
+    // mouse click that calls matrix.setCrosspoint / setInputTrim / set*Mute
+    // races with the non-atomic vector move and can UAF.  setEnabled(false)
+    // propagates down the children and stops mouse events at the root.
+    matrixView.setEnabled (false);
+    groupPanel.setEnabled (false);
+    inputGroupPanel.setEnabled (false);
 
     if (reconfigThread.joinable()) reconfigThread.join();
 
@@ -656,6 +693,10 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             statusPanel.resumeUpdates();
             groupPanel.resumeUpdates();
             inputGroupPanel.resumeUpdates();
+            // Re-enable matrix input now that engine is back in a stable state.
+            matrixView.setEnabled (true);
+            groupPanel.setEnabled (true);
+            inputGroupPanel.setEnabled (true);
             startTimer (engine.getSettings().statusTimerMs);
             refreshStatus();
 
@@ -836,6 +877,12 @@ void MainComponent::applySnapshot (const Snapshot& s)
     newSettings.engineBlockSize  = s.engineBlockSize;
     engine.setSettings (newSettings);
 
+    // Group plugin editors reference AudioPluginInstance objects owned by the
+    // groups about to be wiped.  Close them on the message thread NOW so the
+    // editor dtor doesn't run against a dead processor later (segfault).
+    groupPanel     .closeAllPluginEditors();
+    inputGroupPanel.closeAllPluginEditors();
+
     // Wipe and re-create groups from the snapshot BEFORE restarting the
     // engine -- the engine restart will then prepare their plugin hosts.
     auto restoreToManager = [&] (auto& mgr, const std::vector<Snapshot::Group>& src)
@@ -911,16 +958,17 @@ void MainComponent::restorePluginChainsAsync()
             const bool isInput     = ch.isInput;
             const int  globalIdx   = ch.globalIdx;
 
+            auto alive = aliveToken;
             fmt.createPluginInstanceAsync (desc, sr, bs,
-                [this, isInput, globalIdx, slotIdx, state, wasBypassed]
+                [this, alive, isInput, globalIdx, slotIdx, state, wasBypassed]
                 (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
                 {
-                    if (instance == nullptr)
-                    {
-                        DBG ("restore: failed to load plugin for ch " << globalIdx << " slot " << slotIdx
-                             << ": " << err);
-                        return;
-                    }
+                    juce::ignoreUnused (err);
+                    // MainComponent (and therefore engine + matrixView) may
+                    // already be gone if the user quit or kicked off another
+                    // reconfigure while this load was still pending.
+                    if (! alive->load (std::memory_order_acquire)) return;
+                    if (instance == nullptr) return;
                     if (state.getSize() > 0)
                         instance->setStateInformation (state.getData(), (int) state.getSize());
                     auto* host = isInput ? engine.getInputPluginHost (globalIdx)
@@ -967,16 +1015,14 @@ void MainComponent::restorePluginChainsAsync()
             const bool isInput     = gc.isInput;
             const int  groupIdx    = gc.groupIdx;
 
+            auto alive = aliveToken;
             fmt.createPluginInstanceAsync (desc, sr, bs,
-                [this, isInput, groupIdx, slotIdx, state, wasBypassed, channelSet, getGroupForChain]
+                [this, alive, isInput, groupIdx, slotIdx, state, wasBypassed, channelSet, getGroupForChain]
                 (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
                 {
-                    if (instance == nullptr)
-                    {
-                        DBG ("restore: failed to load group plugin for grp " << groupIdx
-                             << " slot " << slotIdx << ": " << err);
-                        return;
-                    }
+                    juce::ignoreUnused (err);
+                    if (! alive->load (std::memory_order_acquire)) return;
+                    if (instance == nullptr) return;
                     if (state.getSize() > 0)
                         instance->setStateInformation (state.getData(), (int) state.getSize());
                     auto* g2 = getGroupForChain (isInput, groupIdx);

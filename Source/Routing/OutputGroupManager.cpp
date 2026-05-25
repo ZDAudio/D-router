@@ -113,8 +113,17 @@ void OutputGroupManager::moveGroupFader (int groupIdx, float newFaderDb, Routing
     g.faderDb.store (newFaderDb, std::memory_order_relaxed);
     if (delta == 0.0f) return;
 
-    juce::SpinLock::ScopedLockType lk (lock);
-    for (int ch : g.memberChannels)
+    // Copy the member list under the lock then RELEASE before touching the
+    // matrix.  The audio thread's forEachGroupForAudio() try-locks on the
+    // same SpinLock; while we were holding it across N matrix writes, every
+    // audio block during a fader drag would fall through without group
+    // processing -> audible dropouts on the group bus during a fader ride.
+    std::vector<int> members;
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+    }
+    for (int ch : members)
     {
         if (ch < 0 || ch >= matrix.getNumOutputs()) continue;
         const float currentDb = linToDb (matrix.getOutputTrim (ch));
@@ -129,8 +138,14 @@ void OutputGroupManager::setGroupMute (int groupIdx, bool m, RoutingMatrix& matr
     auto& g = *groups[(size_t) groupIdx];
     g.muted.store (m, std::memory_order_relaxed);
 
-    juce::SpinLock::ScopedLockType lk (lock);
-    for (int ch : g.memberChannels)
+    // Same lock-release pattern as moveGroupFader so group mute toggles don't
+    // starve the audio thread of the manager spinlock.
+    std::vector<int> members;
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+    }
+    for (int ch : members)
         if (ch >= 0 && ch < matrix.getNumOutputs())
             matrix.setOutputMute (ch, m);
 }

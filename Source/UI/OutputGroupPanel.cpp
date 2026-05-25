@@ -143,6 +143,13 @@ void OutputGroupPanel::resumeUpdates()
         startTimerHz (juce::jmax (1, engine.getSettings().meterTimerHz));
 }
 
+void OutputGroupPanel::closeAllPluginEditors()
+{
+    for (auto* card : cards)
+        for (auto& w : card->editorWindows)
+            w.reset();
+}
+
 // ============================================================================
 // Card
 // ============================================================================

@@ -111,8 +111,15 @@ void InputGroupManager::moveGroupFader (int groupIdx, float newFaderDb, RoutingM
     g.faderDb.store (newFaderDb, std::memory_order_relaxed);
     if (delta == 0.0f) return;
 
-    juce::SpinLock::ScopedLockType lk (lock);
-    for (int ch : g.memberChannels)
+    // Copy members under lock then release before touching matrix; see
+    // OutputGroupManager::moveGroupFader for full rationale (audio thread
+    // try-locks the same SpinLock for forEachGroupForAudio).
+    std::vector<int> members;
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+    }
+    for (int ch : members)
     {
         if (ch < 0 || ch >= matrix.getNumInputs()) continue;
         const float currentDb = linToDb (matrix.getInputTrim (ch));
@@ -127,8 +134,12 @@ void InputGroupManager::setGroupMute (int groupIdx, bool m, RoutingMatrix& matri
     auto& g = *groups[(size_t) groupIdx];
     g.muted.store (m, std::memory_order_relaxed);
 
-    juce::SpinLock::ScopedLockType lk (lock);
-    for (int ch : g.memberChannels)
+    std::vector<int> members;
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+    }
+    for (int ch : members)
         if (ch >= 0 && ch < matrix.getNumInputs())
             matrix.setInputMute (ch, m);
 }

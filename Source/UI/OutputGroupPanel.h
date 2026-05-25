@@ -47,6 +47,14 @@ public:
     void pauseUpdates()  { stopTimer(); }
     void resumeUpdates();
 
+    // Close every Card's plugin editor window NOW.  MUST be called from the
+    // message thread BEFORE any code path that destroys a group's
+    // MultiChannelPluginHost (group removal in GroupManagerDialog, snapshot-
+    // restore's group wipe).  Otherwise the Card dtor later runs
+    // editor.reset() against a juce::AudioPluginInstance that no longer
+    // exists -> segfault.
+    void closeAllPluginEditors();
+
     // Fires when the mouse hovers into / out of a group card.  Argument is
     // the group's member output channels (or empty when no card is hovered).
     std::function<void (const std::vector<int>&)> onGroupHover;

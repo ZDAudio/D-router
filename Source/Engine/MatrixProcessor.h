@@ -67,6 +67,17 @@ private:
     int                       drainPerWake = 16;
     std::vector<float>        groupSilenceRow;   // zeros for unfilled group slots
 
+    // CRITICAL DECLARATION ORDER: pool MUST be declared before `thread`.
+    // Destruction order is reverse of declaration -- thread destructs FIRST.
+    // If ~MatrixProcessor ever runs without an explicit stop() (construction
+    // failure mid-AudioEngine setup, future refactor), we want:
+    //   thread dtor -> std::terminate if running   (loud, debuggable)
+    //   pool dtor   -> kills workers
+    // ... rather than the inverse, where the pool would die first while the
+    // matrix thread is still blocked inside parallelFor on completedWorkers
+    // (silent deadlock / UAF of jobFn).
+    std::unique_ptr<WorkerPool> pool;
+
     std::thread thread;
     std::atomic<bool> running { false };
     std::atomic<uint64_t> blocksProcessed { 0 };
@@ -93,12 +104,6 @@ private:
     float    smoothCoeff = 1.0f;             // 1.0 = no smoothing (instant)
 
     void refreshSnapshotIfDirty();
-
-    // Persistent fork/join pool used to parallelize the per-input and per-
-    // output single-channel plugin chains.  Created once in the ctor;
-    // survives engine restarts so we don't pay thread-creation cost every
-    // time devices change.
-    std::unique_ptr<WorkerPool> pool;
 };
 
 } // namespace dcr

@@ -84,6 +84,13 @@ private:
     PendingSnapshotApply pendingSnap;
     void restorePluginChainsAsync();
 
+    // Heap-allocated "this is still alive" sentinel.  Captured by async
+    // plugin-restore callbacks; flipped to false in ~MainComponent so a
+    // late createPluginInstanceAsync callback can early-out instead of
+    // dereferencing this/engine/matrixView after destruction.
+    std::shared_ptr<std::atomic<bool>> aliveToken
+        = std::make_shared<std::atomic<bool>> (true);
+
     AudioEngine engine;
     std::vector<AudioEngine::DeviceSpec> currentSpecs;
     std::unique_ptr<juce::FileChooser> activeChooser;
