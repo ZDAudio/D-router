@@ -44,9 +44,52 @@ void MatrixView::LeftRailContent::paint (juce::Graphics& g)
     owner.paintLeftRail (g);
 }
 
+void MatrixView::LeftRailContent::mouseWheelMove (const juce::MouseEvent& e,
+                                                  const juce::MouseWheelDetails& wheel)
+{
+    // Pump the wheel into the grid viewport.  We re-map the event so the
+    // viewport sees a sensible mouse position inside its own coordinate
+    // system -- not strictly needed for scrolling (juce::Viewport ignores
+    // the position) but keeps any debug log truthful.
+    auto remapped = e.getEventRelativeTo (&owner.gridViewport);
+    owner.gridViewport.mouseWheelMove (remapped, wheel);
+}
+
+void MatrixView::LeftRailContent::mouseDown (const juce::MouseEvent&)
+{
+    // SelectableLabel children swallow their own clicks; this fires only
+    // for gaps between widgets / right of the FX button.  Treat as
+    // "clicked blank" -> clear the input selection.
+    owner.clearChannelSelection (true);
+}
+
 void MatrixView::TopRailContent::paint (juce::Graphics& g)
 {
     owner.paintTopRail (g);
+}
+
+void MatrixView::TopRailContent::mouseWheelMove (const juce::MouseEvent& e,
+                                                 const juce::MouseWheelDetails& wheel)
+{
+    // On the OUTPUTS rail the natural axis is horizontal -- columns extend
+    // left/right.  Re-map a vertical mouse wheel into horizontal scroll
+    // so a regular scroll-wheel just works.  Trackpad horizontal swipes
+    // already arrive with deltaX populated and stay as-is.
+    juce::MouseWheelDetails w = wheel;
+    if (std::abs (w.deltaX) < std::abs (w.deltaY))
+    {
+        w.deltaX = w.deltaY;
+        w.deltaY = 0.0f;
+    }
+    auto remapped = e.getEventRelativeTo (&owner.gridViewport);
+    owner.gridViewport.mouseWheelMove (remapped, w);
+}
+
+void MatrixView::CornerCell::mouseDown (const juce::MouseEvent&)
+{
+    // Top-left "neutral" cell -- click here to clear ALL selections.
+    owner.clearChannelSelection (true);
+    owner.clearChannelSelection (false);
 }
 
 void MatrixView::CornerCell::paint (juce::Graphics& g)
@@ -62,10 +105,17 @@ MatrixView::MatrixView (AudioEngine& e) : engine (e)
     leftRailViewport.setScrollBarsShown (false, false);
     addAndMakeVisible (leftRailViewport);
     leftRailViewport.setViewedComponent (&leftRailContent, false);
+    // Opaque rail content -- their paint() fills the full background.
+    // Telling JUCE this means addAndMakeVisible for a child doesn't have
+    // to invalidate the parent's region behind it (which would cost a
+    // full-strip composite per child during rebuild).  Saves real time
+    // when adding hundreds of channel widgets in a row.
+    leftRailContent.setOpaque (true);
 
     topRailViewport.setScrollBarsShown (false, false);
     addAndMakeVisible (topRailViewport);
     topRailViewport.setViewedComponent (&topRailContent, false);
+    topRailContent.setOpaque (true);
 
     addAndMakeVisible (cornerCell);
 
@@ -116,6 +166,10 @@ juce::Slider* MatrixView::makeTrimSlider()
     s->setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour::fromRGB (40, 40, 48));
     s->setPopupDisplayEnabled (true, true, this);
     s->setTextValueSuffix (" dB");
+    // Don't let scroll-wheel adjust the trim -- it eats the wheel events
+    // that the user actually wants for scrolling the rail.  Drag still
+    // adjusts; double-click resets.
+    s->setScrollWheelEnabled (false);
     return s;
 }
 
@@ -129,7 +183,117 @@ void MatrixView::rebuildFromEngine()
     lastClickedInput  = -1;
     lastClickedOutput = -1;
 
-    // Drop existing children.
+    // FAST PATH: settings-only restart leaves the channel layout intact.
+    // No reason to throw away 500+ widgets just to recreate identical ones --
+    // just refresh their values from the engine and return.  Single-digit
+    // milliseconds vs multiple seconds.
+    if (! inputLabels.empty() && samePhysicalLayout())
+    {
+        softRefreshFromEngine();
+        if (onRebuildFinished) onRebuildFinished();
+        return;
+    }
+
+    clearAllChannelWidgets();
+    buildLabelsFromEngine();
+
+    const int nIn  = (int) inputLabels .size();
+    const int nOut = (int) outputLabels.size();
+
+    // Set size of rail content panels up-front so the viewport's scroll
+    // ranges are right from the start; widgets fill into the canvas as
+    // they get built asynchronously below.
+    leftRailContent.setSize (labelColWidth, nIn * cellSize);
+    topRailContent .setSize (nOut * cellSize, labelRowHeight);
+
+    // HIDE the rail viewports + corner + grid viewport during the build.
+    // Otherwise every addAndMakeVisible() queues a paint event for the
+    // dirty rect of the new child; with ~600 widgets the backlog hogs
+    // the message thread for seconds and starves the audio matrix thread
+    // (which is why cold-start xruns spike to four-digit numbers and
+    // why switching to a different tab "unfreezes" things -- JUCE drops
+    // pending paints for invisible components).  The loading overlay is
+    // an AlwaysOnTop sibling of MatrixView, so it stays visible
+    // throughout.  Restored in finishRebuild().
+    leftRailViewport.setVisible (false);
+    topRailViewport .setVisible (false);
+    gridViewport    .setVisible (false);
+    cornerCell      .setVisible (false);
+
+    // Async chunked build -- spreads ~600 component creations over many
+    // message-thread ticks so the UI stays responsive on big device
+    // configs (48 in + 66 out used to freeze the window for ~3 seconds).
+    inputEditorWindows .resize ((size_t) nIn);
+    outputEditorWindows.resize ((size_t) nOut);
+
+    rebuildState.generation   = ++rebuildGenerationCounter;
+    rebuildState.active       = true;
+    rebuildState.nextInputIdx = 0;
+    rebuildState.nextOutputIdx = 0;
+    rebuildState.totalInputs  = nIn;
+    rebuildState.totalOutputs = nOut;
+    if (onRebuildProgress) onRebuildProgress (0, nIn + nOut);
+
+    // Kick off the chunked build on the next tick so the current event
+    // (mouse click etc.) finishes first.
+    const auto gen = rebuildState.generation;
+    juce::MessageManager::callAsync ([this, gen]
+    {
+        if (gen != rebuildState.generation) return;   // a newer rebuild has started
+        continueRebuild();
+    });
+}
+
+bool MatrixView::samePhysicalLayout() const
+{
+    int inIdx = 0, outIdx = 0;
+    for (auto& d : engine.getDeviceInfo())
+    {
+        for (int c = 0; c < d.numInputChannels; ++c, ++inIdx)
+        {
+            if (inIdx >= (int) inputLabels.size())                return false;
+            if (inputLabels[(size_t) inIdx].deviceName    != d.name) return false;
+            if (inputLabels[(size_t) inIdx].channelIndex  != c + 1)  return false;
+        }
+        for (int c = 0; c < d.numOutputChannels; ++c, ++outIdx)
+        {
+            if (outIdx >= (int) outputLabels.size())               return false;
+            if (outputLabels[(size_t) outIdx].deviceName    != d.name) return false;
+            if (outputLabels[(size_t) outIdx].channelIndex  != c + 1)  return false;
+        }
+    }
+    return inIdx == (int) inputLabels.size()
+        && outIdx == (int) outputLabels.size();
+}
+
+void MatrixView::softRefreshFromEngine()
+{
+    auto& matrix = engine.getRoutingMatrix();
+    const int nIn  = (int) inputTrims .size();
+    const int nOut = (int) outputTrims.size();
+    for (int n = 0; n < nIn; ++n)
+    {
+        if (n < inputTrims.size())
+            inputTrims[n]->setValue (linToDb (matrix.getInputTrim (n)), juce::dontSendNotification);
+        if (n < inputMuteBtns.size())
+            inputMuteBtns[n]->setToggleState (matrix.getInputMute (n), juce::dontSendNotification);
+        if (n < inputSoloBtns.size())
+            inputSoloBtns[n]->setToggleState (matrix.getInputSolo (n), juce::dontSendNotification);
+        updateFxButtonAppearance (true, n);
+    }
+    for (int m = 0; m < nOut; ++m)
+    {
+        if (m < outputTrims.size())
+            outputTrims[m]->setValue (linToDb (matrix.getOutputTrim (m)), juce::dontSendNotification);
+        if (m < outputMuteBtns.size())
+            outputMuteBtns[m]->setToggleState (matrix.getOutputMute (m), juce::dontSendNotification);
+        updateFxButtonAppearance (false, m);
+    }
+    if (grid != nullptr) grid->repaint();
+}
+
+void MatrixView::clearAllChannelWidgets()
+{
     grid.reset();
     inputNames    .clear();
     inputTrims    .clear();
@@ -146,7 +310,10 @@ void MatrixView::rebuildFromEngine()
     for (auto& row : inputEditorWindows)  for (auto& w : row) if (w) w->setVisible (false);
     outputEditorWindows.clear();
     inputEditorWindows.clear();
+}
 
+void MatrixView::buildLabelsFromEngine()
+{
     inputLabels.clear();
     outputLabels.clear();
     for (auto& d : engine.getDeviceInfo())
@@ -156,17 +323,93 @@ void MatrixView::rebuildFromEngine()
         for (int c = 0; c < d.numOutputChannels; ++c)
             outputLabels.push_back ({ d.name, c + 1, c == 0 });
     }
+}
 
-    const int nIn  = (int) inputLabels .size();
-    const int nOut = (int) outputLabels.size();
+void MatrixView::continueRebuild()
+{
+    if (! rebuildState.active) return;
+
+    // Bigger chunks now that each row sets its own bounds inline -- the
+    // earlier 16-per-side cap existed because we were re-laying-out ALL
+    // existing widgets every tick (O(N) work per tick).  Per-row layout
+    // means the only per-tick cost is the new widget creation, so we
+    // can comfortably do 64 per side.
+    constexpr int kBatch = 64;
+
+    int done = 0;
+    while (done < kBatch && rebuildState.nextInputIdx < rebuildState.totalInputs)
+    {
+        buildInputRowWidgets (rebuildState.nextInputIdx);
+        ++rebuildState.nextInputIdx;
+        ++done;
+    }
+    done = 0;
+    while (done < kBatch && rebuildState.nextOutputIdx < rebuildState.totalOutputs)
+    {
+        buildOutputColumnWidgets (rebuildState.nextOutputIdx);
+        ++rebuildState.nextOutputIdx;
+        ++done;
+    }
+
+    if (onRebuildProgress)
+        onRebuildProgress (rebuildState.nextInputIdx + rebuildState.nextOutputIdx,
+                           rebuildState.totalInputs + rebuildState.totalOutputs);
+
+    const bool moreInputs  = rebuildState.nextInputIdx  < rebuildState.totalInputs;
+    const bool moreOutputs = rebuildState.nextOutputIdx < rebuildState.totalOutputs;
+    if (moreInputs || moreOutputs)
+    {
+        const auto gen = rebuildState.generation;
+        juce::MessageManager::callAsync ([this, gen]
+        {
+            if (gen != rebuildState.generation) return;
+            continueRebuild();
+        });
+    }
+    else
+    {
+        finishRebuild();
+    }
+}
+
+void MatrixView::finishRebuild()
+{
     auto& matrix = engine.getRoutingMatrix();
+    grid = std::make_unique<CrosspointGrid> (matrix);
+    grid->setDimensions (rebuildState.totalInputs, rebuildState.totalOutputs, cellSize);
+    gridViewport.setViewedComponent (grid.get(), false);
 
-    // Set size of rail content panels
-    leftRailContent.setSize (labelColWidth, nIn * cellSize);
-    topRailContent.setSize (nOut * cellSize, labelRowHeight);
+    // Device boundary lines (same start-of-group flag we recorded when
+    // building inputLabels / outputLabels).
+    std::vector<int> inBounds;
+    for (int i = 1; i < (int) inputLabels.size(); ++i)
+        if (inputLabels[(size_t) i].startsNewGroup) inBounds.push_back (i);
+    std::vector<int> outBounds;
+    for (int j = 1; j < (int) outputLabels.size(); ++j)
+        if (outputLabels[(size_t) j].startsNewGroup) outBounds.push_back (j);
+    grid->setDeviceBoundaries (inBounds, outBounds);
 
-    // Input row widgets.
-    for (int n = 0; n < nIn; ++n)
+    // Restore visibility of the rails/grid we hid during the chunked build.
+    // Doing this AFTER all the addAndMakeVisible() calls inside the chunks
+    // means JUCE only has to paint the final tree once, instead of after
+    // every newly-added widget.  Massively cuts message-thread paint work
+    // during the rebuild and stops the audio thread from getting starved.
+    leftRailViewport.setVisible (true);
+    topRailViewport .setVisible (true);
+    gridViewport    .setVisible (true);
+    cornerCell      .setVisible (true);
+
+    resized();
+    repaint();
+
+    rebuildState.active = false;
+    if (onRebuildFinished) onRebuildFinished();
+}
+
+void MatrixView::buildInputRowWidgets (int n)
+{
+    if (n < 0 || n >= (int) inputLabels.size()) return;
+    auto& matrix = engine.getRoutingMatrix();
     {
         auto* lbl = new SelectableLabel();
         lbl->setText (inputLabels[(size_t) n].deviceName + "  ch."
@@ -186,7 +429,29 @@ void MatrixView::rebuildFromEngine()
 
         auto* sl = makeTrimSlider();
         sl->setValue (linToDb (matrix.getInputTrim (n)), juce::dontSendNotification);
-        sl->onValueChange = [&matrix, sl, n] { matrix.setInputTrim (n, dbToLin ((float) sl->getValue())); };
+        sl->onValueChange = [this, &matrix, sl, n]
+        {
+            const float dbVal  = (float) sl->getValue();
+            const float linVal = dbToLin (dbVal);
+            matrix.setInputTrim (n, linVal);
+            // Multi-select linking: same trim on every other selected input.
+            if (isChannelSelected (true, n))
+            {
+                auto sel = getSelectedChannels (true);
+                if (sel.size() > 1)
+                {
+                    for (int other : sel)
+                    {
+                        if (other == n) continue;
+                        if (other >= 0 && other < inputTrims.size())
+                        {
+                            inputTrims[other]->setValue (dbVal, juce::dontSendNotification);
+                            matrix.setInputTrim (other, linVal);
+                        }
+                    }
+                }
+            }
+        };
         leftRailContent.addAndMakeVisible (*sl);
         inputTrims.add (sl);
 
@@ -200,7 +465,25 @@ void MatrixView::rebuildFromEngine()
         mute->setToggleState (matrix.getInputMute (n), juce::dontSendNotification);
         mute->onClick = [this, &matrix, mute, n]
         {
-            matrix.setInputMute (n, mute->getToggleState());
+            const bool on = mute->getToggleState();
+            matrix.setInputMute (n, on);
+            // Link to other selected inputs.
+            if (isChannelSelected (true, n))
+            {
+                auto sel = getSelectedChannels (true);
+                if (sel.size() > 1)
+                {
+                    for (int other : sel)
+                    {
+                        if (other == n) continue;
+                        if (other >= 0 && other < inputMuteBtns.size())
+                        {
+                            inputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
+                            matrix.setInputMute (other, on);
+                        }
+                    }
+                }
+            }
             if (onUserMuteChanged) onUserMuteChanged();
         };
         leftRailContent.addAndMakeVisible (*mute);
@@ -210,7 +493,27 @@ void MatrixView::rebuildFromEngine()
         solo->setName ("solo");
         solo->setClickingTogglesState (true);
         solo->setToggleState (matrix.getInputSolo (n), juce::dontSendNotification);
-        solo->onClick = [&matrix, solo, n] { matrix.setInputSolo (n, solo->getToggleState()); };
+        solo->onClick = [this, &matrix, solo, n]
+        {
+            const bool on = solo->getToggleState();
+            matrix.setInputSolo (n, on);
+            if (isChannelSelected (true, n))
+            {
+                auto sel = getSelectedChannels (true);
+                if (sel.size() > 1)
+                {
+                    for (int other : sel)
+                    {
+                        if (other == n) continue;
+                        if (other >= 0 && other < inputSoloBtns.size())
+                        {
+                            inputSoloBtns[other]->setToggleState (on, juce::dontSendNotification);
+                            matrix.setInputSolo (other, on);
+                        }
+                    }
+                }
+            }
+        };
         leftRailContent.addAndMakeVisible (*solo);
         inputSoloBtns.add (solo);
 
@@ -220,15 +523,49 @@ void MatrixView::rebuildFromEngine()
         leftRailContent.addAndMakeVisible (*infx);
         inputFxBtns.add (infx);
     }
-    inputEditorWindows.resize ((size_t) nIn);
-    for (int n = 0; n < nIn; ++n) updateFxButtonAppearance (true, n);
+    updateFxButtonAppearance (true, n);
 
-    // Output column widgets.
-    for (int m = 0; m < nOut; ++m)
+    // Set THIS row's widget bounds directly -- avoids the O(N) global
+    // layout pass that used to fire after every chunk.  Matches the
+    // geometry in layoutLeftRail() exactly.
+    const int yy = n * cellSize;
+    inputNames   .getLast()->setBounds (8,   yy + 2,  96,  cellSize - 4);
+    inputTrims   .getLast()->setBounds (106, yy + 2,  32,  32);
+    inputMeters  .getLast()->setBounds (142, yy + 12, 84,  12);
+    inputMuteBtns.getLast()->setBounds (230, yy + 7,  18,  22);
+    inputSoloBtns.getLast()->setBounds (250, yy + 7,  18,  22);
+    inputFxBtns  .getLast()->setBounds (272, yy + 7,  30,  22);
+}
+
+void MatrixView::buildOutputColumnWidgets (int m)
+{
+    if (m < 0 || m >= (int) outputLabels.size()) return;
+    auto& matrix = engine.getRoutingMatrix();
     {
         auto* sl = makeTrimSlider();
         sl->setValue (linToDb (matrix.getOutputTrim (m)), juce::dontSendNotification);
-        sl->onValueChange = [&matrix, sl, m] { matrix.setOutputTrim (m, dbToLin ((float) sl->getValue())); };
+        sl->onValueChange = [this, &matrix, sl, m]
+        {
+            const float dbVal  = (float) sl->getValue();
+            const float linVal = dbToLin (dbVal);
+            matrix.setOutputTrim (m, linVal);
+            if (isChannelSelected (false, m))
+            {
+                auto sel = getSelectedChannels (false);
+                if (sel.size() > 1)
+                {
+                    for (int other : sel)
+                    {
+                        if (other == m) continue;
+                        if (other >= 0 && other < outputTrims.size())
+                        {
+                            outputTrims[other]->setValue (dbVal, juce::dontSendNotification);
+                            matrix.setOutputTrim (other, linVal);
+                        }
+                    }
+                }
+            }
+        };
         topRailContent.addAndMakeVisible (*sl);
         outputTrims.add (sl);
 
@@ -242,7 +579,24 @@ void MatrixView::rebuildFromEngine()
         mute->setToggleState (matrix.getOutputMute (m), juce::dontSendNotification);
         mute->onClick = [this, &matrix, mute, m]
         {
-            matrix.setOutputMute (m, mute->getToggleState());
+            const bool on = mute->getToggleState();
+            matrix.setOutputMute (m, on);
+            if (isChannelSelected (false, m))
+            {
+                auto sel = getSelectedChannels (false);
+                if (sel.size() > 1)
+                {
+                    for (int other : sel)
+                    {
+                        if (other == m) continue;
+                        if (other >= 0 && other < outputMuteBtns.size())
+                        {
+                            outputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
+                            matrix.setOutputMute (other, on);
+                        }
+                    }
+                }
+            }
             if (onUserMuteChanged) onUserMuteChanged();
         };
         topRailContent.addAndMakeVisible (*mute);
@@ -254,29 +608,14 @@ void MatrixView::rebuildFromEngine()
         topRailContent.addAndMakeVisible (*fx);
         outputFxBtns.add (fx);
     }
-    outputEditorWindows.resize ((size_t) nOut);
-    for (int m = 0; m < nOut; ++m) updateFxButtonAppearance (false, m);
+    updateFxButtonAppearance (false, m);
 
-    // Single crosspoint grid inside gridViewport
-    grid = std::make_unique<CrosspointGrid> (matrix);
-    grid->setDimensions (nIn, nOut, cellSize);
-    gridViewport.setViewedComponent (grid.get(), false);
-
-    // Calculate device boundaries
-    std::vector<int> inBounds;
-    for (int i = 1; i < nIn; ++i)
-        if (inputLabels[(size_t) i].startsNewGroup)
-            inBounds.push_back (i);
-
-    std::vector<int> outBounds;
-    for (int j = 1; j < nOut; ++j)
-        if (outputLabels[(size_t) j].startsNewGroup)
-            outBounds.push_back (j);
-
-    grid->setDeviceBoundaries (inBounds, outBounds);
-
-    resized();
-    repaint();
+    // Set THIS column's widget bounds directly.  Matches layoutTopRail().
+    const int xx = m * cellSize;
+    outputTrims   .getLast()->setBounds (xx + 2,  60,  32, 32);
+    outputMeters  .getLast()->setBounds (xx + 11, 96,  14, 42);
+    outputMuteBtns.getLast()->setBounds (xx + 9,  140, 18, 16);
+    outputFxBtns  .getLast()->setBounds (xx + 5,  160, 26, 18);
 }
 
 void MatrixView::layoutLeftRail()
@@ -578,10 +917,17 @@ void MatrixView::TopRailContent::mouseDown (const juce::MouseEvent& e)
     // selection; the widget rows below pass clicks through to their own
     // children (which never delegate to us in the first place).
     constexpr int labelBandHeight = 55;
-    if (e.y >= labelBandHeight) return;
-    const int col = e.x / owner.cellSize;
-    if (col < 0 || col >= (int) owner.outputLabels.size()) return;
-    owner.handleChannelHeaderClick (false, col, e.mods);
+    if (e.y < labelBandHeight)
+    {
+        const int col = e.x / owner.cellSize;
+        if (col >= 0 && col < (int) owner.outputLabels.size())
+        {
+            owner.handleChannelHeaderClick (false, col, e.mods);
+            return;
+        }
+    }
+    // Blank click (below labels, or past the last column) -> clear outputs.
+    owner.clearChannelSelection (false);
 }
 
 // ============================================================================
@@ -976,7 +1322,32 @@ void MatrixView::showEditorFor (bool isInput, int ch, int slotIdx)
             ctx << "  /  slot " << juce::String (slotIdx + 1);
         }
     }
-    juce::Logger::writeToLog ("opening per-channel plugin editor [" + ctx + "] = " + plugin->getName());
+    // Multi-select linking: if this channel is part of a >1 selection,
+    // collect every other selected channel's same-slot plugin instance
+    // and hand them to the editor window.  PluginEditorWindow installs
+    // an AudioProcessorListener that mirrors every parameter change made
+    // in this editor into the siblings.  Only siblings that actually have
+    // a plugin loaded at the same slot are linked (mismatch == skipped).
+    std::vector<juce::AudioPluginInstance*> siblings;
+    {
+        auto sel = getSelectedChannels (isInput);
+        if (sel.size() > 1
+            && std::find (sel.begin(), sel.end(), ch) != sel.end())
+        {
+            for (int other : sel)
+            {
+                if (other == ch) continue;
+                auto* otherHost = getHost (engine, isInput, other);
+                if (auto* sib = otherHost ? otherHost->getPluginAt (slotIdx) : nullptr)
+                    siblings.push_back (sib);
+            }
+        }
+    }
+
+    juce::Logger::writeToLog ("opening per-channel plugin editor [" + ctx + "] = "
+                              + plugin->getName()
+                              + (siblings.empty() ? juce::String{}
+                                 : "  (linked to " + juce::String ((int) siblings.size()) + " sibling(s))"));
     wins[(size_t) ch][(size_t) slotIdx].reset (new PluginEditorWindow (*plugin,
         [this, isInput, ch, slotIdx]
         {
@@ -985,7 +1356,8 @@ void MatrixView::showEditorFor (bool isInput, int ch, int slotIdx)
                 closeEditorFor (isInput, ch, slotIdx);
             });
         },
-        ctx));
+        ctx,
+        std::move (siblings)));
     juce::Logger::writeToLog ("opened per-channel plugin editor [" + ctx + "] = " + plugin->getName());
 }
 

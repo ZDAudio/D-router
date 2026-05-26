@@ -44,17 +44,54 @@ namespace
 }
 
 
+void PluginEditorWindow::ParameterLink::audioProcessorParameterChanged (
+    juce::AudioProcessor*, int parameterIndex, float newValue)
+{
+    // Guard against the recursive notification storm that would follow
+    // when each sibling's setValueNotifyingHost fires our own listener
+    // back through the same source's listener chain.  Only the FIRST
+    // entry on the message thread proceeds; nested entries early-out.
+    bool expected = false;
+    if (! reentry.compare_exchange_strong (expected, true)) return;
+
+    for (auto* sib : siblings)
+    {
+        if (sib == nullptr) continue;
+        const auto& params = sib->getParameters();
+        if (parameterIndex >= 0 && parameterIndex < params.size())
+            if (auto* param = params[parameterIndex])
+                param->setValueNotifyingHost (newValue);
+    }
+    reentry.store (false);
+}
+
 PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
                                         std::function<void()> cb,
-                                        const juce::String& contextLabel)
-    : DocumentWindow (contextLabel.isNotEmpty()
+                                        const juce::String& contextLabel,
+                                        std::vector<juce::AudioPluginInstance*> linkedSiblings)
+    : DocumentWindow ((contextLabel.isNotEmpty()
                           ? (contextLabel + "  -  " + p.getName())
-                          : p.getName(),
+                          : p.getName())
+                      + (linkedSiblings.empty()
+                          ? juce::String{}
+                          : juce::String ("   [linked x")
+                              + juce::String ((int) linkedSiblings.size() + 1) + "]"),
                       juce::Colour::fromRGB (40, 40, 46),
                       DocumentWindow::closeButton),
       plugin (p),
       onClose (std::move (cb))
 {
+    // Install param-link listener if any siblings were provided.  Siblings
+    // must be the SAME plugin type (broadcast load guarantees this since
+    // every selected channel was loaded from the same desc), so parameter
+    // index N on `plugin` matches parameter index N on every sibling.
+    if (! linkedSiblings.empty())
+    {
+        paramLink = std::make_unique<ParameterLink>();
+        paramLink->siblings = std::move (linkedSiblings);
+        plugin.addListener (paramLink.get());
+    }
+
     setUsingNativeTitleBar (true);
 
     // CRITICAL ORDER (Youlean Loudness Meter 2 crash):  realise the empty
@@ -139,6 +176,12 @@ PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
 
 PluginEditorWindow::~PluginEditorWindow()
 {
+    // Detach the parameter listener BEFORE we tear down anything else --
+    // a stray callback after editor.reset() could try to mirror into
+    // siblings while we're mid-destruction.
+    if (paramLink != nullptr)
+        plugin.removeListener (paramLink.get());
+
     // Detach the editor before deleting the unique_ptr - the plugin still
     // owns the editor's processor reference.
     clearContentComponent();

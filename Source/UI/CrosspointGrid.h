@@ -47,6 +47,12 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp   (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
+    // Hover tracking: paints a 3x3 light-grey halo around the cell the
+    // mouse is over, so the user can see context at a glance (which
+    // input/output channels are next to the one they're aiming at).
+    void mouseMove  (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override;
+    void mouseExit  (const juce::MouseEvent&) override;
 
 private:
     juce::Rectangle<int> cellBounds (int outIdx, int inIdx) const noexcept;
@@ -75,6 +81,12 @@ private:
     std::vector<int> highlightedRows;
     std::vector<int> inputDeviceBoundaries;
     std::vector<int> outputDeviceBoundaries;
+
+    // Hover cell (-1 == no hover).  When this changes the old + new 3x3
+    // neighborhoods get a targeted repaint so the rest of the grid (which
+    // can be hundreds of thousands of cells) isn't touched.
+    int hoverOut = -1, hoverIn = -1;
+    void repaintHoverHalo (int outIdx, int inIdx);
 };
 
 } // namespace dcr

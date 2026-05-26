@@ -53,6 +53,7 @@ target_sources(dcorerouter PRIVATE
     Source/Diagnostics/CrashHandler.mm
     Source/Diagnostics/PerfMonitor.cpp
     Source/UI/LogViewerDialog.cpp
+    Source/UI/LoadingOverlay.cpp
     Source/DSP/PluginHost.mm
     Source/DSP/MultiChannelPluginHost.mm
     Source/DSP/SafePluginOps.mm

@@ -11,6 +11,7 @@
 #include "Diagnostics/PerfMonitor.h"
 #include "Engine/AudioEngine.h"
 #include "Persistence/SnapshotStore.h"
+#include "UI/LoadingOverlay.h"
 #include "UI/MatrixView.h"
 #include "UI/OutputGroupPanel.h"
 #include "UI/StatusPanel.h"
@@ -134,6 +135,9 @@ private:
     OutputGroupPanel groupPanel       { engine, OutputGroupPanel::Direction::Outputs };
     OutputGroupPanel inputGroupPanel  { engine, OutputGroupPanel::Direction::Inputs  };
     StatusPanel      statusPanel { engine };
+
+    // Full-window overlay shown during startup splash + matrix rebuilds.
+    LoadingOverlay   loadingOverlay;
 
     bool groupPanelDetached       = false;
     bool inputGroupPanelDetached  = false;

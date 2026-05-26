@@ -37,7 +37,9 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
     viewport.setScrollBarsShown (true, false);
 
     // ====== Engine clock ======
-    addSection ("Engine clock");
+    addSection ("Engine clock",
+                "Internal sample rate + block size.  Per-device SRC converts in/out "
+                "of these when a device runs at a different rate.");
     addDoubleChoiceField ("Engine sample rate", working.engineSampleRate,
         { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 }, "Hz",
         "All matrix processing happens at this rate.  Per-device SRC converts to/from "
@@ -53,7 +55,10 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
     //  Free-form integers here used to allow values that produced gigabyte-
     //  sized rings on multi-channel devices; ComboBoxes limit the user to a
     //  curated set the engine is known to allocate without OOM.
-    addSection ("Ring buffers (per channel)");
+    addSection ("Ring buffers (per channel)",
+                "Bigger = more safety against CPU spikes, more latency.  Smaller = "
+                "tighter timing, less margin for error.  Pre-fill seeds the output "
+                "ring with silence at startup.");
     addIntChoiceField ("Input ring x engineBlock", working.inputRingMultEng,
         { 2, 3, 4, 6, 8, 12, 16 }, {},
         "Input ring buffer = max(this x engineBlock, devMult x devBuf x SR_ratio), "
@@ -80,7 +85,9 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "during clock drift.");
 
     // ====== SRC ======
-    addSection ("Sample rate converter");
+    addSection ("Sample rate converter",
+                "Used only when a device's native SR differs from the engine SR.  "
+                "Higher quality = better fidelity, more CPU + a bit more latency.");
     addUIntComboField ("SRC quality",
         working.srcQuality,
         { "Min", "Low", "Medium", "High", "Max" },
@@ -107,7 +114,10 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "Recommended: Mastering for music, Normal for live monitoring (lower latency).");
 
     // ====== Matrix thread ======
-    addSection ("Matrix processor thread");
+    addSection ("Matrix processor thread",
+                "How aggressively the audio worker polls for data, and how the "
+                "trim / mute / fader changes ramp.  Touch only if you see "
+                "high 'polls/block' in Engine Monitor or hear zipper noise.");
     addIntField ("Idle sleep",            working.matrixThreadSleepMicros, 50, 5000, "us",
         "When no input is ready, the matrix thread sleeps this long before polling again.  "
         "Shorter = faster response, more CPU.\n\n"
@@ -124,7 +134,9 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "Recommended: 25 ms.  Set to 0 for instant jumps (you will hear clicks).");
 
     // ====== UI ======
-    addSection ("UI");
+    addSection ("UI",
+                "Visual refresh rates only.  Lower = less CPU spent on the UI, "
+                "no effect on audio.");
     addIntField   ("Meter refresh rate",  working.meterTimerHz,      1, 120, "Hz",
         "How often level meters are repainted.\n\n"
         "Recommended: 30 Hz (smooth and easy on CPU).  60 for snappier feel; lower if "
@@ -141,7 +153,9 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
         "to 5000 ms when you don't care about live diagnostics.");
 
     // ====== Theme ======
-    addSection ("Theme (6-char RGB hex)");
+    addSection ("Theme (6-char RGB hex)",
+                "Accent color appears on knobs, fader caps, status panel.  "
+                "Warning / critical colors are used by the engine monitor severity.");
     addHexColorField ("Accent color",   working.accentColorRGB,
         "Primary accent colour used for the title, knob arcs, fader caps, focus rings, "
         "active text in the status panel, and other 'alive' UI accents.\n\n"
@@ -217,7 +231,8 @@ void SettingsDialog::resized()
     viewport.setBounds (r);
 }
 
-void SettingsDialog::addSection (const juce::String& heading)
+void SettingsDialog::addSection (const juce::String& heading,
+                                 const juce::String& subtitle)
 {
     if (nextRowY > 0) nextRowY += sectionGap;
     auto* h = new juce::Label ({}, heading);
@@ -227,6 +242,17 @@ void SettingsDialog::addSection (const juce::String& heading)
     fieldsHolder.addAndMakeVisible (*h);
     sectionHeads.add (h);
     nextRowY += rowH + 2;
+
+    if (subtitle.isNotEmpty())
+    {
+        auto* sub = new juce::Label ({}, subtitle);
+        sub->setFont (juce::FontOptions (11.0f, 0));
+        sub->setColour (juce::Label::textColourId, juce::Colour::fromRGB (130, 130, 140));
+        sub->setBounds (leftPad, nextRowY, fieldsHolder.getWidth() - leftPad - 8, rowH - 6);
+        fieldsHolder.addAndMakeVisible (*sub);
+        sectionHeads.add (sub);
+        nextRowY += rowH - 4;
+    }
 }
 
 void SettingsDialog::attachInfoIcon (const juce::String& tooltip)

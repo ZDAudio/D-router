@@ -86,7 +86,8 @@ void StatusPanel::refresh()
 
     const int nIn  = engine.getRoutingMatrix().getNumInputs();
     const int nOut = engine.getRoutingMatrix().getNumOutputs();
-    s << nIn << " in / " << nOut << " out\n";
+    s << "-- ENGINE ----------------------------------------------\n";
+    s << "  Matrix:        " << nIn << " in  ->  " << nOut << " out\n";
 
     // --- performance line ----------------------------------------------------
     const auto processedBlocks = engine.getMatrixBlocksProcessed();
@@ -125,34 +126,45 @@ void StatusPanel::refresh()
     const float  outRingMin   = engine.getMinOutputRingFillFraction();
     const double outRingMinMs = engine.getMinOutputRingHeadroomMs();
 
-    s << "CPU "    << juce::String (cpuAvg  * 100.0f, 1) << "%  peak "
-                   << juce::String (cpuPeak * 100.0f, 1) << "%   ";
-    s << "outRing " << juce::String (outRingMinMs, 1) << " ms "
-                    << "(" << juce::String (outRingMin * 100.0f, 0) << "% of cap)   ";
-    s << "polls/block " << juce::String (windowPollsPerBlock, 1) << "\n";
-    s << "blocks " << (juce::int64) processedBlocks << "\n";
+    // Performance section -- formatted as a key/value list with one
+    // metric per line so the eye can scan straight down the values.
+    s << "\n";
+    s << "-- PERFORMANCE -----------------------------------------\n";
+    s << "  CPU            " << juce::String (cpuAvg  * 100.0f, 1) << " %"
+      << "   (peak " << juce::String (cpuPeak * 100.0f, 1) << " %)\n";
+    s << "  Output ring    " << juce::String (outRingMinMs, 1) << " ms safety"
+      << "   (" << juce::String (outRingMin * 100.0f, 0) << "% of capacity)\n";
+    s << "  Polls / block  " << juce::String (windowPollsPerBlock, 1)
+      << "                (efficiency only, not audio)\n";
+    s << "  Blocks done    " << (juce::int64) processedBlocks << "\n";
 
-    s << "xrun in=" << (juce::int64) engine.getTotalInputOverruns()
-      << " out="    << (juce::int64) engine.getTotalOutputUnderruns();
+    const auto xIn  = engine.getTotalInputOverruns();
+    const auto xOut = engine.getTotalOutputUnderruns();
+    s << "  XRUN           "
+      << (juce::int64) xIn << " in  /  " << (juce::int64) xOut << " out"
+      << ((xIn + xOut) == 0 ? "      (healthy, MUST stay 0)" : "      <-- AUDIBLE GLITCH");
 
     const double lastUnderrunMs = engine.getMostRecentUnderrunMs();
     if (lastUnderrunMs > 0.0)
     {
         const double agoSec = (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) / 1000.0;
-        s << "   last dropout " << juce::String (agoSec, 1) << "s ago";
+        s << "\n  Last dropout   " << juce::String (agoSec, 1) << " s ago";
     }
     s << "\n";
 
     // --- ring fills (first few channels) -------------------------------------
     const int showN = juce::jmin (4, nIn);
     const int showM = juce::jmin (4, nOut);
-    s << "inRing[";
+    s << "  in ring fill   [";
     for (int n = 0; n < showN; ++n)
-        s << (n ? "," : "") << (juce::int64) engine.getInputRingFill (n);
-    s << "]  outRing[";
+        s << (n ? ", " : "") << (juce::int64) engine.getInputRingFill (n);
+    if (nIn > showN) s << ", ...";
+    s << " ] spl\n";
+    s << "  out ring fill  [";
     for (int m = 0; m < showM; ++m)
-        s << (m ? "," : "") << (juce::int64) engine.getOutputRingFill (m);
-    s << "]\n\n";
+        s << (m ? ", " : "") << (juce::int64) engine.getOutputRingFill (m);
+    if (nOut > showM) s << ", ...";
+    s << " ] spl\n\n";
 
     // --- latency table -------------------------------------------------------
     auto rep = engine.getLatencyReport();
@@ -162,13 +174,14 @@ void StatusPanel::refresh()
         return str.length() >= n ? str
                                   : (str + juce::String::repeatedString (" ", n - str.length()));
     };
-    s << pad ("Device", 28) << pad ("Dir", 6) << pad ("HW spl", 10)
+    s << "-- LATENCY ---------------------------------------------\n";
+    s << "  " << pad ("Device", 28) << pad ("Dir", 6) << pad ("HW spl", 10)
        << pad ("SRC spl", 10) << pad ("Total ms", 10) << "\n";
     for (auto& d : rep.devices)
     {
         if (d.hasInput)
         {
-            s << pad (d.name.substring (0, 27), 28)
+            s << "  " << pad (d.name.substring (0, 27), 28)
               << pad ("IN", 6)
               << pad (juce::String (d.hwInputSamples) + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
               << pad (juce::String (d.srcInLatencyEng) + "@" + juce::String ((int) eng / 1000) + "k", 10)
@@ -176,7 +189,7 @@ void StatusPanel::refresh()
         }
         if (d.hasOutput)
         {
-            s << pad (d.name.substring (0, 27), 28)
+            s << "  " << pad (d.name.substring (0, 27), 28)
               << pad ("OUT", 6)
               << pad (juce::String (d.hwOutputSamples) + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
               << pad (juce::String (d.srcOutLatencyDev) + "@" + juce::String ((int) d.deviceSampleRate / 1000) + "k", 10)
@@ -193,13 +206,14 @@ void StatusPanel::refresh()
         outMaxMs = juce::jmax (outMaxMs, d.getOutputLatencyMs (eng));
     }
     const double engMs = rep.getEngineContributionMs();
-    s << "\nEngine path  = " << juce::String (engMs, 2) << " ms  ("
-      << "1 wait block + " << rep.outputPreFillBlocks << " pre-fill @ "
+    s << "\n";
+    s << "  Engine path  = " << juce::String (engMs, 2) << " ms"
+      << "   (1 wait block + " << rep.outputPreFillBlocks << " pre-fill @ "
       << (int) rep.engineBlockSize << " spl / " << (int) eng << " Hz)\n";
-    s << "Round-trip worst = " << juce::String (inMaxMs, 2) << " (worst IN)"
-      << " + " << juce::String (engMs, 2)    << " (engine)"
-      << " + " << juce::String (outMaxMs, 2) << " (worst OUT)"
-      << " = " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
+    s << "  Round-trip   = " << juce::String (inMaxMs, 2) << " IN"
+      << "  +  " << juce::String (engMs, 2)    << " engine"
+      << "  +  " << juce::String (outMaxMs, 2) << " OUT"
+      << "  =  " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
 
     if (s != lastBodyText)
     {

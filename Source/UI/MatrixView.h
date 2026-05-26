@@ -56,6 +56,13 @@ public:
     // async plugin reload.
     void updateFxButtonAppearance (bool isInput, int ch);
 
+    // Progress callbacks for the chunked-rebuild path.  MainComponent's
+    // LoadingOverlay subscribes so the user sees "Loading routing... 24/114"
+    // instead of a frozen window when devices have a lot of channels.
+    // (totalSteps == 0 => indeterminate or trivial layout.)
+    std::function<void (int doneSteps, int totalSteps)> onRebuildProgress;
+    std::function<void()> onRebuildFinished;
+
     // ----- Multi-channel selection (FX broadcast) ----------------------------
     // Click on a channel-name label drives the selection set.  Shift-click
     // extends the range from the last clicked, Cmd-click toggles a single
@@ -146,6 +153,18 @@ private:
     public:
         explicit LeftRailContent (MatrixView& owner) : owner (owner) {}
         void paint (juce::Graphics& g) override;
+        // Forward wheel events to the grid viewport so the user can scroll
+        // the matrix by spinning the wheel anywhere over the left rail --
+        // including over the trim slider, mute / solo / fx buttons, the
+        // channel name label, etc.  The trim slider's own scroll-to-adjust
+        // is disabled (setScrollWheelEnabled(false) in makeTrimSlider) so
+        // the wheel bubbles up here instead of nudging the trim.
+        void mouseWheelMove (const juce::MouseEvent&,
+                             const juce::MouseWheelDetails&) override;
+        // Click in any gap between widgets clears the INPUT selection.
+        // SelectableLabel children swallow their own clicks (those set
+        // selection), so this only fires for true empty space.
+        void mouseDown (const juce::MouseEvent&) override;
     private:
         MatrixView& owner;
     };
@@ -155,10 +174,16 @@ private:
     public:
         explicit TopRailContent (MatrixView& owner) : owner (owner) {}
         void paint (juce::Graphics& g) override;
-        // Clicks in the rotated-label band at the top of this rail drive
-        // output channel selection (shift / cmd modifiers respected).
-        // The widget rows below own their own mouse handling.
+        // Clicks in the rotated-label band drive output channel selection;
+        // clicks below the label band on empty space CLEAR the output
+        // selection (the channel-widget rows below own their own mouse
+        // handling, so this only fires for true empty space there).
         void mouseDown (const juce::MouseEvent& e) override;
+        // Wheel: re-map vertical to horizontal so a regular mouse wheel
+        // scrolls outputs left/right naturally.  Trackpad horizontal
+        // swipes stay as-is.
+        void mouseWheelMove (const juce::MouseEvent&,
+                             const juce::MouseWheelDetails&) override;
     private:
         MatrixView& owner;
     };
@@ -168,6 +193,9 @@ private:
     public:
         explicit CornerCell (MatrixView& owner) : owner (owner) {}
         void paint (juce::Graphics& g) override;
+        // Click on the top-left corner cell clears BOTH input and output
+        // selections -- it's the natural "neutral" zone of the matrix.
+        void mouseDown (const juce::MouseEvent&) override;
     private:
         MatrixView& owner;
     };
@@ -210,6 +238,34 @@ private:
 
     // Direction-aware FX helpers.  isInput = true addresses input plugin
     // hosts (engine.getInputPluginHost), false the output ones.
+    // ---- Rebuild helpers (chunked) ----
+    // Returns true when the channel layout produced by the engine right
+    // now matches what we already have widgets for -- in which case we
+    // can skip the heavy widget recreation and just refresh values.
+    bool samePhysicalLayout() const;
+    void softRefreshFromEngine();
+    void clearAllChannelWidgets();
+    void buildLabelsFromEngine();
+    void buildInputRowWidgets  (int n);
+    void buildOutputColumnWidgets (int m);
+    void continueRebuild();
+    void finishRebuild();
+
+    // Cancellable async rebuild state.  Generation bumps every time
+    // rebuildFromEngine() starts -- pending continueRebuild() callAsyncs
+    // from a previous invocation bail out at their entry check.
+    struct RebuildState
+    {
+        uint64_t generation   = 0;
+        bool     active       = false;
+        int      nextInputIdx = 0;
+        int      nextOutputIdx = 0;
+        int      totalInputs  = 0;
+        int      totalOutputs = 0;
+    };
+    RebuildState rebuildState;
+    uint64_t     rebuildGenerationCounter = 0;
+
     void openFxMenuFor (bool isInput, int ch);
     void loadPluginInto (bool isInput, int ch, int slotIdx);   // legacy single-channel
     // Multi-broadcast variant: pick a plugin once via the file chooser, then

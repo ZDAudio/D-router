@@ -177,6 +177,24 @@ MainComponent::MainComponent()
 
     addChildComponent (matrixView);
 
+    // Loading overlay: shown immediately so the user sees the brand splash
+    // while devices spin up + initial matrix builds.  Hidden when matrixView
+    // finishes its first rebuild from the snapshot-restored engine state.
+    addAndMakeVisible (loadingOverlay);
+    loadingOverlay.showOverlay ("Starting engine and building routing...");
+
+    matrixView.onRebuildProgress = [this] (int done, int total)
+    {
+        loadingOverlay.setProgress (done, total);
+        if (total > 0)
+            loadingOverlay.setMessage ("Building routing  " + juce::String (done)
+                                       + " / " + juce::String (total) + " channels");
+    };
+    matrixView.onRebuildFinished = [this]
+    {
+        loadingOverlay.hideOverlay();
+    };
+
     // When the user clicks any per-channel mute button while a panic is
     // active, discard the saved pre-panic snapshot so the next panic press
     // mutes everything from scratch (matches the user's spec: "panic forgets
@@ -325,6 +343,9 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
+    // Loading overlay always covers the entire window.
+    loadingOverlay.setBounds (getLocalBounds());
+
     auto r = getLocalBounds().reduced (12);
     auto top = r.removeFromTop (32);
     
@@ -664,6 +685,10 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     matrixView.setEnabled (false);
     groupPanel.setEnabled (false);
     inputGroupPanel.setEnabled (false);
+
+    // Show the loading splash so the user knows the app is busy and
+    // hasn't crashed.  Hidden when matrixView's chunked rebuild finishes.
+    loadingOverlay.showOverlay ("Reconfiguring engine...");
 
     if (reconfigThread.joinable()) reconfigThread.join();
 

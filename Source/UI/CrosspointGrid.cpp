@@ -12,6 +12,51 @@ CrosspointGrid::CrosspointGrid (RoutingMatrix& m) : matrix (m)
     setOpaque (true);
 }
 
+// ---- Hover tracking ----------------------------------------------------
+// Halo now extends infinitely in 8 directions (full row, full column,
+// both diagonals through the hovered cell), so the affected area on
+// hover change spans almost the entire grid.  Cheaper to just repaint()
+// the whole component -- paint() is already clip-bounded via
+// g.getClipBounds(), so it only touches visible cells anyway.
+void CrosspointGrid::repaintHoverHalo (int /*outIdx*/, int /*inIdx*/)
+{
+    repaint();
+}
+
+void CrosspointGrid::mouseMove (const juce::MouseEvent& e)
+{
+    const int prevOut = hoverOut;
+    const int prevIn  = hoverIn;
+
+    int m, n;
+    if (hitTestCell (e.x, e.y, m, n))
+    {
+        if (m == prevOut && n == prevIn) return;
+        hoverOut = m;
+        hoverIn  = n;
+    }
+    else
+    {
+        if (prevOut < 0 && prevIn < 0) return;
+        hoverOut = -1;
+        hoverIn  = -1;
+    }
+
+    if (prevOut >= 0)  repaintHoverHalo (prevOut, prevIn);
+    if (hoverOut >= 0) repaintHoverHalo (hoverOut, hoverIn);
+}
+
+void CrosspointGrid::mouseEnter (const juce::MouseEvent& e) { mouseMove (e); }
+
+void CrosspointGrid::mouseExit (const juce::MouseEvent&)
+{
+    if (hoverOut < 0 && hoverIn < 0) return;
+    const int p = hoverOut, q = hoverIn;
+    hoverOut = -1;
+    hoverIn  = -1;
+    if (p >= 0) repaintHoverHalo (p, q);
+}
+
 float CrosspointGrid::dbToLin (float db) noexcept
 {
     if (db <= -60.0f) return 0.0f;
@@ -183,6 +228,44 @@ void CrosspointGrid::paint (juce::Graphics& g)
     {
         float x = (float) bound * (float) cellSize;
         g.drawLine (x, 0.0f, x, (float) getHeight(), 1.0f);
+    }
+
+    // ---- Hover halo: full cross + both diagonals ------------------------
+    // The 8 directions from the hovered cell extend infinitely to the
+    // edges of the grid: full ROW (left+right), full COLUMN (up+down),
+    // NW-SE diagonal, NE-SW diagonal.  Light grey overlay so all four
+    // lines are visible at the same time without becoming dominant.
+    // Center cell gets a brighter border to pin down the actual target.
+    if (hoverOut >= 0 && hoverIn >= 0)
+    {
+        const auto halo = juce::Colours::white.withAlpha (0.06f);
+
+        // Full row + full column -- 2 fillRect calls cover all 4 cardinal
+        // arms of the cross in one shot each.  Visible-clip restricts the
+        // actual GPU work to whatever's on screen.
+        g.setColour (halo);
+        g.fillRect (0, hoverIn  * cellSize, numOuts * cellSize, cellSize);
+        g.fillRect (hoverOut * cellSize, 0, cellSize, numIns  * cellSize);
+
+        // Two diagonals.  Walk a single offset d in both directions; clip
+        // bound stays per-cell.
+        const int maxD = juce::jmax (numOuts, numIns);
+        for (int d = -maxD; d <= maxD; ++d)
+        {
+            if (d == 0) continue;   // center already covered by row/col
+            const int mPlus  = hoverOut + d;
+            const int nPlus  = hoverIn  + d;
+            const int nMinus = hoverIn  - d;
+            if (mPlus >= 0 && mPlus < numOuts)
+            {
+                if (nPlus  >= 0 && nPlus  < numIns) g.fillRect (cellBounds (mPlus, nPlus));
+                if (nMinus >= 0 && nMinus < numIns) g.fillRect (cellBounds (mPlus, nMinus));
+            }
+        }
+
+        // Center cell -- subtle bright border to mark the actual target.
+        g.setColour (juce::Colours::white.withAlpha (0.45f));
+        g.drawRect (cellBounds (hoverOut, hoverIn).toFloat().reduced (1.0f), 1.0f);
     }
 
     // Highlight shift-click start cell (Requirement 1 feedback)

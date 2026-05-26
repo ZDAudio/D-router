@@ -39,7 +39,12 @@ public:
                         std::function<void (std::optional<EngineSettings>, bool)> cb);
 
 private:
-    void addSection      (const juce::String& heading);
+    // Section divider with an optional plain-language subtitle.  The
+    // subtitle renders beneath the bold heading in a dim grey -- a single
+    // line of "what this section actually controls" so the user doesn't
+    // have to mouse-hover every info icon just to orient themselves.
+    void addSection      (const juce::String& heading,
+                          const juce::String& subtitle = {});
     void addIntField     (const juce::String& name, int& target, int minVal, int maxVal,
                           const juce::String& unitHint, const juce::String& tooltip);
     void addDoubleField  (const juce::String& name, double& target, double minVal, double maxVal,
