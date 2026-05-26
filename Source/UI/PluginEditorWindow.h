@@ -24,24 +24,8 @@ public:
     void closeButtonPressed() override;
 
 private:
-    // Wraps the plugin's editor; for fixed-size editors, applies an
-    // AffineTransform::scale so the window can still be made bigger / smaller
-    // while preserving aspect ratio.  Blurry-but-readable is preferred to
-    // empty padding.
-    class ScalableHolder : public juce::Component
-    {
-    public:
-        void setEditor (juce::AudioProcessorEditor* e);
-        void resized() override;
-    private:
-        juce::AudioProcessorEditor* editor = nullptr;
-        int naturalW = 0;
-        int naturalH = 0;
-    };
-
     juce::AudioPluginInstance&                  plugin;
     std::unique_ptr<juce::AudioProcessorEditor> editor;
-    ScalableHolder                              holder;
     std::function<void()>                       onClose;
 };
 

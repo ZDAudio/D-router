@@ -56,6 +56,16 @@ public:
     // async plugin reload.
     void updateFxButtonAppearance (bool isInput, int ch);
 
+    // ----- Multi-channel selection (FX broadcast) ----------------------------
+    // Click on a channel-name label drives the selection set.  Shift-click
+    // extends the range from the last clicked, Cmd-click toggles a single
+    // channel, plain click selects only the clicked one.  Selection is per
+    // direction (input list independent of output list).
+    void handleChannelHeaderClick (bool isInput, int ch, const juce::ModifierKeys& mods);
+    std::vector<int> getSelectedChannels (bool isInput) const;
+    void clearChannelSelection (bool isInput);
+    bool isChannelSelected (bool isInput, int ch) const;
+
     // Highlight a set of output column indices.  Called when an OUTPUT group
     // card is hovered.  Pass an empty list to clear.
     void setHighlightedOutputs (std::vector<int> outs);
@@ -91,12 +101,19 @@ private:
     //
     // Inherits DragAndDropContainer so the user can drag a slot's name
     // button onto another slot's name button to reorder the chain.
+    //
+    // `targetChannels` is the list of channels every popup action applies
+    // to.  Single-channel click -> [ch].  Click on one of N selected
+    // channels -> all N (multi-broadcast mode).  Load / bypass / remove /
+    // drag-reorder all fan out to every entry; editor-open uses only the
+    // primary channel (no point opening 12 windows at once).
     class FxChainPopupContent : public juce::Component,
                                 public  juce::DragAndDropContainer,
                                 private juce::Timer
     {
     public:
-        FxChainPopupContent (MatrixView& owner, bool isInput, int ch);
+        FxChainPopupContent (MatrixView& owner, bool isInput, int primaryCh,
+                             std::vector<int> targetChannels);
         ~FxChainPopupContent() override;
         void resized() override;
         void paint (juce::Graphics&) override;
@@ -119,7 +136,8 @@ private:
         juce::Label        header;
         MatrixView& owner;
         bool isInput;
-        int  ch;
+        int  ch;            // primary -- used for editor-open + appearance refresh
+        std::vector<int> targets;   // every channel actions broadcast to
     };
 
     // Excel-style freezing sub-components
@@ -137,6 +155,10 @@ private:
     public:
         explicit TopRailContent (MatrixView& owner) : owner (owner) {}
         void paint (juce::Graphics& g) override;
+        // Clicks in the rotated-label band at the top of this rail drive
+        // output channel selection (shift / cmd modifiers respected).
+        // The widget rows below own their own mouse handling.
+        void mouseDown (const juce::MouseEvent& e) override;
     private:
         MatrixView& owner;
     };
@@ -189,9 +211,19 @@ private:
     // Direction-aware FX helpers.  isInput = true addresses input plugin
     // hosts (engine.getInputPluginHost), false the output ones.
     void openFxMenuFor (bool isInput, int ch);
-    void loadPluginInto (bool isInput, int ch, int slotIdx);
+    void loadPluginInto (bool isInput, int ch, int slotIdx);   // legacy single-channel
+    // Multi-broadcast variant: pick a plugin once via the file chooser, then
+    // instantiate it into the SAME slot on every channel in `channels`,
+    // wiping whatever was previously there.
+    void loadPluginIntoMulti (bool isInput, std::vector<int> channels, int slotIdx);
     void showEditorFor  (bool isInput, int ch, int slotIdx);
     void closeEditorFor (bool isInput, int ch, int slotIdx);
+
+    // Channel-selection state (drives FX broadcast).
+    std::vector<int> selectedInputs;
+    std::vector<int> selectedOutputs;
+    int lastClickedInput  = -1;
+    int lastClickedOutput = -1;
     // updateFxButtonAppearance lives in the public section now -- it's called
     // from MainComponent's snapshot-restore async callbacks.
 

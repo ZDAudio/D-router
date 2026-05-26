@@ -10,8 +10,17 @@ namespace dcr {
 
 namespace
 {
-    constexpr size_t kRingCapacity = 5000;
-    constexpr int    kKeepSessions = 10;
+    constexpr size_t      kRingCapacity           = 5000;
+    // Hard cap on the TOTAL size of every session-*.log on disk.  Once
+    // this is exceeded, oldest session files are evicted until the total
+    // fits.  The currently-open session is never deleted -- if it alone
+    // grows past the budget the cap is best-effort only (we won't truncate
+    // an open log file mid-stream; everything else gets pruned first).
+    constexpr juce::int64 kTotalBudgetBytes       = 1024 * 1024;   // 1 MB
+    // Re-check the budget every N log lines so a long session that's
+    // outgrowing the budget still evicts older files on the fly, not
+    // only at startup.
+    constexpr int         kBudgetRecheckInterval  = 200;
 
     class FileLogger : public juce::Logger
     {
@@ -20,11 +29,13 @@ namespace
         {
             auto dir = dcr::Logger::getLogDirectory();
             dir.createDirectory();
-            pruneOldSessions (dir);
 
             const auto stamp = juce::Time::getCurrentTime().formatted ("%Y-%m-%d_%H-%M-%S");
             logFile = dir.getChildFile ("session-" + stamp + ".log");
             stream  = logFile.createOutputStream();
+            // Prune AFTER opening the new file so getFullPathName() match
+            // works when we exclude the current session from eviction.
+            enforceTotalBudget (dir);
             if (stream != nullptr)
                 writeHeader();
         }
@@ -70,7 +81,15 @@ namespace
             writeLineUnlocked ("=== Model: " + juce::SystemStats::getDeviceDescription());
             writeLineUnlocked ("=== CPU:   " + juce::SystemStats::getCpuVendor()
                                + " / " + juce::String (juce::SystemStats::getNumCpus()) + " cores");
-            writeLineUnlocked ("=== Build: " __DATE__ " " __TIME__);
+            // The mtime of the executable -- always reflects the latest
+            // link, unlike __DATE__/__TIME__ which only updates when this
+            // particular .cpp recompiles.  That was the source of a really
+            // confusing crash bisection earlier where the banner read an
+            // old timestamp while the actual binary already had the fix.
+            const auto execFile = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+            const auto mtime    = execFile.getLastModificationTime();
+            writeLineUnlocked ("=== Built: " + mtime.toString (true, true)
+                               + "   (binary mtime, always current)");
             writeLineUnlocked ("================================================================");
         }
 
@@ -88,16 +107,38 @@ namespace
             }
             ring.push_back (line);
             while (ring.size() > kRingCapacity) ring.pop_front();
+
+            // Periodically re-enforce the on-disk byte budget.  A long
+            // session that grows past the cap evicts older sessions until
+            // the total fits.  Cheap (one directory scan + a couple of
+            // size queries every ~200 lines).
+            if (++linesSinceBudgetCheck >= kBudgetRecheckInterval)
+            {
+                linesSinceBudgetCheck = 0;
+                enforceTotalBudget (logFile.getParentDirectory());
+            }
         }
 
-        static void pruneOldSessions (const juce::File& dir)
+        // Delete oldest session-*.log files until the total on-disk size
+        // is <= kTotalBudgetBytes.  Never deletes the file the current
+        // FileLogger is writing to.
+        void enforceTotalBudget (const juce::File& dir)
         {
             auto files = dir.findChildFiles (juce::File::findFiles, false, "session-*.log");
-            files.sort();   // filenames are timestamped, so sort == oldest first
-            while (files.size() > kKeepSessions)
+            files.sort();   // filenames are timestamped -> sort == oldest first
+
+            juce::int64 total = 0;
+            for (auto& f : files) total += f.getSize();
+            if (total <= kTotalBudgetBytes) return;
+
+            const auto currentPath = logFile.getFullPathName();
+            for (auto& f : files)
             {
-                files.getReference (0).deleteFile();
-                files.remove (0);
+                if (total <= kTotalBudgetBytes) break;
+                if (f.getFullPathName() == currentPath) continue;  // never the active log
+                const auto sz = f.getSize();
+                if (f.deleteFile())
+                    total -= sz;
             }
         }
 
@@ -105,6 +146,7 @@ namespace
         std::unique_ptr<juce::FileOutputStream>  stream;
         juce::File                               logFile;
         std::deque<juce::String>                 ring;
+        int                                      linesSinceBudgetCheck = 0;
     };
 
     // Owned by us; juce::Logger::setCurrentLogger holds a raw pointer.

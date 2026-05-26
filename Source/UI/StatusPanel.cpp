@@ -47,8 +47,10 @@ void StatusPanel::resized()
     title.setBounds (top);
     r.removeFromTop (4);
 
-    // Top gauges occupy a fixed 64 px strip; latency text fills the rest.
-    gauges.setBounds (r.removeFromTop (64));
+    // Top gauges occupy an 80 px strip -- enough for title + big value +
+    // optional bar + "healthy:" hint line per card.  Latency text fills
+    // the rest below.
+    gauges.setBounds (r.removeFromTop (80));
     r.removeFromTop (6);
     body.setBounds (r);
 }
@@ -90,8 +92,13 @@ void StatusPanel::refresh()
     const auto processedBlocks = engine.getMatrixBlocksProcessed();
     const auto stalledBlocks   = engine.getMatrixBlocksStalled();
 
-    // Windowed (per-refresh) stalled ratio — much more meaningful than the
-    // lifetime average, which is pinned high by start-up stalls.
+    // Windowed (per-refresh) metric.  We compute polls-per-block (matrix
+    // thread wake-ups per real processed block).  The OLD "stalled %"
+    // metric was misleading: at the default 250us poll interval, a healthy
+    // engine sits at ~90% stalled because that's just (poll_period /
+    // block_period) -- not an audio problem.  polls/block exposes the same
+    // underlying counter in a non-alarming form: healthy ~10, problematic
+    // when >> 25.
     if (firstSample)
     {
         firstSample = false;
@@ -104,24 +111,26 @@ void StatusPanel::refresh()
                               ? processedBlocks - prevProcessedBlocks : 0;
         const uint64_t dS = stalledBlocks  > prevStalledBlocks
                               ? stalledBlocks  - prevStalledBlocks  : 0;
-        const uint64_t dT = dP + dS;
-        if (dT > 0)
-            windowStalledRatio = (float) dS / (float) dT;
-        else
-            windowStalledRatio = 0.0f;
+        windowPollsPerBlock = dP > 0 ? (float) (dP + dS) / (float) dP : 0.0f;
         prevProcessedBlocks = processedBlocks;
         prevStalledBlocks   = stalledBlocks;
     }
-    const float stalledRatio = windowStalledRatio;
 
-    const float cpuAvg  = engine.getCpuLoadAvg();
-    const float cpuPeak = engine.getCpuLoadPeak();
+    const float  cpuAvg       = engine.getCpuLoadAvg();
+    const float  cpuPeak      = engine.getCpuLoadPeak();
+    // Leading indicator of actual underrun risk -- if this drops near 0,
+    // the next device callback will xrun.  Two views: percentage (looks
+    // bigger when ring is small) and absolute ms (the real "time-to-xrun"
+    // figure, independent of ring capacity).
+    const float  outRingMin   = engine.getMinOutputRingFillFraction();
+    const double outRingMinMs = engine.getMinOutputRingHeadroomMs();
 
     s << "CPU "    << juce::String (cpuAvg  * 100.0f, 1) << "%  peak "
                    << juce::String (cpuPeak * 100.0f, 1) << "%   ";
-    s << "stalled " << juce::String (stalledRatio * 100.0f, 2) << "% (window)   ";
-    s << "blocks "  << (juce::int64) processedBlocks
-       << " (lifetime stalled "  << (juce::int64) stalledBlocks << ")\n";
+    s << "outRing " << juce::String (outRingMinMs, 1) << " ms "
+                    << "(" << juce::String (outRingMin * 100.0f, 0) << "% of cap)   ";
+    s << "polls/block " << juce::String (windowPollsPerBlock, 1) << "\n";
+    s << "blocks " << (juce::int64) processedBlocks << "\n";
 
     s << "xrun in=" << (juce::int64) engine.getTotalInputOverruns()
       << " out="    << (juce::int64) engine.getTotalOutputUnderruns();
@@ -199,27 +208,47 @@ void StatusPanel::refresh()
     }
 
     // --- colour by worst severity --------------------------------------------
+    // Severity is driven by what actually matters for audio:
+    //   1. CPU above warn/crit
+    //   2. Output ring fill below 30% (warn) or 15% (crit) -- LEADING signal
+    //   3. A real xrun in the last 5s (definitive)
+    // The old code keyed off "stalled%" which was meaningless and turned
+    // every healthy session red.
     const auto& es = engine.getSettings();
     juce::Colour col = juce::Colour (0xFF000000u | es.accentColorRGB);   // healthy
     const bool recentDropout = lastUnderrunMs > 0.0
         && (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) < 5000.0;
 
-    if (cpuAvg >= es.cpuCritRatio || stalledRatio >= es.stalledCritRatio || recentDropout)
+    if (cpuAvg >= es.cpuCritRatio || outRingMinMs < 3.0 || recentDropout)
         col = juce::Colour (0xFF000000u | es.criticalColorRGB);
-    else if (cpuAvg >= es.cpuWarnRatio || stalledRatio >= es.stalledWarnRatio)
+    else if (cpuAvg >= es.cpuWarnRatio || outRingMinMs < 8.0)
         col = juce::Colour (0xFF000000u | es.warningColorRGB);
     body.applyColourToAllText (col, true);
 
     // Cache values for the gauge strip and trigger its repaint.
     lastCpuAvg        = cpuAvg;
     lastCpuPeak       = cpuPeak;
-    lastStalledRatio  = stalledRatio;
+    lastOutRingMin    = outRingMin;
+    lastOutRingMinMs  = outRingMinMs;
+    lastPollsPerBlock = windowPollsPerBlock;
     lastXrunIn        = engine.getTotalInputOverruns();
     lastXrunOut       = engine.getTotalOutputUnderruns();
     lastDropoutAgoSec = (lastUnderrunMs > 0.0)
         ? (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) / 1000.0
         : -1.0;
     gauges.repaint();
+}
+
+void StatusPanel::GaugeStrip::timerCallback()
+{
+    // Advance the heartbeat phase by a fixed step each tick.  At 6 Hz this
+    // gives a slow, steady pulse the user reads as "engine alive".  The
+    // strip is small enough (~80 px tall, full window width) and the paint
+    // is just text + filled rects, so a 6 Hz repaint is well under 1% CPU
+    // even on a low-end machine.
+    pulsePhase += 0.55f;
+    if (pulsePhase > 6.2832f) pulsePhase -= 6.2832f;
+    repaint();
 }
 
 void StatusPanel::GaugeStrip::paint (juce::Graphics& g)
@@ -229,42 +258,70 @@ void StatusPanel::GaugeStrip::paint (juce::Graphics& g)
     const auto warning  = juce::Colour (0xFF000000u | es.warningColorRGB);
     const auto critical = juce::Colour (0xFF000000u | es.criticalColorRGB);
 
-    auto pickColour = [&] (float val, float warnAt, float critAt)
-    {
-        if (val >= critAt)  return critical;
-        if (val >= warnAt)  return warning;
-        return accent;
-    };
-
     g.fillAll (juce::Colour::fromRGB (16, 16, 20));
 
     auto bounds = getLocalBounds().reduced (4);
-    const int n = 4;
+    const int n = 5;
     const int gap = 6;
     const int w = (bounds.getWidth() - (n - 1) * gap) / n;
 
-    // Helper to draw one labeled card with an optional progress bar.
-    auto drawCard = [&] (juce::Rectangle<int> r, const juce::String& label,
-                          const juce::String& valueText, juce::Colour valueCol,
-                          float fillRatio /* 0..1, <0 = no bar */) {
+    // Pulsing alpha 0.35..1.0 driven by sin(pulsePhase).  Stronger pulse
+    // when severity is critical so the eye is drawn to it.
+    const float pulse = 0.5f + 0.5f * std::sin (pulsePhase);     // 0..1
+
+    // ---- Card renderer ------------------------------------------------------
+    // Layout per card:
+    //   [title]                  [● heartbeat]
+    //
+    //          BIG VALUE
+    //   ▓▓▓▓░░░░░░░░░░░░░░░         <- optional fill bar
+    //   healthy: <hint>
+    auto drawCard = [&] (juce::Rectangle<int> r,
+                         const juce::String& title,
+                         const juce::String& valueText,
+                         const juce::String& healthyHint,
+                         juce::Colour valueCol,
+                         float fillRatio /* 0..1; <0 = no bar */)
+    {
         g.setColour (juce::Colour::fromRGB (24, 24, 30));
         g.fillRect (r);
         g.setColour (juce::Colour::fromRGB (40, 40, 48));
         g.drawRect (r, 1);
 
+        // Heartbeat dot top-right -- pulses alpha at 6 Hz.  Colour matches
+        // the card's severity colour so green dots ripple when healthy,
+        // red dots throb when not.
+        {
+            const float dotSize = 7.0f;
+            const float margin  = 6.0f;
+            const float dx = r.getRight()  - margin - dotSize;
+            const float dy = r.getY()      + margin;
+            const float alpha = 0.35f + 0.65f * pulse;
+            g.setColour (valueCol.withAlpha (alpha));
+            g.fillEllipse (dx, dy, dotSize, dotSize);
+            // soft outer halo when bright -- 1 ellipse, negligible cost
+            g.setColour (valueCol.withAlpha (alpha * 0.20f));
+            g.fillEllipse (dx - 2.0f, dy - 2.0f, dotSize + 4.0f, dotSize + 4.0f);
+        }
+
         auto inner = r.reduced (6, 4);
 
+        // Title
         g.setColour (juce::Colour::fromRGB (140, 140, 150));
         g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.5f, 0));
-        g.drawText (label, inner.removeFromTop (12), juce::Justification::topLeft);
+        g.drawText (title, inner.removeFromTop (12).withTrimmedRight (16),
+                    juce::Justification::topLeft);
 
+        // BIG value -- the eye-catcher
         g.setColour (valueCol);
-        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 18.0f, juce::Font::bold));
-        g.drawText (valueText, inner.removeFromTop (22), juce::Justification::centredLeft);
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
+                                      18.0f, juce::Font::bold));
+        g.drawText (valueText, inner.removeFromTop (22),
+                    juce::Justification::centredLeft);
 
         if (fillRatio >= 0.0f)
         {
-            auto barArea = inner.removeFromTop (8);
+            auto barArea = inner.removeFromTop (6);
             g.setColour (juce::Colour::fromRGB (12, 12, 14));
             g.fillRect (barArea);
             const int filledW = juce::jlimit (0, barArea.getWidth(),
@@ -273,49 +330,102 @@ void StatusPanel::GaugeStrip::paint (juce::Graphics& g)
             g.fillRect (barArea.withWidth (filledW));
             g.setColour (juce::Colour::fromRGB (40, 40, 48));
             g.drawRect (barArea, 0.5f);
+            inner.removeFromTop (2);
         }
+
+        // Healthy-range hint at the bottom, dim grey
+        g.setColour (juce::Colour::fromRGB (100, 100, 110));
+        g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 9.0f, 0));
+        g.drawText ("healthy: " + healthyHint, inner.removeFromTop (12),
+                    juce::Justification::topLeft);
     };
+
+    auto pickColour = [&] (float val, float warnAt, float critAt)
+    {
+        if (val >= critAt)  return critical;
+        if (val >= warnAt)  return warning;
+        return accent;
+    };
+
+    int x = bounds.getX();
 
     // 1. CPU
     {
-        auto r = bounds.withX (bounds.getX()).withWidth (w);
+        auto r = juce::Rectangle<int> (x, bounds.getY(), w, bounds.getHeight());
         const auto cpuCol = pickColour (owner.lastCpuAvg, es.cpuWarnRatio, es.cpuCritRatio);
         drawCard (r,
-                  "CPU  (peak " + juce::String (owner.lastCpuPeak * 100.0f, 0) + "%)",
+                  "CPU  peak " + juce::String (owner.lastCpuPeak * 100.0f, 0) + "%",
                   juce::String (owner.lastCpuAvg * 100.0f, 1) + " %",
+                  juce::CharPointer_UTF8 ("\xe2\x86\x93 lower better, < 70%"),
                   cpuCol,
                   juce::jlimit (0.0f, 1.0f, owner.lastCpuAvg));
+        x += w + gap;
     }
-    // 2. Stalled
+    // 2. Output ring headroom -- the LEADING indicator of xrun risk.
+    //    Show MILLISECONDS as the main value (independent of ring size)
+    //    and the % as secondary.  ms is what actually tells you "how
+    //    long until xrun if matrix stops producing right now".  warn /
+    //    crit thresholds on ms because that's the absolute truth: under
+    //    5 ms is risky regardless of how big your ring is.
     {
-        auto r = bounds.withX (bounds.getX() + (w + gap)).withWidth (w);
-        const auto stCol = pickColour (owner.lastStalledRatio, es.stalledWarnRatio, es.stalledCritRatio);
+        auto r = juce::Rectangle<int> (x, bounds.getY(), w, bounds.getHeight());
+        juce::Colour ringCol = accent;
+        if (owner.lastOutRingMinMs < 3.0)      ringCol = critical;
+        else if (owner.lastOutRingMinMs < 8.0) ringCol = warning;
+        // Bar normalized: fully filled at 30 ms headroom.
+        const float barFill = (float) juce::jlimit (0.0, 1.0, owner.lastOutRingMinMs / 30.0);
         drawCard (r,
-                  "STALLED (window)",
-                  juce::String (owner.lastStalledRatio * 100.0f, 2) + " %",
-                  stCol,
-                  juce::jlimit (0.0f, 1.0f, owner.lastStalledRatio * 4.0f));   // expand 25% -> full bar
+                  "OUT RING MIN  xrun risk",
+                  juce::String (owner.lastOutRingMinMs, 1) + " ms"
+                    + "   (" + juce::String (owner.lastOutRingMin * 100.0f, 0) + "%)",
+                  juce::CharPointer_UTF8 ("\xe2\x86\x91 higher better, > 8 ms"),
+                  ringCol,
+                  barFill);
+        x += w + gap;
     }
-    // 3. Xruns
+    // 3. POLLS / BLOCK -- matrix thread wakes per real processed block.
+    //    Healthy is roughly (block_period / poll_interval) + 1.
+    //    Anything well above that means matrix is hammering rings while
+    //    the device callback lags behind.
     {
-        auto r = bounds.withX (bounds.getX() + 2 * (w + gap)).withWidth (w);
+        auto r = juce::Rectangle<int> (x, bounds.getY(), w, bounds.getHeight());
+        juce::Colour pollCol = accent;
+        if (owner.lastPollsPerBlock > 50.0f) pollCol = critical;
+        else if (owner.lastPollsPerBlock > 25.0f) pollCol = warning;
+        drawCard (r,
+                  "POLLS / BLOCK  (efficiency)",
+                  juce::String (owner.lastPollsPerBlock, 1),
+                  "5-15   not an audio metric",
+                  pollCol,
+                  juce::jlimit (0.0f, 1.0f, owner.lastPollsPerBlock / 40.0f));
+        x += w + gap;
+    }
+    // 4. Xruns -- the only hard truth indicator.  Any > 0 means we shipped
+    //    audible glitches; the headline is the count.
+    {
+        auto r = juce::Rectangle<int> (x, bounds.getY(), w, bounds.getHeight());
         const bool dirty = (owner.lastXrunIn + owner.lastXrunOut) > 0;
-        drawCard (r, "XRUN  in / out",
+        drawCard (r,
+                  "XRUN  in / out  (audible)",
                   juce::String ((juce::int64) owner.lastXrunIn) + " / "
                     + juce::String ((juce::int64) owner.lastXrunOut),
+                  "MUST be 0",
                   dirty ? critical : accent,
                   -1.0f);
+        x += w + gap;
     }
-    // 4. Last dropout
+    // 5. Last dropout
     {
-        auto r = bounds.withX (bounds.getX() + 3 * (w + gap)).withWidth (w);
+        auto r = juce::Rectangle<int> (x, bounds.getY(), w, bounds.getHeight());
         const bool recent = owner.lastDropoutAgoSec >= 0.0 && owner.lastDropoutAgoSec < 5.0;
         juce::String valText;
         if (owner.lastDropoutAgoSec < 0.0)         valText = "never";
         else if (owner.lastDropoutAgoSec < 60.0)   valText = juce::String (owner.lastDropoutAgoSec, 1) + " s";
         else                                       valText = juce::String ((int) (owner.lastDropoutAgoSec / 60.0)) + "m";
-        drawCard (r, "LAST DROPOUT",
+        drawCard (r,
+                  "LAST DROPOUT",
                   valText,
+                  "never",
                   recent ? critical : accent,
                   -1.0f);
     }
