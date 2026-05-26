@@ -96,6 +96,14 @@ private:
     std::atomic<uint64_t> inputOverruns   { 0 };
     std::atomic<uint64_t> outputUnderruns { 0 };
     std::atomic<double>   lastUnderrunMs  { 0.0 };
+
+    // Set true after the first audioDeviceIOCallback fires on the audio
+    // thread.  The message thread can poll this from a UI timer to surface
+    // "device opened but never delivered a callback" symptoms (a common
+    // CoreAudio failure mode that otherwise looks like silent stall).
+    std::atomic<bool>     firstCallbackFired { false };
+public:
+    bool hasFiredFirstCallback() const noexcept { return firstCallbackFired.load (std::memory_order_acquire); }
 };
 
 } // namespace dcr

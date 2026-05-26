@@ -1,5 +1,7 @@
 #include "Engine/AudioEngine.h"
 
+#include <limits>
+
 namespace dcr {
 
 AudioEngine::AudioEngine()
@@ -61,6 +63,22 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
     if (deviceType == nullptr) return false;
     deviceType->scanForDevices();
 
+    // ---- Diagnostic preamble --------------------------------------------
+    {
+        juce::String line;
+        line << "engine.start: " << juce::String ((int) devices.size())
+             << " device(s) requested, engine SR=" << (int) settings.engineSampleRate
+             << " blockSize=" << settings.engineBlockSize
+             << " preFill=" << settings.outputPreFillBlocks << " blocks"
+             << " ringInMult=" << settings.inputRingMultEng << "/" << settings.inputRingMultDev
+             << " ringOutMult=" << settings.outputRingMultEng << "/" << settings.outputRingMultDev;
+        juce::Logger::writeToLog (line);
+        for (const auto& s : devices)
+            juce::Logger::writeToLog (juce::String ("  requested: ") + s.name
+                                      + " in=" + (s.wantInput ? "Y" : "N")
+                                      + " out=" + (s.wantOutput ? "Y" : "N"));
+    }
+
     workers.clear();
     deviceInfo.clear();
 
@@ -71,14 +89,22 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
                                                  spec.wantInput, spec.wantOutput);
         if (! w->open (settings))
         {
-            DBG ("DeviceWorker open failed for " << spec.name << ": " << w->getLastError());
+            juce::Logger::writeToLog ("engine.start: device OPEN FAILED for '"
+                                       + spec.name + "': " + w->getLastError());
             continue;
         }
+        const int nIn  = w->getNumInputChannels();
+        const int nOut = w->getNumOutputChannels();
+        juce::Logger::writeToLog ("engine.start: device opened '" + spec.name
+                                   + "'  SR=" + juce::String ((int) w->getDeviceSampleRate())
+                                   + " buf=" + juce::String (w->getDeviceBufferSize())
+                                   + " in=" + juce::String (nIn)
+                                   + " out=" + juce::String (nOut));
         DeviceInfo info;
         info.name = w->getName();
         info.deviceSampleRate = w->getDeviceSampleRate();
-        info.numInputChannels  = w->getNumInputChannels();
-        info.numOutputChannels = w->getNumOutputChannels();
+        info.numInputChannels  = nIn;
+        info.numOutputChannels = nOut;
         if (info.numInputChannels > 0)  { info.globalInputBase  = totalIns;  totalIns  += info.numInputChannels;  }
         if (info.numOutputChannels > 0) { info.globalOutputBase = totalOuts; totalOuts += info.numOutputChannels; }
         deviceInfo.push_back (info);
@@ -87,9 +113,13 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
 
     if (totalIns == 0 || totalOuts == 0)
     {
-        DBG ("AudioEngine: need at least 1 input and 1 output channel");
+        juce::Logger::writeToLog ("engine.start: ABORTED -- need at least 1 input AND 1 output channel"
+                                   " (got " + juce::String (totalIns) + " in / "
+                                   + juce::String (totalOuts) + " out)");
         return false;
     }
+    juce::Logger::writeToLog ("engine.start: matrix " + juce::String (totalIns)
+                              + " in x " + juce::String (totalOuts) + " out, processor starting");
 
     matrix.resize (totalIns, totalOuts);
 
@@ -161,6 +191,10 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
 void AudioEngine::stop()
 {
     if (! runningFlag) return;
+    juce::Logger::writeToLog ("engine.stop: tearing down " + juce::String ((int) workers.size())
+                              + " worker(s), " + juce::String ((juce::int64) processor.getBlocksProcessed())
+                              + " blocks processed lifetime, "
+                              + juce::String ((juce::int64) processor.getBlocksStalled()) + " stalled");
     processor.stop();
     pluginHosts.clear();
     inputPluginHosts.clear();
@@ -241,6 +275,22 @@ double AudioEngine::LatencyReport::getRoundTripMsWorst() const
     return inMax + getEngineContributionMs() + outMax;
 }
 
+std::vector<AudioEngine::DeviceLiveness> AudioEngine::getDeviceLiveness() const
+{
+    std::vector<DeviceLiveness> out;
+    out.reserve (workers.size());
+    for (auto& w : workers)
+    {
+        DeviceLiveness l;
+        l.name                = w->getName();
+        l.firstCallbackFired  = w->hasFiredFirstCallback();
+        l.hasInput            = w->getNumInputChannels()  > 0;
+        l.hasOutput           = w->getNumOutputChannels() > 0;
+        out.push_back (std::move (l));
+    }
+    return out;
+}
+
 AudioEngine::LatencyReport AudioEngine::getLatencyReport() const
 {
     LatencyReport r;
@@ -280,6 +330,64 @@ size_t AudioEngine::getOutputRingFill (int globalCh) const
         }
     }
     return 0;
+}
+
+float AudioEngine::getOutputRingFillFraction (int globalCh) const
+{
+    int acc = 0;
+    for (auto& w : workers)
+    {
+        for (int c = 0; c < w->getNumOutputChannels(); ++c, ++acc)
+        {
+            if (acc == globalCh)
+            {
+                auto* ring = const_cast<DeviceWorker&> (*w).getOutputRing (c);
+                if (ring == nullptr) return 0.0f;
+                const auto cap = ring->capacity();
+                return cap > 0 ? (float) ring->readAvailable() / (float) cap : 0.0f;
+            }
+        }
+    }
+    return 0.0f;
+}
+
+float AudioEngine::getMinOutputRingFillFraction() const
+{
+    float minFrac = 1.0f;
+    bool any = false;
+    int globalCh = 0;
+    for (auto& w : workers)
+    {
+        for (int c = 0; c < w->getNumOutputChannels(); ++c, ++globalCh)
+        {
+            auto* ring = const_cast<DeviceWorker&> (*w).getOutputRing (c);
+            if (ring == nullptr) continue;
+            const auto cap = ring->capacity();
+            if (cap == 0) continue;
+            const float f = (float) ring->readAvailable() / (float) cap;
+            if (! any || f < minFrac) { minFrac = f; any = true; }
+        }
+    }
+    return any ? minFrac : 0.0f;
+}
+
+double AudioEngine::getMinOutputRingHeadroomMs() const
+{
+    double minMs = std::numeric_limits<double>::infinity();
+    bool any = false;
+    for (auto& w : workers)
+    {
+        const double sr = w->getDeviceSampleRate();
+        if (sr <= 0.0) continue;
+        for (int c = 0; c < w->getNumOutputChannels(); ++c)
+        {
+            auto* ring = const_cast<DeviceWorker&> (*w).getOutputRing (c);
+            if (ring == nullptr) continue;
+            const double ms = 1000.0 * (double) ring->readAvailable() / sr;
+            if (! any || ms < minMs) { minMs = ms; any = true; }
+        }
+    }
+    return any ? minMs : 0.0;
 }
 
 } // namespace dcr

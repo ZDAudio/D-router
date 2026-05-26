@@ -44,39 +44,6 @@ namespace
 }
 
 
-void PluginEditorWindow::ScalableHolder::setEditor (juce::AudioProcessorEditor* e)
-{
-    editor   = e;
-    naturalW = e->getWidth();
-    naturalH = e->getHeight();
-    addAndMakeVisible (editor);
-    setSize (naturalW, naturalH);
-}
-
-void PluginEditorWindow::ScalableHolder::resized()
-{
-    if (editor == nullptr) return;
-
-    if (editor->isResizable())
-    {
-        // Plugin handles its own resize; let it fill us at 1:1.
-        editor->setTransform (juce::AffineTransform());
-        editor->setBounds (getLocalBounds());
-        return;
-    }
-
-    // Fixed-size editor: scale-to-fit, preserving aspect, with letterboxing.
-    if (naturalW <= 0 || naturalH <= 0) { editor->setBounds (getLocalBounds()); return; }
-    const float s = juce::jmin ((float) getWidth()  / (float) naturalW,
-                                (float) getHeight() / (float) naturalH);
-    const int rW = (int) std::round (naturalW * s);
-    const int rH = (int) std::round (naturalH * s);
-    const int x  = (getWidth()  - rW) / 2;
-    const int y  = (getHeight() - rH) / 2;
-    editor->setBounds (0, 0, naturalW, naturalH);
-    editor->setTransform (juce::AffineTransform::scale (s).translated ((float) x, (float) y));
-}
-
 PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
                                         std::function<void()> cb,
                                         const juce::String& contextLabel)
@@ -90,33 +57,17 @@ PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
 {
     setUsingNativeTitleBar (true);
 
-    // CRITICAL ORDER (Youlean Loudness Meter 2 crash, May 2026):
-    //
-    // The previous order was:
-    //   1. holder.setEditor(plugin editor)         <- plugin NSView -> holder
-    //   2. setContentNonOwned(holder, true)        <- holder -> window content
-    //   3. setResizable(true, false)               <- forces addToDesktop()
-    //
-    // Step 3 sent -[NSView _setWindow:] DOWN the existing NSView tree, which
-    // includes the plugin's NSView -- but the host NSWindow's native peer
-    // wasn't fully realised yet (backingScaleFactor returns nil, etc.).
-    // Youlean's NSView's _setWindow: handler dereferences a nil window
-    // property and SIGSEGVs.  Stack frames 9->8->5->3 in the crash log.
-    //
-    // Reordered:
-    //   a. realise the empty window (setResizable triggers addToDesktop
-    //      while there's no plugin NSView attached) and place it on screen
-    //   b. THEN install the editor content -- the plugin's NSView migrates
-    //      from "no parent" to a fully-alive NSWindow, which is a path
-    //      plugins handle robustly because it's how every regular DAW
-    //      opens a plugin window.
+    // CRITICAL ORDER (Youlean Loudness Meter 2 crash):  realise the empty
+    // NSWindow on the desktop BEFORE attaching the plugin's NSView, so the
+    // plugin's -[NSView _setWindow:] handler sees a fully-alive host
+    // window (not a half-built one with nil backingScaleFactor).
     setResizable (true, false);
-    centreWithSize (400, 300);   // placeholder; resized once editor lands
+    centreWithSize (400, 300);
     setVisible    (true);
     toFront       (true);
 
-    // Plugin's native editor first, fall back to generic param view if it
-    // returns null OR throws.
+    // Build the editor (defensively -- crashy plugins fall back to the
+    // generic parameter UI rather than taking the app down).
     juce::AudioProcessorEditor* e = createEditorDefensively (plugin);
     if (e == nullptr)
     {
@@ -125,26 +76,64 @@ PluginEditorWindow::PluginEditorWindow (juce::AudioPluginInstance& p,
     }
     editor.reset (e);
 
-    // Attach + size now that the window has a real peer.  Still @try-wrapped
-    // -- some plugins still throw inside their layout pass on first attach.
+    auto installEditor = [this] (juce::AudioProcessorEditor* ed)
+    {
+        // CRITICAL: do NOT call setResizable a second time here.  JUCE's
+        // ResizableWindow::setResizable internally re-invokes addToDesktop
+        // (to refresh desktop window style flags) whenever isOnDesktop()
+        // is true.  That re-addToDesktop sends -[NSView _setWindow:]
+        // through the entire NSView tree -- which by now includes the
+        // freshly-attached plugin NSView.  Youlean Loudness Meter 2's
+        // _setWindow: handler crashes on this second migration even
+        // though the first one (no plugin attached yet) was fine.
+        //
+        // Trick instead: leave setResizable(true) from the ctor preamble
+        // and use setResizeLimits to express "this plugin's editor can /
+        // can't be resized".  setResizeLimits doesn't touch the desktop.
+        setContentNonOwned (ed, true);   // resizes window to editor's natural size
+
+        const int natW = juce::jmax (1, ed->getWidth());
+        const int natH = juce::jmax (1, ed->getHeight());
+
+        if (ed->isResizable())
+        {
+            if (auto* c = ed->getConstrainer())
+            {
+                const int minW = juce::jmax (1, c->getMinimumWidth());
+                const int minH = juce::jmax (1, c->getMinimumHeight());
+                const int maxW = juce::jmax (minW, c->getMaximumWidth());
+                const int maxH = juce::jmax (minH, c->getMaximumHeight());
+                setResizeLimits (minW, minH, maxW, maxH);
+            }
+            else
+            {
+                // No explicit constrainer: pin the lower bound at the
+                // natural size, give a generous upper bound.
+                setResizeLimits (natW, natH, natW * 8, natH * 8);
+            }
+        }
+        else
+        {
+            // Fixed-size plugin: lock the window to the natural size by
+            // setting min == max.  No setResizable(false) call -- it
+            // would addToDesktop again.
+            setResizeLimits (natW, natH, natW, natH);
+        }
+        centreWithSize (getWidth(), getHeight());
+    };
+
    #if JUCE_MAC
     @try {
-        holder.setEditor (e);
-        setContentNonOwned (&holder, true);
-        centreWithSize (holder.getWidth(), holder.getHeight());
+        installEditor (editor.get());
     }
     @catch (NSException* ex) {
         DBG ("Plugin editor NSException during attach (" << plugin.getName()
              << "): " << [[ex reason] UTF8String]);
         editor.reset (new juce::GenericAudioProcessorEditor (plugin));
-        holder.setEditor (editor.get());
-        setContentNonOwned (&holder, true);
-        centreWithSize (holder.getWidth(), holder.getHeight());
+        installEditor (editor.get());
     }
    #else
-    holder.setEditor (e);
-    setContentNonOwned (&holder, true);
-    centreWithSize (holder.getWidth(), holder.getHeight());
+    installEditor (editor.get());
    #endif
 }
 

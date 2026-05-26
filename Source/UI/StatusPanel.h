@@ -46,13 +46,21 @@ private:
 
     // Self-painted gauge strip at the top of the panel; the body below is
     // still a monospaced TextEditor for the latency table.
-    class GaugeStrip : public juce::Component
+    //
+    // Runs a low-frequency (6 Hz) timer that drives a subtle heartbeat
+    // pulse on each card's status dot.  Only this small strip repaints --
+    // not the body text -- and the paint is just text + filled rects, so
+    // the animation cost is in the noise.
+    class GaugeStrip : public juce::Component,
+                       private juce::Timer
     {
     public:
-        explicit GaugeStrip (StatusPanel& o) : owner (o) {}
+        explicit GaugeStrip (StatusPanel& o) : owner (o) { startTimerHz (6); }
         void paint (juce::Graphics&) override;
     private:
+        void timerCallback() override;
         StatusPanel& owner;
+        float pulsePhase = 0.0f;   // 0..2π, advanced on each tick
     };
     GaugeStrip       gauges { *this };
     juce::TextEditor body;
@@ -61,19 +69,20 @@ private:
     // expose; updated in refresh().
     float    lastCpuAvg        = 0.0f;
     float    lastCpuPeak       = 0.0f;
-    float    lastStalledRatio  = 0.0f;
+    float    lastOutRingMin    = 1.0f;   // 0..1, leading xrun-risk indicator
+    double   lastOutRingMinMs  = 0.0;    // absolute headroom in ms (the actionable metric)
+    float    lastPollsPerBlock = 0.0f;   // matrix wakes per real block
     uint64_t lastXrunIn        = 0;
     uint64_t lastXrunOut       = 0;
     double   lastDropoutAgoSec = -1.0;   // -1 = never
     juce::String lastBodyText;            // skip setText when unchanged
 
     // Window-based rate tracking so the displayed ratios reflect the LAST
-    // refresh interval, not lifetime cumulative.  Otherwise the startup
-    // stall (matrix polled before audio arrived) pins ratio at 100% forever.
-    bool     firstSample        = true;
-    uint64_t prevProcessedBlocks = 0;
-    uint64_t prevStalledBlocks   = 0;
-    float    windowStalledRatio  = 0.0f;
+    // refresh interval, not lifetime cumulative.
+    bool     firstSample          = true;
+    uint64_t prevProcessedBlocks  = 0;
+    uint64_t prevStalledBlocks    = 0;
+    float    windowPollsPerBlock  = 0.0f;
 };
 
 } // namespace dcr

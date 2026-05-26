@@ -77,6 +77,19 @@ public:
     uint64_t getMatrixBlocksStalled()   const noexcept { return processor.getBlocksStalled();   }
     size_t   getInputRingFill  (int globalCh) const;  // returns sample count available
     size_t   getOutputRingFill (int globalCh) const;
+    // Output ring fill as a fraction 0..1 of the ring's usable capacity.
+    // The actual leading indicator of "about to xrun": when this drops
+    // near zero, the matrix thread can't keep up with the device callback.
+    float    getOutputRingFillFraction (int globalCh) const;
+    // Minimum fill fraction across every output channel -- worst-case
+    // headroom in one number.  0.0 == about to underrun.
+    float    getMinOutputRingFillFraction() const;
+    // Minimum output ring fill expressed as MILLISECONDS of audio at the
+    // device's own sample rate.  This is the actionable metric -- it tells
+    // the user "you have N ms of safety before the next xrun if matrix
+    // stops producing right now".  Independent of ring capacity, so it
+    // doesn't get spuriously larger when the user shrinks the buffers.
+    double   getMinOutputRingHeadroomMs() const;
     float    getInputPeak  (int globalCh) const noexcept { return processor.getInputPeak  (globalCh); }
     float    getOutputPeak (int globalCh) const noexcept { return processor.getOutputPeak (globalCh); }
 
@@ -146,6 +159,19 @@ public:
     };
 
     LatencyReport getLatencyReport() const;
+
+    // Per-device "have I seen at least one IO callback yet?" snapshot --
+    // lets the PerfMonitor (and future UI) surface devices that opened
+    // successfully but whose driver never delivered samples (silent
+    // CoreAudio failure mode).
+    struct DeviceLiveness
+    {
+        juce::String name;
+        bool         firstCallbackFired = false;
+        bool         hasInput  = false;
+        bool         hasOutput = false;
+    };
+    std::vector<DeviceLiveness> getDeviceLiveness() const;
 
 private:
     void audioDeviceListChanged() override;

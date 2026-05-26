@@ -607,6 +607,29 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
         updatePanicButtonAppearance();
     }
 
+    // ---- Preserve per-channel FX chains across the restart ---------------
+    // engine.stop() wipes pluginHosts / inputPluginHosts (and the AU
+    // instances inside them), so without explicit preservation every
+    // Settings change would silently nuke the user's per-channel FX.
+    // Group plugins survive automatically because OutputGroupManager is
+    // not touched by engine.stop().
+    //
+    // Skip when pendingSnap is already valid -- that means we're being
+    // called from applySnapshot, which owns pendingSnap and will restore
+    // the snapshot's own (different) plugin chains.
+    if (! pendingSnap.valid)
+    {
+        auto snap = gatherCurrentSnapshot();
+        pendingSnap.channelChains = std::move (snap.channelChains);
+        // Note: groupChains intentionally left empty -- the actual group
+        // plugin objects survive the restart in-place, so re-instantiating
+        // them would double-load (and double the CPU cost) for nothing.
+        pendingSnap.valid = true;
+        juce::Logger::writeToLog ("applyDeviceSelection: preserved "
+                                  + juce::String ((int) pendingSnap.channelChains.size())
+                                  + " channel FX chain(s) across restart");
+    }
+
     // Close any open per-channel plugin editors NOW (message thread) before
     // the worker tears down PluginHosts.  Skipping this lets ~PluginEditor
     // call editorBeingDeleted() on a dead AudioPluginInstance -> segfault.

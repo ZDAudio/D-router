@@ -5,9 +5,27 @@
 #include "UI/PluginEditorWindow.h"
 #include "Routing/RoutingMatrix.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace dcr {
+
+namespace
+{
+    // Channel-name label that surfaces a mouseDown callback.  Used in the
+    // matrix rails to drive multi-track selection (shift / cmd modifiers).
+    // We intentionally swallow the click so juce::Label's double-click
+    // doesn't pop the rename editor.
+    class SelectableLabel : public juce::Label
+    {
+    public:
+        std::function<void (const juce::ModifierKeys&)> onMouseDown;
+        void mouseDown (const juce::MouseEvent& e) override
+        {
+            if (onMouseDown) onMouseDown (e.mods);
+        }
+    };
+}
 
 namespace
 {
@@ -103,6 +121,14 @@ juce::Slider* MatrixView::makeTrimSlider()
 
 void MatrixView::rebuildFromEngine()
 {
+    // Channel counts may change.  Drop selection so it can't refer to a
+    // channel that no longer exists -- a stale index would point at a
+    // different device after device add/remove.
+    selectedInputs.clear();
+    selectedOutputs.clear();
+    lastClickedInput  = -1;
+    lastClickedOutput = -1;
+
     // Drop existing children.
     grid.reset();
     inputNames    .clear();
@@ -142,11 +168,19 @@ void MatrixView::rebuildFromEngine()
     // Input row widgets.
     for (int n = 0; n < nIn; ++n)
     {
-        auto* lbl = new juce::Label ({},
-            inputLabels[(size_t) n].deviceName + "  ch." + juce::String (inputLabels[(size_t) n].channelIndex));
+        auto* lbl = new SelectableLabel();
+        lbl->setText (inputLabels[(size_t) n].deviceName + "  ch."
+                          + juce::String (inputLabels[(size_t) n].channelIndex),
+                      juce::dontSendNotification);
         lbl->setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.0f, 0));
         lbl->setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         lbl->setJustificationType (juce::Justification::centredLeft);
+        lbl->setTooltip ("Click to select.  Shift-click to extend, Cmd-click to toggle.  "
+                         "While multiple inputs are selected, FX popup actions apply to all of them.");
+        lbl->onMouseDown = [this, n] (const juce::ModifierKeys& mods)
+        {
+            handleChannelHeaderClick (true, n, mods);
+        };
         leftRailContent.addAndMakeVisible (*lbl);
         inputNames.add (lbl);
 
@@ -307,6 +341,16 @@ void MatrixView::paintLeftRail (juce::Graphics& g)
                 g.fillRect (0, n * cellSize, leftRailContent.getWidth(), cellSize);
     }
 
+    // Multi-select highlight (stronger than the group hover so the user
+    // sees their selection at a glance) -- amber band.
+    if (! selectedInputs.empty())
+    {
+        g.setColour (juce::Colour::fromRGB (255, 180, 60).withAlpha (0.28f));
+        for (int n : selectedInputs)
+            if (n >= nStart && n < nEnd)
+                g.fillRect (0, n * cellSize, leftRailContent.getWidth(), cellSize);
+    }
+
     g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.25f));
     for (int n = nStart; n < nEnd; ++n)
     {
@@ -335,6 +379,15 @@ void MatrixView::paintTopRail (juce::Graphics& g)
     {
         g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.08f));
         for (int m : highlightedOutputs)
+            if (m >= mStart && m < mEnd)
+                g.fillRect (m * cellSize, 0, cellSize, labelRowHeight);
+    }
+
+    // Multi-select highlight on outputs -- same amber band as inputs.
+    if (! selectedOutputs.empty())
+    {
+        g.setColour (juce::Colour::fromRGB (255, 180, 60).withAlpha (0.28f));
+        for (int m : selectedOutputs)
             if (m >= mStart && m < mEnd)
                 g.fillRect (m * cellSize, 0, cellSize, labelRowHeight);
     }
@@ -449,22 +502,106 @@ void MatrixView::openFxMenuFor (bool isInput, int ch)
     auto& btns = isInput ? inputFxBtns : outputFxBtns;
     if (ch < 0 || ch >= btns.size()) return;
 
-    auto popup = std::make_unique<FxChainPopupContent> (*this, isInput, ch);
+    // Build the broadcast target list.  If the clicked channel is part of
+    // a multi-channel selection on its side, every operation in the popup
+    // applies to all of them.  Otherwise just the clicked channel.
+    std::vector<int> targets;
+    auto sel = getSelectedChannels (isInput);
+    if (sel.size() > 1
+        && std::find (sel.begin(), sel.end(), ch) != sel.end())
+        targets = std::move (sel);
+    else
+        targets = { ch };
+
+    auto popup = std::make_unique<FxChainPopupContent> (*this, isInput, ch, std::move (targets));
     auto bounds = btns[ch]->getScreenBounds();
     juce::CallOutBox::launchAsynchronously (std::move (popup), bounds, nullptr);
 }
 
 // ============================================================================
+// Channel-header multi-select
+// ============================================================================
+void MatrixView::handleChannelHeaderClick (bool isInput, int ch, const juce::ModifierKeys& mods)
+{
+    auto& sel  = isInput ? selectedInputs    : selectedOutputs;
+    auto& last = isInput ? lastClickedInput  : lastClickedOutput;
+    const int total = isInput ? (int) inputLabels.size() : (int) outputLabels.size();
+    if (ch < 0 || ch >= total) return;
+
+    if (mods.isShiftDown() && last >= 0 && last < total)
+    {
+        // Range: replace selection with [min(last,ch) .. max(last,ch)].
+        sel.clear();
+        const int lo = juce::jmin (last, ch);
+        const int hi = juce::jmax (last, ch);
+        for (int i = lo; i <= hi; ++i) sel.push_back (i);
+    }
+    else if (mods.isCommandDown())
+    {
+        // Toggle membership; don't clear the rest.
+        auto it = std::find (sel.begin(), sel.end(), ch);
+        if (it != sel.end()) sel.erase (it);
+        else                 sel.push_back (ch);
+        last = ch;
+    }
+    else
+    {
+        // Plain click: select just this channel.
+        sel = { ch };
+        last = ch;
+    }
+
+    if (isInput) leftRailContent.repaint();
+    else         topRailContent .repaint();
+}
+
+std::vector<int> MatrixView::getSelectedChannels (bool isInput) const
+{
+    return isInput ? selectedInputs : selectedOutputs;
+}
+
+void MatrixView::clearChannelSelection (bool isInput)
+{
+    if (isInput) { selectedInputs.clear();  lastClickedInput  = -1; leftRailContent.repaint(); }
+    else         { selectedOutputs.clear(); lastClickedOutput = -1; topRailContent .repaint(); }
+}
+
+bool MatrixView::isChannelSelected (bool isInput, int ch) const
+{
+    const auto& sel = isInput ? selectedInputs : selectedOutputs;
+    return std::find (sel.begin(), sel.end(), ch) != sel.end();
+}
+
+void MatrixView::TopRailContent::mouseDown (const juce::MouseEvent& e)
+{
+    // Only the rotated-label band (above the trim/meter row) triggers
+    // selection; the widget rows below pass clicks through to their own
+    // children (which never delegate to us in the first place).
+    constexpr int labelBandHeight = 55;
+    if (e.y >= labelBandHeight) return;
+    const int col = e.x / owner.cellSize;
+    if (col < 0 || col >= (int) owner.outputLabels.size()) return;
+    owner.handleChannelHeaderClick (false, col, e.mods);
+}
+
+// ============================================================================
 // FxChainPopupContent (small 3-row B / name / X plugin chain panel)
 // ============================================================================
-MatrixView::FxChainPopupContent::FxChainPopupContent (MatrixView& o, bool inp, int c)
-    : owner (o), isInput (inp), ch (c)
+MatrixView::FxChainPopupContent::FxChainPopupContent (MatrixView& o, bool inp, int primaryCh,
+                                                      std::vector<int> targetChannels)
+    : owner (o), isInput (inp), ch (primaryCh), targets (std::move (targetChannels))
 {
     header.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.5f, juce::Font::bold));
     header.setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 200, 220));
-    header.setText (juce::String (isInput ? "INPUT" : "OUTPUT")
-                    + " ch." + juce::String (ch + 1) + "  FX chain",
-                    juce::dontSendNotification);
+    {
+        juce::String hdrText = juce::String (isInput ? "INPUT" : "OUTPUT")
+                             + " ch." + juce::String (ch + 1) + "  FX chain";
+        if (targets.size() > 1)
+            hdrText << "   (broadcast to " << juce::String ((int) targets.size()) << " channels)";
+        header.setText (hdrText, juce::dontSendNotification);
+        if (targets.size() > 1)
+            header.setColour (juce::Label::textColourId, juce::Colour::fromRGB (255, 180, 60));
+    }
     addAndMakeVisible (header);
 
     for (int s = 0; s < (int) rows.size(); ++s)
@@ -472,26 +609,34 @@ MatrixView::FxChainPopupContent::FxChainPopupContent (MatrixView& o, bool inp, i
         auto& row = rows[(size_t) s];
         row.bypass.setName ("bypass");
         row.bypass.setClickingTogglesState (true);
-        row.bypass.setTooltip ("Bypass this slot");
+        row.bypass.setTooltip (targets.size() > 1
+                               ? "Bypass this slot on ALL selected channels"
+                               : "Bypass this slot");
         row.bypass.onClick = [this, s] { onSlotBypassClicked (s); };
 
         row.name.setName ("slot");
-        row.name.setTooltip ("Click: load / open editor.  Drag: reorder.");
+        row.name.setTooltip (targets.size() > 1
+                             ? "Click: load (broadcast to all selected) / open editor on primary.  Drag: reorder (broadcast)."
+                             : "Click: load / open editor.  Drag: reorder.");
         row.name.setButtonText ("+ insert");
         row.name.slotIdx = s;
         row.name.onClick = [this, s] { onSlotNameClicked (s); };
         row.name.onSwap  = [this] (int from, int to)
         {
-            if (auto* h = getHost (owner.engine, isInput, ch))
-            {
-                h->swapSlots (from, to);
-                owner.updateFxButtonAppearance (isInput, ch);
-                refreshAll();
-            }
+            // Broadcast the swap to every target channel so an N-way drag
+            // reorder keeps the chains in lock-step.
+            for (int targetCh : targets)
+                if (auto* h = getHost (owner.engine, isInput, targetCh))
+                    h->swapSlots (from, to);
+            for (int targetCh : targets)
+                owner.updateFxButtonAppearance (isInput, targetCh);
+            refreshAll();
         };
 
         row.remove.setName ("remove");
-        row.remove.setTooltip ("Remove plugin");
+        row.remove.setTooltip (targets.size() > 1
+                               ? "Remove plugin from this slot on ALL selected channels"
+                               : "Remove plugin");
         row.remove.onClick = [this, s] { onSlotRemoveClicked (s); };
 
         addAndMakeVisible (row.bypass);
@@ -564,30 +709,45 @@ void MatrixView::FxChainPopupContent::refreshAll()
 
 void MatrixView::FxChainPopupContent::onSlotNameClicked (int slotIdx)
 {
-    auto* host = getHost (owner.engine, isInput, ch);
-    if (host == nullptr) return;
-    if (host->getPluginAt (slotIdx) != nullptr)
+    auto* primary = getHost (owner.engine, isInput, ch);
+    if (primary == nullptr) return;
+    if (primary->getPluginAt (slotIdx) != nullptr)
+    {
+        // Open editor only on the primary -- broadcast-opening N windows
+        // would be obnoxious and most plugins don't expect parallel editor
+        // instances on N processor instances anyway.
         owner.showEditorFor (isInput, ch, slotIdx);
+    }
     else
-        owner.loadPluginInto (isInput, ch, slotIdx);
+    {
+        // Load -- broadcast to every selected channel.  loadPluginIntoMulti
+        // shows the file chooser once and instantiates the chosen plugin
+        // into the same slot on each channel.
+        owner.loadPluginIntoMulti (isInput, targets, slotIdx);
+    }
 }
 
 void MatrixView::FxChainPopupContent::onSlotBypassClicked (int slotIdx)
 {
-    if (auto* host = getHost (owner.engine, isInput, ch))
+    const bool on = rows[(size_t) slotIdx].bypass.getToggleState();
+    for (int targetCh : targets)
     {
-        host->setBypassedAt (slotIdx, rows[(size_t) slotIdx].bypass.getToggleState());
-        owner.updateFxButtonAppearance (isInput, ch);
-        refreshAll();
+        if (auto* h = getHost (owner.engine, isInput, targetCh))
+            h->setBypassedAt (slotIdx, on);
+        owner.updateFxButtonAppearance (isInput, targetCh);
     }
+    refreshAll();
 }
 
 void MatrixView::FxChainPopupContent::onSlotRemoveClicked (int slotIdx)
 {
-    owner.closeEditorFor (isInput, ch, slotIdx);
-    if (auto* host = getHost (owner.engine, isInput, ch))
-        host->clearSlot (slotIdx);
-    owner.updateFxButtonAppearance (isInput, ch);
+    for (int targetCh : targets)
+    {
+        owner.closeEditorFor (isInput, targetCh, slotIdx);
+        if (auto* h = getHost (owner.engine, targetCh == ch ? isInput : isInput, targetCh))
+            h->clearSlot (slotIdx);
+        owner.updateFxButtonAppearance (isInput, targetCh);
+    }
     refreshAll();
 }
 
@@ -685,6 +845,104 @@ void MatrixView::loadPluginInto (bool isInput, int ch, int slotIdx)
                 }
                 auto& btns = isInput ? inputFxBtns : outputFxBtns;
                 pick.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (btns[ch]));
+            }
+        });
+}
+
+void MatrixView::loadPluginIntoMulti (bool isInput, std::vector<int> channels, int slotIdx)
+{
+    if (channels.empty()) return;
+
+    juce::File startDir ("/Library/Audio/Plug-Ins/Components");
+    if (! startDir.isDirectory())
+        startDir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                       .getChildFile ("Library/Audio/Plug-Ins/Components");
+
+    pluginFileChooser = std::make_unique<juce::FileChooser> (
+        "Choose an AU plugin (.component)  -  loads into " + juce::String ((int) channels.size())
+            + " channel(s)",
+        startDir,
+        "*.component;*.audiounit");
+
+    pluginFileChooser->launchAsync (
+        juce::FileBrowserComponent::openMode
+      | juce::FileBrowserComponent::canSelectFiles
+      | juce::FileBrowserComponent::canSelectDirectories,
+        [this, isInput, channels, slotIdx] (const juce::FileChooser& fc)
+        {
+            auto file = fc.getResult();
+            if (file == juce::File{}) return;
+
+            auto& fmt = *engine.getPluginFormatManager().getFormat (0);
+            juce::OwnedArray<juce::PluginDescription> descs;
+            fmt.findAllTypesForFile (descs, file.getFullPathName());
+
+            if (descs.isEmpty())
+            {
+                juce::NativeMessageBox::showAsync (
+                    juce::MessageBoxOptions()
+                        .withIconType (juce::MessageBoxIconType::WarningIcon)
+                        .withTitle ("No AU plugin found")
+                        .withMessage (file.getFileName() + " is not a loadable Audio Unit."),
+                    nullptr);
+                return;
+            }
+
+            // For each target channel we fire a separate createPluginInstanceAsync
+            // -- AU instances are per-host, can't be shared.  All callbacks land
+            // on the message thread; whichever finishes first installs first.
+            auto chooseDesc = [this, isInput, channels, slotIdx] (juce::PluginDescription desc)
+            {
+                juce::Logger::writeToLog ("loadPluginIntoMulti: broadcasting '" + desc.name
+                                          + "' to " + juce::String ((int) channels.size())
+                                          + " " + juce::String (isInput ? "input" : "output")
+                                          + " channels, slot " + juce::String (slotIdx + 1));
+                for (int targetCh : channels)
+                {
+                    engine.getPluginFormatManager().createPluginInstanceAsync (
+                        desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
+                        [this, isInput, targetCh, slotIdx]
+                        (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
+                        {
+                            if (instance == nullptr)
+                            {
+                                juce::Logger::writeToLog ("  ch." + juce::String (targetCh + 1)
+                                                          + " load failed: " + err);
+                                return;
+                            }
+                            auto* host = getHost (engine, isInput, targetCh);
+                            if (host == nullptr) return;
+                            // Replace whatever was there -- the whole point of
+                            // broadcast is "make all selected the same".
+                            closeEditorFor (isInput, targetCh, slotIdx);
+                            host->setPluginAt (slotIdx, std::move (instance));
+                            updateFxButtonAppearance (isInput, targetCh);
+                        });
+                }
+            };
+
+            if (descs.size() == 1)
+            {
+                chooseDesc (*descs[0]);
+            }
+            else
+            {
+                juce::PopupMenu pick;
+                std::vector<juce::PluginDescription> copies;
+                copies.reserve ((size_t) descs.size());
+                for (auto* d : descs) copies.push_back (*d);
+                for (size_t i = 0; i < copies.size(); ++i)
+                {
+                    auto d = copies[i];
+                    pick.addItem (d.name + "  -  " + d.manufacturerName,
+                                  [d, chooseDesc] { chooseDesc (d); });
+                }
+                auto& btns = isInput ? inputFxBtns : outputFxBtns;
+                const int primary = channels.front();
+                if (primary >= 0 && primary < btns.size())
+                    pick.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (btns[primary]));
+                else
+                    pick.showMenuAsync (juce::PopupMenu::Options());
             }
         });
 }

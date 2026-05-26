@@ -193,6 +193,12 @@ void DeviceWorker::audioDeviceIOCallbackWithContext (const float* const* inputCh
                                                      int numSamples,
                                                      const juce::AudioIODeviceCallbackContext&)
 {
+    // Mark this device as "alive" on its very first IO callback so the UI
+    // can tell "device opened but driver never delivered samples" apart
+    // from "device working but routing silent".  Single atomic store --
+    // RT-safe.  The juce::Logger::writeToLog gets called from the message
+    // thread once it notices this transitioned.
+    firstCallbackFired.store (true, std::memory_order_release);
     // --- INPUT: device-rate samples -> SRC -> engine-rate -> inputRings ---
     // Important: feed EVERY input ring (even if the driver gave us null or
     // fewer channels), zero-padding when needed. Otherwise the MatrixProcessor

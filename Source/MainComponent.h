@@ -8,6 +8,7 @@
 #include <atomic>
 #include <thread>
 
+#include "Diagnostics/PerfMonitor.h"
 #include "Engine/AudioEngine.h"
 #include "Persistence/SnapshotStore.h"
 #include "UI/MatrixView.h"
@@ -94,6 +95,10 @@ private:
     AudioEngine engine;
     std::vector<AudioEngine::DeviceSpec> currentSpecs;
     std::unique_ptr<juce::FileChooser> activeChooser;
+
+    // Periodic perf snapshot into the Logger -- 5 sec interval, free of
+    // engine state during reconfigure (atomic reads only).
+    PerfMonitor perfMonitor { engine };
 
     std::thread       reconfigThread;
     std::atomic<bool> isReconfiguring { false };

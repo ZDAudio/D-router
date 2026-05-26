@@ -51,6 +51,7 @@ target_sources(dcorerouter PRIVATE
     Source/Persistence/CrashGuard.cpp
     Source/Diagnostics/Logger.cpp
     Source/Diagnostics/CrashHandler.mm
+    Source/Diagnostics/PerfMonitor.cpp
     Source/UI/LogViewerDialog.cpp
     Source/DSP/PluginHost.mm
     Source/DSP/MultiChannelPluginHost.mm

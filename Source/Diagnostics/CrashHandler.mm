@@ -76,6 +76,7 @@ namespace
             case SIGABRT: name = "SIGABRT (abort / assertion)"; break;
             case SIGILL:  name = "SIGILL (illegal instruction)"; break;
             case SIGFPE:  name = "SIGFPE (arithmetic fault)";   break;
+            case SIGTERM: name = "SIGTERM (kill / Activity Monitor Quit)"; break;
             default:      break;
         }
         writeBacktraceToLog (name);
@@ -131,12 +132,16 @@ void CrashHandler::install()
     ::sigaction (SIGABRT, &sa, nullptr);
     ::sigaction (SIGILL,  &sa, nullptr);
     ::sigaction (SIGFPE,  &sa, nullptr);
+    // SIGTERM = `kill <pid>` and Activity Monitor's "Quit" (not Force
+    // Quit -- that's SIGKILL which can't be caught).  We log + re-raise
+    // so a graceful shutdown by external request still leaves a trail.
+    ::sigaction (SIGTERM, &sa, nullptr);
 
    #if JUCE_MAC
     NSSetUncaughtExceptionHandler (uncaughtNSExceptionHandler);
    #endif
 
-    DBG ("dcr::CrashHandler installed (SIGSEGV/SIGBUS/SIGABRT/SIGILL/SIGFPE + NSException)");
+    DBG ("dcr::CrashHandler installed (SIGSEGV/SIGBUS/SIGABRT/SIGILL/SIGFPE/SIGTERM + NSException)");
 }
 
 } // namespace dcr
