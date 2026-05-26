@@ -2,7 +2,40 @@
 
 #include <chrono>
 
+#if JUCE_MAC
+ #import <Foundation/Foundation.h>
+#endif
+
 namespace dcr {
+
+namespace
+{
+    // See PluginHost.mm runGuarded for rationale.  AU plugins can throw
+    // NSException out of any method that crosses the Cocoa boundary; an
+    // uncaught one kills the audio thread (and the process).
+    inline bool runGuarded (const char* op, juce::AudioPluginInstance* p,
+                            void (^block)()) noexcept
+    {
+       #if JUCE_MAC
+        @try {
+            @try { block(); return true; }
+            @catch (NSException* ex) {
+                DBG ("[group plugin " << (p ? p->getName() : juce::String ("?"))
+                     << "] NSException in " << op << ": " << [[ex reason] UTF8String]);
+                return false;
+            }
+        }
+        @catch (...) {
+            DBG ("[group plugin " << (p ? p->getName() : juce::String ("?"))
+                 << "] unknown exception in " << op);
+            return false;
+        }
+       #else
+        try { block(); return true; }
+        catch (...) { DBG ("[group plugin] exception in " << op); return false; }
+       #endif
+    }
+}
 
 void MultiChannelPluginHost::prepare (double sr, int bs, int nCh)
 {
@@ -14,41 +47,56 @@ void MultiChannelPluginHost::prepare (double sr, int bs, int nCh)
     juce::AudioPluginInstance* p = current.get();
     if (p != nullptr)
     {
-        p->releaseResources();
-        p->prepareToPlay (sr, bs);
+        const bool ok = runGuarded ("prepare", p,
+            ^{ p->releaseResources(); p->prepareToPlay (sr, bs); });
+        broken.store (! ok, std::memory_order_relaxed);
     }
 }
 
 static bool tryConfigureLayout (juce::AudioPluginInstance& p,
                                 const juce::AudioChannelSet& desiredLayout)
 {
-    auto layout = p.getBusesLayout();
-    if (layout.inputBuses.isEmpty() || layout.outputBuses.isEmpty()) return false;
+    // Every getBusesLayout / checkBusesLayoutSupported / setBusesLayout call
+    // is a potential exception source (the plugin can throw out of any of
+    // them; some AUs do, especially when their internal layout state is
+    // half-initialised).  Guard the entire routine so a bad layout probe
+    // returns false instead of taking down the load.
+    __block bool result = false;
+    runGuarded ("configureLayout", &p, ^{
+        auto layout = p.getBusesLayout();
+        if (layout.inputBuses.isEmpty() || layout.outputBuses.isEmpty()) { result = false; return; }
 
-    auto candidate = layout;
-    candidate.inputBuses .set (0, desiredLayout);
-    candidate.outputBuses.set (0, desiredLayout);
-    if (p.checkBusesLayoutSupported (candidate))
-        return p.setBusesLayout (candidate);
+        auto candidate = layout;
+        candidate.inputBuses .set (0, desiredLayout);
+        candidate.outputBuses.set (0, desiredLayout);
+        if (p.checkBusesLayoutSupported (candidate))
+        { result = p.setBusesLayout (candidate); return; }
 
-    // Fallback: discrete N-channel.
-    auto disc = juce::AudioChannelSet::discreteChannels (desiredLayout.size());
-    candidate.inputBuses .set (0, disc);
-    candidate.outputBuses.set (0, disc);
-    if (p.checkBusesLayoutSupported (candidate))
-        return p.setBusesLayout (candidate);
+        // Fallback: discrete N-channel.
+        auto disc = juce::AudioChannelSet::discreteChannels (desiredLayout.size());
+        candidate.inputBuses .set (0, disc);
+        candidate.outputBuses.set (0, disc);
+        if (p.checkBusesLayoutSupported (candidate))
+        { result = p.setBusesLayout (candidate); return; }
 
-    return false;
+        result = false;
+    });
+    return result;
 }
 
 void MultiChannelPluginHost::setPlugin (std::unique_ptr<juce::AudioPluginInstance> p,
                                         const juce::AudioChannelSet& desiredLayout)
 {
+    bool prepareOk = true;
     if (p != nullptr)
     {
-        p->releaseResources();
-        tryConfigureLayout (*p, desiredLayout);
-        p->prepareToPlay (sampleRate, blockSize);
+        auto* raw = p.get();
+        const auto layoutCopy = desiredLayout;
+        prepareOk = runGuarded ("setPlugin.prepare", raw, ^{
+            raw->releaseResources();
+            tryConfigureLayout (*raw, layoutCopy);
+            raw->prepareToPlay (sampleRate, blockSize);
+        });
     }
 
     std::unique_ptr<juce::AudioPluginInstance> old;
@@ -56,13 +104,20 @@ void MultiChannelPluginHost::setPlugin (std::unique_ptr<juce::AudioPluginInstanc
         juce::SpinLock::ScopedLockType lk (lock);
         old = std::move (current);
         current = std::move (p);
+        // Fresh install -- clear or set broken according to prepare result.
+        broken.store (! prepareOk, std::memory_order_relaxed);
         if (current != nullptr)
             scratch.setSize (juce::jmax (numChannels,
                                          current->getTotalNumInputChannels(),
                                          current->getTotalNumOutputChannels()),
                              blockSize, false, true, true);
     }
-    // old destructed outside lock
+    // Guarded destruct -- some AU dtors throw NSException on Cocoa cleanup.
+    if (old != nullptr)
+    {
+        auto* rawOld = old.release();
+        runGuarded ("destruct", rawOld, ^{ delete rawOld; });
+    }
 }
 
 void MultiChannelPluginHost::swapStateWith (MultiChannelPluginHost& other)
@@ -84,6 +139,11 @@ void MultiChannelPluginHost::swapStateWith (MultiChannelPluginHost& other)
     const float cpu = cpuLoadAvg.load (std::memory_order_relaxed);
     cpuLoadAvg.store (other.cpuLoadAvg.load (std::memory_order_relaxed), std::memory_order_relaxed);
     other.cpuLoadAvg.store (cpu, std::memory_order_relaxed);
+
+    // Broken state travels with the plugin.
+    const bool br = broken.load (std::memory_order_relaxed);
+    broken.store (other.broken.load (std::memory_order_relaxed), std::memory_order_relaxed);
+    other.broken.store (br, std::memory_order_relaxed);
 }
 
 void MultiChannelPluginHost::clearPlugin()
@@ -97,6 +157,8 @@ void MultiChannelPluginHost::clearPlugin()
 
 void MultiChannelPluginHost::processBlock (float* const* channels, int numSamples)
 {
+    if (broken.load (std::memory_order_relaxed)) return;
+
     if (bypassed.load (std::memory_order_relaxed)) { cpuLoadAvg.store (cpuLoadAvg.load() * 0.99f); return; }
 
     juce::SpinLock::ScopedTryLockType lk (lock);
@@ -119,7 +181,19 @@ void MultiChannelPluginHost::processBlock (float* const* channels, int numSample
             scratch.clear (c, 0, numSamples);
     }
 
-    current->processBlock (scratch, dummyMidi);
+    // Guarded plugin call -- if processBlock throws, mark broken and bail.
+    // The input was copied to scratch but never read back; the original
+    // channel buffers remain whatever the matrix gave us, so audio
+    // continues passing through unchanged for this group bus.
+    auto* plug = current.get();
+    auto& scratchRef = scratch;
+    const bool ok = runGuarded ("processBlock", plug,
+                                ^{ plug->processBlock (scratchRef, dummyMidi); });
+    if (! ok)
+    {
+        broken.store (true, std::memory_order_relaxed);
+        return;
+    }
 
     // Copy output back (only our N channels; extras are dropped).
     for (int c = 0; c < numChannels; ++c)

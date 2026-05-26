@@ -718,6 +718,7 @@ void MatrixView::showEditorFor (bool isInput, int ch, int slotIdx)
             ctx << "  /  slot " << juce::String (slotIdx + 1);
         }
     }
+    juce::Logger::writeToLog ("opening per-channel plugin editor [" + ctx + "] = " + plugin->getName());
     wins[(size_t) ch][(size_t) slotIdx].reset (new PluginEditorWindow (*plugin,
         [this, isInput, ch, slotIdx]
         {
@@ -727,6 +728,7 @@ void MatrixView::showEditorFor (bool isInput, int ch, int slotIdx)
             });
         },
         ctx));
+    juce::Logger::writeToLog ("opened per-channel plugin editor [" + ctx + "] = " + plugin->getName());
 }
 
 void MatrixView::closeEditorFor (bool isInput, int ch, int slotIdx)

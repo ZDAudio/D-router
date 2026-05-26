@@ -110,6 +110,7 @@ private:
     juce::TextButton groupsButton    { "Groups..." };
     juce::TextButton saveButton     { "Save..." };
     juce::TextButton loadButton     { "Load..." };
+    juce::TextButton logsButton     { "Logs..." };
     juce::TextButton stopButton     { "PANIC" };
 
     // Top Navigation Tabs

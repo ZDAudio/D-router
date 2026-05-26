@@ -1,5 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "Diagnostics/CrashHandler.h"
+#include "Diagnostics/Logger.h"
 #include "MainComponent.h"
 
 namespace dcr {
@@ -15,10 +17,18 @@ public:
 
     void initialise (const juce::String&) override
     {
+        // Logger first so the crash handler has a file to append to, and
+        // so every subsequent DBG / juce::Logger::writeToLog flows through.
+        Logger::init();
+        CrashHandler::install();
         mainWindow.reset (new MainWindow (getApplicationName()));
     }
 
-    void shutdown() override { mainWindow = nullptr; }
+    void shutdown() override
+    {
+        mainWindow = nullptr;
+        Logger::shutdown();
+    }
 
     class MainWindow : public juce::DocumentWindow
     {

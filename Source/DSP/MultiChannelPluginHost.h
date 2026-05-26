@@ -49,6 +49,9 @@ private:
     juce::MidiBuffer                            dummyMidi;
     std::atomic<bool>                           bypassed { false };
     std::atomic<float>                          cpuLoadAvg { 0.0f };
+    // Set when the plugin throws (C++ or NSException) during processBlock /
+    // prepare / setPlugin.  Audio thread skips broken hosts entirely.
+    std::atomic<bool>                           broken     { false };
     double                                      sampleRate = 48000.0;
     int                                         blockSize = 128;
     int                                         numChannels = 2;

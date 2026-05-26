@@ -2,6 +2,7 @@
 
 #include "DSP/PluginHost.h"
 #include "DSP/MultiChannelPluginHost.h"
+#include "DSP/SafePluginOps.h"
 #include "Persistence/CrashGuard.h"
 #include "Persistence/SettingsStore.h"
 #include "Routing/InputGroupManager.h"
@@ -9,6 +10,7 @@
 #include "Routing/OutputGroupManager.h"
 #include "UI/DeviceManagerDialog.h"
 #include "UI/GroupManagerDialog.h"
+#include "UI/LogViewerDialog.h"
 #include "UI/SettingsDialog.h"
 
 namespace dcr {
@@ -110,7 +112,13 @@ MainComponent::MainComponent()
     
     addAndMakeVisible (saveButton);
     addAndMakeVisible (loadButton);
+    addAndMakeVisible (logsButton);
     addAndMakeVisible (stopButton);
+
+    logsButton.onClick = [] { LogViewerDialog::launch(); };
+    logsButton.setTooltip ("Open in-app diagnostics log.  Contents are also flushed to "
+                           "~/Library/Logs/D-Router/ on every line so a crash leaves the "
+                           "lead-up context recoverable.");
 
     // Group buttons for radio toggling
     matrixTabBtn.setRadioGroupId (100);
@@ -298,11 +306,16 @@ MainComponent::~MainComponent()
 
 void MainComponent::parentHierarchyChanged()
 {
-    // Attach OpenGL only once we have a real top-level component with a peer.
-    if (! openGLContext.isAttached())
-        if (auto* top = getTopLevelComponent())
-            if (top->getPeer() != nullptr)
-                openGLContext.attachTo (*top);
+    // OpenGL deliberately NOT attached.  GL-using plugin editors (analyzer /
+    // metering plugins like Youlean Loudness Meter, FabFilter visualisers,
+    // SPAN) want to set up their own NSOpenGLContext.  When our main window
+    // already owns a JUCE OpenGLContext, the two contexts fight: the
+    // plugin's editor reads the wrong framebuffer, GL state leaks across
+    // contexts, and the plugin segfaults somewhere deep in AGXMetalG13X /
+    // the AppleMetalOpenGLRenderer.  CoreAnimation paints this UI fine on
+    // Apple Silicon; the OpenGLContext member is kept so we can re-enable
+    // selectively in the future if we ever need it again.
+    juce::ignoreUnused (openGLContext);
 }
 
 void MainComponent::paint (juce::Graphics& g)
@@ -324,9 +337,11 @@ void MainComponent::resized()
     top.removeFromLeft (4);
     groupsButton  .setBounds (top.removeFromLeft (90));
 
-    // Right Session Section (Save, Load, Stop)
+    // Right Session Section (Save, Load, Logs, PANIC)
     stopButton.setBounds (top.removeFromRight (60));
     top.removeFromRight (12); // Extra separation for safety
+    logsButton.setBounds (top.removeFromRight (70));
+    top.removeFromRight (4);
     loadButton.setBounds (top.removeFromRight (70));
     top.removeFromRight (4);
     saveButton.setBounds (top.removeFromRight (70));
@@ -796,10 +811,12 @@ Snapshot MainComponent::gatherCurrentSnapshot() const
     {
         Snapshot::PluginSlotState ps;
         if (p == nullptr) return ps;
-        if (auto xml = p->getPluginDescription().createXml())
-            ps.descriptionXml = xml->toString (juce::XmlElement::TextFormat().singleLine());
+        // Both calls go through SafePluginOps -- they NSException-catch the
+        // AU bridge.  If either throws, we just save an empty slot record;
+        // snapshot save mustn't take the app down.
+        dcr::safe::getPluginDescriptionXml (*p, ps.descriptionXml);
         juce::MemoryBlock blob;
-        p->getStateInformation (blob);
+        dcr::safe::getStateInformation (*p, blob);
         if (blob.getSize() > 0)
             ps.stateB64 = juce::Base64::toBase64 (blob.getData(), blob.getSize());
         ps.bypassed = bypassed;
@@ -941,10 +958,8 @@ void MainComponent::restorePluginChainsAsync()
             const auto& ps = ch.slots[(size_t) slotIdx];
             if (ps.isEmpty()) continue;
 
-            auto descXml = juce::parseXML (ps.descriptionXml);
-            if (descXml == nullptr) continue;
             juce::PluginDescription desc;
-            if (! desc.loadFromXml (*descXml)) continue;
+            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, desc)) continue;
 
             // Decode plugin's own state once on the message thread; the captured
             // copy is then moved into the async callback below.
@@ -970,7 +985,9 @@ void MainComponent::restorePluginChainsAsync()
                     if (! alive->load (std::memory_order_acquire)) return;
                     if (instance == nullptr) return;
                     if (state.getSize() > 0)
-                        instance->setStateInformation (state.getData(), (int) state.getSize());
+                        dcr::safe::setStateInformation (*instance,
+                                                        state.getData(),
+                                                        (int) state.getSize());
                     auto* host = isInput ? engine.getInputPluginHost (globalIdx)
                                          : engine.getPluginHost     (globalIdx);
                     if (host == nullptr) return;
@@ -1000,10 +1017,8 @@ void MainComponent::restorePluginChainsAsync()
             const auto& ps = gc.slots[(size_t) slotIdx];
             if (ps.isEmpty()) continue;
 
-            auto descXml = juce::parseXML (ps.descriptionXml);
-            if (descXml == nullptr) continue;
             juce::PluginDescription desc;
-            if (! desc.loadFromXml (*descXml)) continue;
+            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, desc)) continue;
 
             juce::MemoryBlock state;
             if (ps.stateB64.isNotEmpty())
@@ -1024,7 +1039,9 @@ void MainComponent::restorePluginChainsAsync()
                     if (! alive->load (std::memory_order_acquire)) return;
                     if (instance == nullptr) return;
                     if (state.getSize() > 0)
-                        instance->setStateInformation (state.getData(), (int) state.getSize());
+                        dcr::safe::setStateInformation (*instance,
+                                                        state.getData(),
+                                                        (int) state.getSize());
                     auto* g2 = getGroupForChain (isInput, groupIdx);
                     if (g2 == nullptr) return;
                     if (slotIdx < 0 || slotIdx >= (int) g2->pluginSlots.size()) return;

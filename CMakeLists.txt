@@ -49,9 +49,13 @@ target_sources(dcorerouter PRIVATE
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp
     Source/Persistence/CrashGuard.cpp
-    Source/DSP/PluginHost.cpp
-    Source/DSP/MultiChannelPluginHost.cpp
-    Source/UI/PluginEditorWindow.cpp
+    Source/Diagnostics/Logger.cpp
+    Source/Diagnostics/CrashHandler.mm
+    Source/UI/LogViewerDialog.cpp
+    Source/DSP/PluginHost.mm
+    Source/DSP/MultiChannelPluginHost.mm
+    Source/DSP/SafePluginOps.mm
+    Source/UI/PluginEditorWindow.mm
 )
 
 target_include_directories(dcorerouter PRIVATE Source)

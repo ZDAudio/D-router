@@ -331,10 +331,16 @@ void OutputGroupPanel::Card::openEditorFor (int slotIdx)
         ctx << g->name;
         ctx << "  /  slot " << juce::String (slotIdx + 1);
     }
+    // Log BEFORE the editor ctor -- if the plugin's editor takes us down
+    // hard, the log file still contains the last line we wrote and tells
+    // the user exactly which plugin to blame.
+    const auto pname = host->getPlugin()->getName();
+    juce::Logger::writeToLog ("opening group plugin editor [" + ctx + "] = " + pname);
     editorWindows[(size_t) slotIdx].reset (new PluginEditorWindow (
         *host->getPlugin(),
         [this, slotIdx] { juce::MessageManager::callAsync ([this, slotIdx] { closeEditorFor (slotIdx); }); },
         ctx));
+    juce::Logger::writeToLog ("opened group plugin editor [" + ctx + "] = " + pname);
 }
 
 void OutputGroupPanel::Card::closeEditorFor (int slotIdx)

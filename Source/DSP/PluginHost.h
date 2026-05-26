@@ -92,6 +92,11 @@ private:
         juce::AudioBuffer<float>                    scratch;
         std::atomic<bool>                           bypassed { false };
         std::atomic<float>                          cpuLoadAvg { 0.0f };
+        // Set true when the plugin throws (C++ or NSException) during
+        // processBlock / prepare.  Subsequent blocks skip the slot so a
+        // misbehaving plugin can't crash the audio thread repeatedly.
+        // Cleared whenever a new plugin is installed.
+        std::atomic<bool>                           broken { false };
     };
 
     std::array<Slot, kNumSlots>                 slots;

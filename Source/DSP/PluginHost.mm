@@ -2,7 +2,47 @@
 
 #include <chrono>
 
+#if JUCE_MAC
+ #import <Foundation/Foundation.h>
+#endif
+
 namespace dcr {
+
+namespace
+{
+    // Wrap a plugin operation against C++ AND Objective-C exceptions.  AU
+    // plugins frequently throw NSException out of methods that look pure
+    // C++ from our side (any internal call into Cocoa can do this).  If
+    // we don't catch them, the unhandled NSException unwinds through C++
+    // frames and terminates the process.  Returns true if op completed.
+    inline bool runGuarded (const char* op, juce::AudioPluginInstance* p,
+                            void (^block)()) noexcept
+    {
+       #if JUCE_MAC
+        @try {
+            @try {
+                block();
+                return true;
+            }
+            @catch (NSException* ex) {
+                DBG ("[plugin " << (p ? p->getName() : juce::String ("?"))
+                     << "] NSException in " << op
+                     << ": " << [[ex reason] UTF8String]);
+                return false;
+            }
+        }
+        @catch (...) {
+            // Defensive: catch anything else, including foreign exceptions.
+            DBG ("[plugin " << (p ? p->getName() : juce::String ("?"))
+                 << "] unknown exception in " << op);
+            return false;
+        }
+       #else
+        try { block(); return true; }
+        catch (...) { DBG ("[plugin] exception in " << op); return false; }
+       #endif
+    }
+}
 
 void PluginHost::prepare (double sr, int bs)
 {
@@ -12,8 +52,19 @@ void PluginHost::prepare (double sr, int bs)
     {
         if (auto* p = s.current.get())
         {
-            p->releaseResources();
-            p->prepareToPlay (sr, bs);
+            // releaseResources + prepareToPlay are guarded -- plugins
+            // sometimes throw NSException out of these (Cocoa init paths).
+            // If the prepare phase throws, mark the slot broken so the
+            // audio thread skips it instead of crashing on the first
+            // processBlock with an uninitialised plugin.
+            const bool ok =
+                runGuarded ("prepare", p, ^{ p->releaseResources(); p->prepareToPlay (sr, bs); });
+            if (! ok)
+            {
+                s.broken.store (true, std::memory_order_relaxed);
+                continue;
+            }
+            s.broken.store (false, std::memory_order_relaxed);
             s.scratch.setSize (juce::jmax (p->getTotalNumInputChannels(),
                                            p->getTotalNumOutputChannels()),
                                bs, false, true, true);
@@ -26,10 +77,12 @@ void PluginHost::setPluginAt (int slotIdx, std::unique_ptr<juce::AudioPluginInst
     if (slotIdx < 0 || slotIdx >= kNumSlots) return;
     auto& s = slots[(size_t) slotIdx];
 
+    bool prepareOk = true;
     if (p != nullptr)
     {
-        p->releaseResources();
-        p->prepareToPlay (sampleRate, blockSize);
+        auto* raw = p.get();
+        prepareOk = runGuarded ("prepare", raw,
+            ^{ raw->releaseResources(); raw->prepareToPlay (sampleRate, blockSize); });
     }
 
     std::unique_ptr<juce::AudioPluginInstance> old;
@@ -37,6 +90,10 @@ void PluginHost::setPluginAt (int slotIdx, std::unique_ptr<juce::AudioPluginInst
         juce::SpinLock::ScopedLockType lk (s.lock);
         old = std::move (s.current);
         s.current = std::move (p);
+        // New install -- reset broken flag.  If prepare itself threw, mark
+        // broken so the audio thread skips this slot until the user
+        // reloads with a working plugin.
+        s.broken.store (! prepareOk, std::memory_order_relaxed);
         if (s.current != nullptr)
             s.scratch.setSize (juce::jmax (s.current->getTotalNumInputChannels(),
                                            s.current->getTotalNumOutputChannels()),
@@ -44,7 +101,13 @@ void PluginHost::setPluginAt (int slotIdx, std::unique_ptr<juce::AudioPluginInst
         else
             s.scratch.setSize (0, 0);
     }
-    // 'old' destructs here, outside the lock.
+    // 'old' destructs here, outside the lock.  Plugin destruction is also
+    // guarded -- some AUs throw out of their dtor (rare but seen).
+    if (old != nullptr)
+    {
+        auto* rawOld = old.release();
+        runGuarded ("destruct", rawOld, ^{ delete rawOld; });
+    }
 }
 
 void PluginHost::swapSlots (int a, int b)
@@ -70,6 +133,13 @@ void PluginHost::swapSlots (int a, int b)
     sLo.cpuLoadAvg.store (sHi.cpuLoadAvg.load (std::memory_order_relaxed), std::memory_order_relaxed);
     sHi.cpuLoadAvg.store (cpuLo, std::memory_order_relaxed);
 
+    // Broken state travels with the plugin -- if the user drags a misbehaving
+    // plugin into a fresh slot, that fresh slot inherits the "broken" mark
+    // and the audio thread keeps skipping it.
+    const bool brokenLo = sLo.broken.load (std::memory_order_relaxed);
+    sLo.broken.store (sHi.broken.load (std::memory_order_relaxed), std::memory_order_relaxed);
+    sHi.broken.store (brokenLo, std::memory_order_relaxed);
+
     // Resize each scratch to match its (now swapped) plugin's channel count.
     auto fixScratch = [this] (Slot& s)
     {
@@ -88,6 +158,12 @@ void PluginHost::processBlock (float* buf, int numSamples)
 {
     for (auto& s : slots)
     {
+        // Skip silently if this slot's plugin ever threw -- we can't trust
+        // it to behave on subsequent blocks.  The user has to manually
+        // reload (which resets the broken flag in setPluginAt).
+        if (s.broken.load (std::memory_order_relaxed))
+            continue;
+
         if (s.bypassed.load (std::memory_order_relaxed))
         {
             s.cpuLoadAvg.store (s.cpuLoadAvg.load() * 0.99f, std::memory_order_relaxed);
@@ -111,7 +187,23 @@ void PluginHost::processBlock (float* buf, int numSamples)
         for (int c = 0; c < chs; ++c)
             s.scratch.copyFrom (c, 0, buf, numSamples);
 
-        s.current->processBlock (s.scratch, dummyMidi);
+        // GUARDED -- if the plugin throws here (C++ or NSException), mark
+        // the slot broken instead of letting the unhandled exception
+        // terminate the entire audio thread.  Output gets the input copy
+        // (no-op) for this block since we wrote to scratch but won't read
+        // back if processBlock failed.
+        auto* plug = s.current.get();
+        auto& scratchRef = s.scratch;
+        const bool ok = runGuarded ("processBlock", plug,
+                                    ^{ plug->processBlock (scratchRef, dummyMidi); });
+        if (! ok)
+        {
+            s.broken.store (true, std::memory_order_relaxed);
+            // Fall through -- buf still holds the pre-plugin input, so the
+            // signal continues passing through this slot rather than going
+            // silent.
+            continue;
+        }
 
         // Take L (or average L+R for stereo plugins) back to mono.
         const int outChs = juce::jmin (s.current->getTotalNumOutputChannels(), chs);
