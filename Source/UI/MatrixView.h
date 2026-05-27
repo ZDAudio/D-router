@@ -4,6 +4,7 @@
 
 #include <array>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "DSP/PluginHost.h"
@@ -80,25 +81,68 @@ public:
     // Same for INPUT group hover -> input rows highlighted.
     void setHighlightedInputs  (std::vector<int> ins);
 
+    // ----- Device collapse / expand ------------------------------------------
+    // Per-direction, per-device.  A collapsed device shows in the rail as a
+    // single virtual row (input) or column (output) with a [+] button to
+    // re-expand.  The collapsed cell at the intersection of two
+    // collapsed-or-expanded devices is rendered as a Dante-style aggregate
+    // crosspoint: lit if ANY underlying channel-pair has a non-zero gain.
+    // Engine state (gains, mutes, plugin chains) is preserved while
+    // collapsed -- this is purely a UI-visibility toggle.
+    void setDeviceCollapsed (bool isInput, const juce::String& deviceName, bool collapsed);
+    bool isDeviceCollapsed  (bool isInput, const juce::String& deviceName) const;
+    void collapseAllDevices (bool isInput, bool collapsed);
+
+    // Snapshot integration.  MainComponent reads these on save and pushes
+    // them back via setCollapsedDeviceNames on load.
+    std::vector<juce::String> getCollapsedDeviceNames (bool isInput) const;
+    void setCollapsedDeviceNames (bool isInput, std::vector<juce::String> names);
+
+    // Fires whenever the collapse state changes so MainComponent can trigger
+    // an auto-save -- analogous to onUserMuteChanged.
+    std::function<void()> onCollapseStateChanged;
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
     // Layout constants
     static constexpr int cellSize       = 36;
     static constexpr int labelColWidth  = 310;   // widened to fit input FX button
-    static constexpr int labelRowHeight = 184;
+    // Top-rail height needs to be tall enough to fit the rotated device +
+    // channel labels at a readable size on long device names like
+    // "Pro Tools Audio Bridge 16 ch.16".  At ~280 px the rotated string
+    // gets ~250 px of arc length, which fits a 14 pt monospaced label
+    // without truncation.
+    static constexpr int labelRowHeight = 280;
+    // Where in the header band the rotated text is drawn.  Pushed down to
+    // sit just above the collapse button band.
+    static constexpr int topRailWidgetsY = labelRowHeight - 148;   // 132
 
 private:
     void timerCallback() override;
     juce::Slider* makeTrimSlider();
     void scrollBarMoved (juce::ScrollBar* scrollBar, double newRangeStart) override;
 
+public:
+    // Public so the static free-function helper that maps engine channel
+    // -> visible label index can name it from within MatrixView.cpp.  The
+    // struct is otherwise treated as implementation-private.
     struct ChannelLabel
     {
         juce::String deviceName;
-        int channelIndex = 0;        // 1-based for display
+        int channelIndex = 0;        // 1-based for display; -1 when isCollapsedRow
         bool startsNewGroup = true;
+
+        // When the device is collapsed, the rail has a single virtual row /
+        // column for it instead of one per channel.  The crosspoint grid
+        // treats this entry as a "device aggregate" -- the cell lights up
+        // if ANY underlying channel-pair has a non-zero route.
+        bool isCollapsedRow = false;
+        int  firstChannel   = 0;     // global engine index of first channel
+        int  channelCount   = 1;     // 1 for normal rows, N for collapsed
     };
+
+private:
 
     // Small floating component shown by CallOutBox when the user clicks a
     // per-channel "FX" button.  Three rows of [B] [slot name] [X] — same
@@ -210,6 +254,13 @@ private:
     std::vector<ChannelLabel> inputLabels;
     std::vector<ChannelLabel> outputLabels;
 
+    // Sets of device names whose channels are currently collapsed in the
+    // matrix view.  Independent per direction so a duplex device can have
+    // its inputs hidden while its outputs are still expanded.
+    std::set<juce::String> collapsedInputDevices;
+    std::set<juce::String> collapsedOutputDevices;
+    void notifyCollapseChanged();
+
     // Per-input-row widgets
     juce::OwnedArray<juce::Label>        inputNames;
     juce::OwnedArray<juce::Slider>       inputTrims;
@@ -292,6 +343,15 @@ private:
     std::vector<std::array<std::unique_ptr<juce::DocumentWindow>, 3>> inputEditorWindows;
 
     juce::OwnedArray<juce::TextButton> inputFxBtns;
+
+    // Per-row collapse / expand buttons.  inputCollapseBtns[n] is non-null
+    // for two cases: (a) n is the first channel row of an expanded device
+    // (shows "-" to collapse), or (b) n is a collapsed-device header row
+    // (shows "+" to expand).  All other rows have nullptr.  Same for the
+    // output (column) side.
+    juce::OwnedArray<juce::TextButton> inputCollapseBtns;
+    juce::OwnedArray<juce::TextButton> outputCollapseBtns;
+
     std::unique_ptr<juce::FileChooser> pluginFileChooser;
 };
 

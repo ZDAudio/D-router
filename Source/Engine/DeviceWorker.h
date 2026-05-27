@@ -48,6 +48,17 @@ public:
     // Hi-res ms timestamp of the most recent underrun, or 0 if none yet.
     double getLastUnderrunMs() const noexcept { return lastUnderrunMs.load (std::memory_order_relaxed); }
 
+    // Zero the diagnostic counters.  Called from the UI thread when the
+    // user clicks "Reset" on the status panel; the audio callback may
+    // race and re-increment, but that just means the new sample window
+    // starts from ~0 instead of exactly 0.
+    void resetXrunCounters() noexcept
+    {
+        inputOverruns  .store (0, std::memory_order_relaxed);
+        outputUnderruns.store (0, std::memory_order_relaxed);
+        lastUnderrunMs .store (0.0, std::memory_order_relaxed);
+    }
+
     // Hardware/driver latency in *device-rate* samples.
     int getDeviceInputLatencySamples()  const noexcept;
     int getDeviceOutputLatencySamples() const noexcept;

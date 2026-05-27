@@ -29,6 +29,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void parentHierarchyChanged() override;
+    bool keyPressed (const juce::KeyPress& k) override;
 
 private:
     void timerCallback() override;
@@ -148,6 +149,7 @@ private:
     juce::TextButton saveButton     { "Save..." };
     juce::TextButton loadButton     { "Load..." };
     juce::TextButton logsButton     { "Logs..." };
+    juce::TextButton layoutButton   { "Layout..." };   // matrix collapse/expand menu
     juce::TextButton stopButton     { "PANIC" };
 
     // Top Navigation Tabs

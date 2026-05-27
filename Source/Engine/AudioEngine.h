@@ -120,6 +120,17 @@ public:
     uint64_t getTotalOutputUnderruns() const noexcept;
     // Most recent underrun hi-res ms timestamp (0 if none).
     double   getMostRecentUnderrunMs() const noexcept;
+    // Zero every device worker's xrun / underrun / lastUnderrun counters.
+    // Useful as a UI button: lets the user clear cold-start xruns once the
+    // engine has stabilised so the gauge reflects only live problems.
+    void     resetXrunCounters() noexcept;
+
+    // Halt the matrix processor thread (so no more processBlock calls fire)
+    // WITHOUT destroying pluginHosts / workers / deviceInfo.  Use this when
+    // you need to safely read every plugin's getStateInformation() (e.g.
+    // for snapshot save on shutdown) before the full engine.stop() tears
+    // the hosts down.
+    void     stopProcessor() noexcept;
 
     // CPU load (0..1) from MatrixProcessor.
     float    getCpuLoadAvg()  const noexcept { return processor.getCpuLoadAvg();  }

@@ -16,6 +16,10 @@ StatusPanel::StatusPanel (AudioEngine& e) : engine (e)
     popOutBtn.onClick = [this] { if (onPopOutRequested) onPopOutRequested(); };
     addAndMakeVisible (popOutBtn);
 
+    resetXrunBtn.setTooltip ("Reset xrun in/out counters across all devices");
+    resetXrunBtn.onClick = [this] { resetXrun(); };
+    addAndMakeVisible (resetXrunBtn);
+
     addAndMakeVisible (gauges);
 
     body.setMultiLine (true);
@@ -44,6 +48,8 @@ void StatusPanel::resized()
     auto r = getLocalBounds().reduced (6);
     auto top = r.removeFromTop (20);
     popOutBtn.setBounds (top.removeFromRight (32));
+    top.removeFromRight (6);
+    resetXrunBtn.setBounds (top.removeFromRight (90));
     title.setBounds (top);
     r.removeFromTop (4);
 
@@ -275,6 +281,32 @@ void StatusPanel::refresh()
                                   + juce::String (juce::Time::getMillisecondCounter()
                                                   - refreshStart)
                                   + " ms");
+}
+
+void StatusPanel::bumpBodyFontSize (int delta)
+{
+    if (delta == 0)
+        bodyFontPt = 11.0f;        // reset
+    else
+        bodyFontPt = juce::jlimit (8.0f, 24.0f, bodyFontPt + (float) delta);
+    body.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
+                                     bodyFontPt, 0));
+    // Force a full re-render of the (now differently-sized) text.
+    body.applyFontToAllText (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
+                                                bodyFontPt, 0));
+}
+
+void StatusPanel::resetXrun()
+{
+    engine.resetXrunCounters();
+    // Reset our cached numbers too so the next refresh() can see the change
+    // immediately without waiting for a window-tracker recalculation.
+    lastXrunIn        = 0;
+    lastXrunOut       = 0;
+    lastDropoutAgoSec = -1.0;
+    gauges.repaint();
+    refresh();
+    juce::Logger::writeToLog ("StatusPanel: user reset xrun counters");
 }
 
 void StatusPanel::GaugeStrip::timerCallback()

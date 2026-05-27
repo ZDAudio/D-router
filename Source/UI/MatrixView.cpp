@@ -19,10 +19,16 @@ namespace
     class SelectableLabel : public juce::Label
     {
     public:
-        std::function<void (const juce::ModifierKeys&)> onMouseDown;
+        // Callback signature now passes the local click X coordinate too --
+        // the input-rail row label uses a leading "[-]" prefix that should
+        // collapse the device when clicked, but selection behavior should
+        // kick in everywhere else on the row.  Click position is the only
+        // way to differentiate without adding a separate button widget per
+        // row (~600 extra components on a busy session).
+        std::function<void (const juce::ModifierKeys&, int x)> onMouseDown;
         void mouseDown (const juce::MouseEvent& e) override
         {
-            if (onMouseDown) onMouseDown (e.mods);
+            if (onMouseDown) onMouseDown (e.mods, e.x);
         }
     };
 }
@@ -287,21 +293,24 @@ void MatrixView::softRefreshFromEngine()
     const int nOut = (int) outputTrims.size();
     for (int n = 0; n < nIn; ++n)
     {
-        if (n < inputTrims.size())
-            inputTrims[n]->setValue (linToDb (matrix.getInputTrim (n)), juce::dontSendNotification);
-        if (n < inputMuteBtns.size())
-            inputMuteBtns[n]->setToggleState (matrix.getInputMute (n), juce::dontSendNotification);
-        if (n < inputSoloBtns.size())
-            inputSoloBtns[n]->setToggleState (matrix.getInputSolo (n), juce::dontSendNotification);
-        updateFxButtonAppearance (true, n);
+        if (n >= (int) inputLabels.size()) break;
+        const auto& lbl = inputLabels[(size_t) n];
+        if (lbl.isCollapsedRow) continue;
+        const int engCh = lbl.firstChannel;
+        if (inputTrims   [n] != nullptr) inputTrims   [n]->setValue (linToDb (matrix.getInputTrim (engCh)), juce::dontSendNotification);
+        if (inputMuteBtns[n] != nullptr) inputMuteBtns[n]->setToggleState (matrix.getInputMute (engCh), juce::dontSendNotification);
+        if (inputSoloBtns[n] != nullptr) inputSoloBtns[n]->setToggleState (matrix.getInputSolo (engCh), juce::dontSendNotification);
+        updateFxButtonAppearance (true, engCh);
     }
     for (int m = 0; m < nOut; ++m)
     {
-        if (m < outputTrims.size())
-            outputTrims[m]->setValue (linToDb (matrix.getOutputTrim (m)), juce::dontSendNotification);
-        if (m < outputMuteBtns.size())
-            outputMuteBtns[m]->setToggleState (matrix.getOutputMute (m), juce::dontSendNotification);
-        updateFxButtonAppearance (false, m);
+        if (m >= (int) outputLabels.size()) break;
+        const auto& lbl = outputLabels[(size_t) m];
+        if (lbl.isCollapsedRow) continue;
+        const int engOut = lbl.firstChannel;
+        if (outputTrims   [m] != nullptr) outputTrims   [m]->setValue (linToDb (matrix.getOutputTrim (engOut)), juce::dontSendNotification);
+        if (outputMuteBtns[m] != nullptr) outputMuteBtns[m]->setToggleState (matrix.getOutputMute (engOut), juce::dontSendNotification);
+        updateFxButtonAppearance (false, engOut);
     }
     if (grid != nullptr) grid->repaint();
 }
@@ -315,10 +324,12 @@ void MatrixView::clearAllChannelWidgets()
     inputMuteBtns .clear();
     inputSoloBtns .clear();
     inputFxBtns   .clear();
+    inputCollapseBtns.clear();
     outputTrims    .clear();
     outputMeters   .clear();
     outputMuteBtns .clear();
     outputFxBtns   .clear();
+    outputCollapseBtns.clear();
     // Close any open plugin editors -- engine restart invalidates instances.
     for (auto& row : outputEditorWindows) for (auto& w : row) if (w) w->setVisible (false);
     for (auto& row : inputEditorWindows)  for (auto& w : row) if (w) w->setVisible (false);
@@ -330,13 +341,140 @@ void MatrixView::buildLabelsFromEngine()
 {
     inputLabels.clear();
     outputLabels.clear();
+
+    // engineInputIdx / engineOutputIdx track the global channel index that
+    // accumulates as we walk every device.  These are the indices the
+    // engine uses for routing matrix / mute / trim / plugin host lookups.
+    int engineInputIdx  = 0;
+    int engineOutputIdx = 0;
+
     for (auto& d : engine.getDeviceInfo())
     {
-        for (int c = 0; c < d.numInputChannels; ++c)
-            inputLabels.push_back ({ d.name, c + 1, c == 0 });
-        for (int c = 0; c < d.numOutputChannels; ++c)
-            outputLabels.push_back ({ d.name, c + 1, c == 0 });
+        const bool inCollapsed  = collapsedInputDevices .count (d.name) > 0
+                                  && d.numInputChannels > 0;
+        const bool outCollapsed = collapsedOutputDevices.count (d.name) > 0
+                                  && d.numOutputChannels > 0;
+
+        if (inCollapsed)
+        {
+            ChannelLabel lbl;
+            lbl.deviceName    = d.name;
+            lbl.channelIndex  = -1;
+            lbl.startsNewGroup = true;
+            lbl.isCollapsedRow = true;
+            lbl.firstChannel   = engineInputIdx;
+            lbl.channelCount   = d.numInputChannels;
+            inputLabels.push_back (std::move (lbl));
+            engineInputIdx += d.numInputChannels;
+        }
+        else
+        {
+            for (int c = 0; c < d.numInputChannels; ++c)
+            {
+                ChannelLabel lbl;
+                lbl.deviceName    = d.name;
+                lbl.channelIndex  = c + 1;
+                lbl.startsNewGroup = (c == 0);
+                lbl.firstChannel  = engineInputIdx + c;
+                lbl.channelCount  = 1;
+                inputLabels.push_back (std::move (lbl));
+            }
+            engineInputIdx += d.numInputChannels;
+        }
+
+        if (outCollapsed)
+        {
+            ChannelLabel lbl;
+            lbl.deviceName    = d.name;
+            lbl.channelIndex  = -1;
+            lbl.startsNewGroup = true;
+            lbl.isCollapsedRow = true;
+            lbl.firstChannel   = engineOutputIdx;
+            lbl.channelCount   = d.numOutputChannels;
+            outputLabels.push_back (std::move (lbl));
+            engineOutputIdx += d.numOutputChannels;
+        }
+        else
+        {
+            for (int c = 0; c < d.numOutputChannels; ++c)
+            {
+                ChannelLabel lbl;
+                lbl.deviceName    = d.name;
+                lbl.channelIndex  = c + 1;
+                lbl.startsNewGroup = (c == 0);
+                lbl.firstChannel  = engineOutputIdx + c;
+                lbl.channelCount  = 1;
+                outputLabels.push_back (std::move (lbl));
+            }
+            engineOutputIdx += d.numOutputChannels;
+        }
     }
+}
+
+// ----- Device collapse / expand public API -----------------------------------
+void MatrixView::setDeviceCollapsed (bool isInput,
+                                     const juce::String& deviceName,
+                                     bool collapsed)
+{
+    auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
+    const bool already = set.count (deviceName) > 0;
+    if (already == collapsed) return;
+
+    if (collapsed) set.insert (deviceName);
+    else           set.erase  (deviceName);
+
+    // Force a structural rebuild -- the row/column list changed shape.
+    // samePhysicalLayout() will return false because the label count
+    // differs, so the chunked rebuild kicks in.
+    rebuildFromEngine();
+    notifyCollapseChanged();
+}
+
+bool MatrixView::isDeviceCollapsed (bool isInput,
+                                    const juce::String& deviceName) const
+{
+    const auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
+    return set.count (deviceName) > 0;
+}
+
+void MatrixView::collapseAllDevices (bool isInput, bool collapsed)
+{
+    auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
+    const size_t prev = set.size();
+    set.clear();
+    if (collapsed)
+    {
+        for (auto& d : engine.getDeviceInfo())
+        {
+            const int n = isInput ? d.numInputChannels : d.numOutputChannels;
+            if (n > 0) set.insert (d.name);
+        }
+    }
+    if (set.size() == prev && ! collapsed) return;   // nothing to do (was already empty)
+    rebuildFromEngine();
+    notifyCollapseChanged();
+}
+
+std::vector<juce::String> MatrixView::getCollapsedDeviceNames (bool isInput) const
+{
+    const auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
+    return { set.begin(), set.end() };
+}
+
+void MatrixView::setCollapsedDeviceNames (bool isInput,
+                                          std::vector<juce::String> names)
+{
+    auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
+    set.clear();
+    for (auto& n : names) set.insert (std::move (n));
+    rebuildFromEngine();
+    // No notifyCollapseChanged() here -- this is called from snapshot
+    // restore so we don't want to re-save what we just loaded.
+}
+
+void MatrixView::notifyCollapseChanged()
+{
+    if (onCollapseStateChanged) onCollapseStateChanged();
 }
 
 void MatrixView::continueRebuild()
@@ -403,8 +541,37 @@ void MatrixView::finishRebuild()
 
     auto& matrix = engine.getRoutingMatrix();
     grid = std::make_unique<CrosspointGrid> (matrix);
-    grid->setDimensions (rebuildState.totalInputs, rebuildState.totalOutputs, cellSize);
+
+    // Build per-visible-row / per-visible-column spans so collapsed device
+    // rows/columns can render as aggregate cells.  count==1 spans are
+    // ordinary 1:1 channels.
+    std::vector<CrosspointGrid::CellSpan> inSpans, outSpans;
+    inSpans.reserve  (inputLabels .size());
+    outSpans.reserve (outputLabels.size());
+    for (auto& l : inputLabels)  inSpans.push_back  ({ l.firstChannel, l.channelCount });
+    for (auto& l : outputLabels) outSpans.push_back ({ l.firstChannel, l.channelCount });
+
+    grid->setDimensions (rebuildState.totalInputs, rebuildState.totalOutputs, cellSize,
+                         std::move (inSpans), std::move (outSpans));
     gridViewport.setViewedComponent (grid.get(), false);
+
+    // Click on an "aggregate" cell (where at least one side is collapsed)
+    // -> expand both involved devices so the user can route precisely.
+    grid->onAggregateCellClicked = [this] (int outVisIdx, int inVisIdx)
+    {
+        if (outVisIdx >= 0 && outVisIdx < (int) outputLabels.size())
+        {
+            const auto& ol = outputLabels[(size_t) outVisIdx];
+            if (ol.isCollapsedRow)
+                setDeviceCollapsed (false, ol.deviceName, false);
+        }
+        if (inVisIdx >= 0 && inVisIdx < (int) inputLabels.size())
+        {
+            const auto& il = inputLabels[(size_t) inVisIdx];
+            if (il.isCollapsedRow)
+                setDeviceCollapsed (true, il.deviceName, false);
+        }
+    };
 
     // Device boundary lines (same start-of-group flag we recorded when
     // building inputLabels / outputLabels).
@@ -441,17 +608,86 @@ void MatrixView::buildInputRowWidgets (int n)
 {
     if (n < 0 || n >= (int) inputLabels.size()) return;
     auto& matrix = engine.getRoutingMatrix();
+
+    // ----- Collapsed device row -----------------------------------------------
+    // Real "+" TextButton on the left followed by a device-name label.
+    // Per-channel widget slots are nullptr for these rows so iterators
+    // must null-guard.
+    if (inputLabels[(size_t) n].isCollapsedRow)
     {
+        const juce::String devName = inputLabels[(size_t) n].deviceName;
+        const int          chCount = inputLabels[(size_t) n].channelCount;
+
+        auto* expandBtn = new juce::TextButton ("+");
+        expandBtn->setTooltip ("Expand " + devName + "'s input channels");
+        expandBtn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (28, 70, 80));
+        expandBtn->setColour (juce::TextButton::textColourOffId, juce::Colour::fromRGB (0, 220, 240));
+        expandBtn->onClick = [this, devName] { setDeviceCollapsed (true, devName, false); };
+        leftRailContent.addAndMakeVisible (*expandBtn);
+
         auto* lbl = new SelectableLabel();
-        lbl->setText (inputLabels[(size_t) n].deviceName + "  ch."
+        lbl->setText (devName + "  (" + juce::String (chCount) + " ch)",
+                      juce::dontSendNotification);
+        lbl->setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
+                                         10.0f, juce::Font::bold));
+        lbl->setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 200, 220));
+        lbl->setJustificationType (juce::Justification::centredLeft);
+        lbl->setTooltip ("Click [+] to expand " + devName + "'s input channels");
+        // Label itself doesn't toggle -- only the button does, so the user
+        // can still drag-select across the row in the future if needed.
+        lbl->onMouseDown = [] (const juce::ModifierKeys&, int) {};
+        leftRailContent.addAndMakeVisible (*lbl);
+
+        inputNames        .add (lbl);
+        inputCollapseBtns .add (expandBtn);
+        inputTrims        .add (nullptr);
+        inputMeters       .add (nullptr);
+        inputMuteBtns     .add (nullptr);
+        inputSoloBtns     .add (nullptr);
+        inputFxBtns       .add (nullptr);
+
+        const int yy = n * cellSize;
+        expandBtn->setBounds (4, yy + 4, 18, cellSize - 8);
+        lbl      ->setBounds (26, yy + 2, leftRailContent.getWidth() - 30, cellSize - 4);
+        return;
+    }
+
+    // engCh = the engine-side channel this label represents.  When no
+    // device is collapsed firstChannel == n, but with collapsed devices
+    // present the visual index and engine index diverge.
+    const int engCh = inputLabels[(size_t) n].firstChannel;
+
+    {
+        const bool isFirstChOfDevice = inputLabels[(size_t) n].startsNewGroup;
+        const juce::String devName   = inputLabels[(size_t) n].deviceName;
+
+        // First channel of each device gets a real "−" button to collapse
+        // the device.  Subsequent channel rows have no collapse button
+        // (nullptr) so per-row layout knows to slide the label leftwards.
+        if (isFirstChOfDevice)
+        {
+            auto* collapseBtn = new juce::TextButton (juce::String::charToString ((juce::juce_wchar) 0x2212)); // "−"
+            collapseBtn->setTooltip ("Collapse " + devName + "'s input channels");
+            collapseBtn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (40, 40, 48));
+            collapseBtn->setColour (juce::TextButton::textColourOffId, juce::Colour::fromRGB (200, 200, 205));
+            collapseBtn->onClick = [this, devName] { setDeviceCollapsed (true, devName, true); };
+            leftRailContent.addAndMakeVisible (*collapseBtn);
+            inputCollapseBtns.add (collapseBtn);
+        }
+        else
+        {
+            inputCollapseBtns.add (nullptr);
+        }
+
+        auto* lbl = new SelectableLabel();
+        lbl->setText (devName + "  ch."
                           + juce::String (inputLabels[(size_t) n].channelIndex),
                       juce::dontSendNotification);
         lbl->setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.0f, 0));
         lbl->setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         lbl->setJustificationType (juce::Justification::centredLeft);
-        lbl->setTooltip ("Click to select.  Shift-click to extend, Cmd-click to toggle.  "
-                         "While multiple inputs are selected, FX popup actions apply to all of them.");
-        lbl->onMouseDown = [this, n] (const juce::ModifierKeys& mods)
+        lbl->setTooltip ("Click to select.  Shift-click to extend, Cmd-click to toggle.");
+        lbl->onMouseDown = [this, n] (const juce::ModifierKeys& mods, int)
         {
             handleChannelHeaderClick (true, n, mods);
         };
@@ -459,13 +695,14 @@ void MatrixView::buildInputRowWidgets (int n)
         inputNames.add (lbl);
 
         auto* sl = makeTrimSlider();
-        sl->setValue (linToDb (matrix.getInputTrim (n)), juce::dontSendNotification);
-        sl->onValueChange = [this, &matrix, sl, n]
+        sl->setValue (linToDb (matrix.getInputTrim (engCh)), juce::dontSendNotification);
+        sl->onValueChange = [this, &matrix, sl, n, engCh]
         {
             const float dbVal  = (float) sl->getValue();
             const float linVal = dbToLin (dbVal);
-            matrix.setInputTrim (n, linVal);
+            matrix.setInputTrim (engCh, linVal);
             // Multi-select linking: same trim on every other selected input.
+            // Skip collapsed-device peer rows (inputTrims[other] == nullptr).
             if (isChannelSelected (true, n))
             {
                 auto sel = getSelectedChannels (true);
@@ -474,11 +711,11 @@ void MatrixView::buildInputRowWidgets (int n)
                     for (int other : sel)
                     {
                         if (other == n) continue;
-                        if (other >= 0 && other < inputTrims.size())
-                        {
-                            inputTrims[other]->setValue (dbVal, juce::dontSendNotification);
-                            matrix.setInputTrim (other, linVal);
-                        }
+                        if (other < 0 || other >= inputTrims.size()) continue;
+                        if (inputTrims[other] == nullptr) continue;
+                        const int otherEng = inputLabels[(size_t) other].firstChannel;
+                        inputTrims[other]->setValue (dbVal, juce::dontSendNotification);
+                        matrix.setInputTrim (otherEng, linVal);
                     }
                 }
             }
@@ -493,12 +730,11 @@ void MatrixView::buildInputRowWidgets (int n)
         auto* mute = new juce::TextButton ("M");
         mute->setName ("mute");
         mute->setClickingTogglesState (true);
-        mute->setToggleState (matrix.getInputMute (n), juce::dontSendNotification);
-        mute->onClick = [this, &matrix, mute, n]
+        mute->setToggleState (matrix.getInputMute (engCh), juce::dontSendNotification);
+        mute->onClick = [this, &matrix, mute, n, engCh]
         {
             const bool on = mute->getToggleState();
-            matrix.setInputMute (n, on);
-            // Link to other selected inputs.
+            matrix.setInputMute (engCh, on);
             if (isChannelSelected (true, n))
             {
                 auto sel = getSelectedChannels (true);
@@ -507,11 +743,11 @@ void MatrixView::buildInputRowWidgets (int n)
                     for (int other : sel)
                     {
                         if (other == n) continue;
-                        if (other >= 0 && other < inputMuteBtns.size())
-                        {
-                            inputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
-                            matrix.setInputMute (other, on);
-                        }
+                        if (other < 0 || other >= inputMuteBtns.size()) continue;
+                        if (inputMuteBtns[other] == nullptr) continue;
+                        const int otherEng = inputLabels[(size_t) other].firstChannel;
+                        inputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
+                        matrix.setInputMute (otherEng, on);
                     }
                 }
             }
@@ -523,11 +759,11 @@ void MatrixView::buildInputRowWidgets (int n)
         auto* solo = new juce::TextButton ("S");
         solo->setName ("solo");
         solo->setClickingTogglesState (true);
-        solo->setToggleState (matrix.getInputSolo (n), juce::dontSendNotification);
-        solo->onClick = [this, &matrix, solo, n]
+        solo->setToggleState (matrix.getInputSolo (engCh), juce::dontSendNotification);
+        solo->onClick = [this, &matrix, solo, n, engCh]
         {
             const bool on = solo->getToggleState();
-            matrix.setInputSolo (n, on);
+            matrix.setInputSolo (engCh, on);
             if (isChannelSelected (true, n))
             {
                 auto sel = getSelectedChannels (true);
@@ -536,11 +772,11 @@ void MatrixView::buildInputRowWidgets (int n)
                     for (int other : sel)
                     {
                         if (other == n) continue;
-                        if (other >= 0 && other < inputSoloBtns.size())
-                        {
-                            inputSoloBtns[other]->setToggleState (on, juce::dontSendNotification);
-                            matrix.setInputSolo (other, on);
-                        }
+                        if (other < 0 || other >= inputSoloBtns.size()) continue;
+                        if (inputSoloBtns[other] == nullptr) continue;
+                        const int otherEng = inputLabels[(size_t) other].firstChannel;
+                        inputSoloBtns[other]->setToggleState (on, juce::dontSendNotification);
+                        matrix.setInputSolo (otherEng, on);
                     }
                 }
             }
@@ -550,17 +786,22 @@ void MatrixView::buildInputRowWidgets (int n)
 
         auto* infx = new juce::TextButton ("FX");
         infx->setName ("fx");
-        infx->onClick = [this, n] { openFxMenuFor (/*isInput=*/true, n); };
+        // openFxMenuFor takes a CHANNEL index (engine-side), not a label
+        // index -- the FX popup edits the PluginHost for that engine
+        // channel.
+        infx->onClick = [this, engCh] { openFxMenuFor (/*isInput=*/true, engCh); };
         leftRailContent.addAndMakeVisible (*infx);
         inputFxBtns.add (infx);
     }
-    updateFxButtonAppearance (true, n);
+    updateFxButtonAppearance (true, engCh);
 
     // Set THIS row's widget bounds directly -- avoids the O(N) global
     // layout pass that used to fire after every chunk.  Matches the
     // geometry in layoutLeftRail() exactly.
     const int yy = n * cellSize;
-    inputNames   .getLast()->setBounds (8,   yy + 2,  96,  cellSize - 4);
+    if (inputCollapseBtns.getLast() != nullptr)
+        inputCollapseBtns.getLast()->setBounds (4, yy + 4, 18, cellSize - 8);
+    inputNames   .getLast()->setBounds (26,  yy + 2,  78,  cellSize - 4);
     inputTrims   .getLast()->setBounds (106, yy + 2,  32,  32);
     inputMeters  .getLast()->setBounds (142, yy + 12, 84,  12);
     inputMuteBtns.getLast()->setBounds (230, yy + 7,  18,  22);
@@ -572,14 +813,64 @@ void MatrixView::buildOutputColumnWidgets (int m)
 {
     if (m < 0 || m >= (int) outputLabels.size()) return;
     auto& matrix = engine.getRoutingMatrix();
+
+    // Collapsed column -- only a "+" expand button (the rotated DeviceName
+    // text is painted by paintTopRail).  Per-channel widget slots are
+    // nullptr so iterators must null-guard.
+    if (outputLabels[(size_t) m].isCollapsedRow)
+    {
+        const juce::String devName = outputLabels[(size_t) m].deviceName;
+
+        auto* expandBtn = new juce::TextButton ("+");
+        expandBtn->setTooltip ("Expand " + devName + "'s output channels");
+        expandBtn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (28, 70, 80));
+        expandBtn->setColour (juce::TextButton::textColourOffId, juce::Colour::fromRGB (0, 220, 240));
+        expandBtn->onClick = [this, devName] { setDeviceCollapsed (false, devName, false); };
+        topRailContent.addAndMakeVisible (*expandBtn);
+
+        outputCollapseBtns.add (expandBtn);
+        outputTrims   .add (nullptr);
+        outputMeters  .add (nullptr);
+        outputMuteBtns.add (nullptr);
+        outputFxBtns  .add (nullptr);
+
+        // Place the button at the BOTTOM of the column header (just above
+        // the trim row), so it sits below the rotated DeviceName text.
+        const int xx = m * cellSize;
+        expandBtn->setBounds (xx + (cellSize - 18) / 2, topRailWidgetsY, 18, 18);
+        return;
+    }
+
+    const int engOut = outputLabels[(size_t) m].firstChannel;
+
+    // First column of an expanded device gets a "−" button at the bottom
+    // of the header band (above the trim).  Other columns: nullptr.
+    if (outputLabels[(size_t) m].startsNewGroup)
+    {
+        const juce::String devName = outputLabels[(size_t) m].deviceName;
+        auto* collapseBtn = new juce::TextButton (juce::String::charToString ((juce::juce_wchar) 0x2212));
+        collapseBtn->setTooltip ("Collapse " + devName + "'s output channels");
+        collapseBtn->setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (40, 40, 48));
+        collapseBtn->setColour (juce::TextButton::textColourOffId, juce::Colour::fromRGB (200, 200, 205));
+        collapseBtn->onClick = [this, devName] { setDeviceCollapsed (false, devName, true); };
+        topRailContent.addAndMakeVisible (*collapseBtn);
+        outputCollapseBtns.add (collapseBtn);
+        const int xx = m * cellSize;
+        collapseBtn->setBounds (xx + (cellSize - 18) / 2, topRailWidgetsY, 18, 18);
+    }
+    else
+    {
+        outputCollapseBtns.add (nullptr);
+    }
+
     {
         auto* sl = makeTrimSlider();
-        sl->setValue (linToDb (matrix.getOutputTrim (m)), juce::dontSendNotification);
-        sl->onValueChange = [this, &matrix, sl, m]
+        sl->setValue (linToDb (matrix.getOutputTrim (engOut)), juce::dontSendNotification);
+        sl->onValueChange = [this, &matrix, sl, m, engOut]
         {
             const float dbVal  = (float) sl->getValue();
             const float linVal = dbToLin (dbVal);
-            matrix.setOutputTrim (m, linVal);
+            matrix.setOutputTrim (engOut, linVal);
             if (isChannelSelected (false, m))
             {
                 auto sel = getSelectedChannels (false);
@@ -588,11 +879,11 @@ void MatrixView::buildOutputColumnWidgets (int m)
                     for (int other : sel)
                     {
                         if (other == m) continue;
-                        if (other >= 0 && other < outputTrims.size())
-                        {
-                            outputTrims[other]->setValue (dbVal, juce::dontSendNotification);
-                            matrix.setOutputTrim (other, linVal);
-                        }
+                        if (other < 0 || other >= outputTrims.size()) continue;
+                        if (outputTrims[other] == nullptr) continue;
+                        const int otherEng = outputLabels[(size_t) other].firstChannel;
+                        outputTrims[other]->setValue (dbVal, juce::dontSendNotification);
+                        matrix.setOutputTrim (otherEng, linVal);
                     }
                 }
             }
@@ -607,11 +898,11 @@ void MatrixView::buildOutputColumnWidgets (int m)
         auto* mute = new juce::TextButton ("M");
         mute->setName ("mute");
         mute->setClickingTogglesState (true);
-        mute->setToggleState (matrix.getOutputMute (m), juce::dontSendNotification);
-        mute->onClick = [this, &matrix, mute, m]
+        mute->setToggleState (matrix.getOutputMute (engOut), juce::dontSendNotification);
+        mute->onClick = [this, &matrix, mute, m, engOut]
         {
             const bool on = mute->getToggleState();
-            matrix.setOutputMute (m, on);
+            matrix.setOutputMute (engOut, on);
             if (isChannelSelected (false, m))
             {
                 auto sel = getSelectedChannels (false);
@@ -620,11 +911,11 @@ void MatrixView::buildOutputColumnWidgets (int m)
                     for (int other : sel)
                     {
                         if (other == m) continue;
-                        if (other >= 0 && other < outputMuteBtns.size())
-                        {
-                            outputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
-                            matrix.setOutputMute (other, on);
-                        }
+                        if (other < 0 || other >= outputMuteBtns.size()) continue;
+                        if (outputMuteBtns[other] == nullptr) continue;
+                        const int otherEng = outputLabels[(size_t) other].firstChannel;
+                        outputMuteBtns[other]->setToggleState (on, juce::dontSendNotification);
+                        matrix.setOutputMute (otherEng, on);
                     }
                 }
             }
@@ -635,18 +926,18 @@ void MatrixView::buildOutputColumnWidgets (int m)
 
         auto* fx = new juce::TextButton ("FX");
         fx->setName ("fx");
-        fx->onClick = [this, m] { openFxMenuFor (/*isInput=*/false, m); };
+        fx->onClick = [this, engOut] { openFxMenuFor (/*isInput=*/false, engOut); };
         topRailContent.addAndMakeVisible (*fx);
         outputFxBtns.add (fx);
     }
-    updateFxButtonAppearance (false, m);
+    updateFxButtonAppearance (false, engOut);
 
     // Set THIS column's widget bounds directly.  Matches layoutTopRail().
     const int xx = m * cellSize;
-    outputTrims   .getLast()->setBounds (xx + 2,  60,  32, 32);
-    outputMeters  .getLast()->setBounds (xx + 11, 96,  14, 42);
-    outputMuteBtns.getLast()->setBounds (xx + 9,  140, 18, 16);
-    outputFxBtns  .getLast()->setBounds (xx + 5,  160, 26, 18);
+    outputTrims   .getLast()->setBounds (xx + 2,  topRailWidgetsY + 24,  32, 32);
+    outputMeters  .getLast()->setBounds (xx + 11, topRailWidgetsY + 60, 14, 42);
+    outputMuteBtns.getLast()->setBounds (xx + 9,  topRailWidgetsY + 104, 18, 16);
+    outputFxBtns  .getLast()->setBounds (xx + 5,  topRailWidgetsY + 124, 26, 18);
 }
 
 void MatrixView::layoutLeftRail()
@@ -654,12 +945,25 @@ void MatrixView::layoutLeftRail()
     for (int n = 0; n < (int) inputNames.size(); ++n)
     {
         const int yy = n * cellSize;
-        inputNames   [n]->setBounds (8,   yy + 2,  96,  cellSize - 4);
-        inputTrims   [n]->setBounds (106, yy + 2,  32,  32);
-        inputMeters  [n]->setBounds (142, yy + 12, 84,  12);
-        inputMuteBtns[n]->setBounds (230, yy + 7,  18,  22);
-        inputSoloBtns[n]->setBounds (250, yy + 7,  18,  22);
-        if (n < (int) inputFxBtns.size())
+        if (n < inputCollapseBtns.size() && inputCollapseBtns[n] != nullptr)
+            inputCollapseBtns[n]->setBounds (4, yy + 4, 18, cellSize - 8);
+
+        // Collapsed-row name labels take the rest of the row width.
+        // Per-channel widget slots are nullptr for these rows.
+        if (n < (int) inputLabels.size() && inputLabels[(size_t) n].isCollapsedRow)
+        {
+            if (inputNames[n] != nullptr)
+                inputNames[n]->setBounds (26, yy + 2,
+                                          leftRailContent.getWidth() - 30,
+                                          cellSize - 4);
+            continue;
+        }
+        if (inputNames   [n] != nullptr) inputNames   [n]->setBounds (26,  yy + 2,  78,  cellSize - 4);
+        if (n < inputTrims   .size() && inputTrims   [n] != nullptr) inputTrims   [n]->setBounds (106, yy + 2,  32,  32);
+        if (n < inputMeters  .size() && inputMeters  [n] != nullptr) inputMeters  [n]->setBounds (142, yy + 12, 84,  12);
+        if (n < inputMuteBtns.size() && inputMuteBtns[n] != nullptr) inputMuteBtns[n]->setBounds (230, yy + 7,  18,  22);
+        if (n < inputSoloBtns.size() && inputSoloBtns[n] != nullptr) inputSoloBtns[n]->setBounds (250, yy + 7,  18,  22);
+        if (n < (int) inputFxBtns.size() && inputFxBtns[n] != nullptr)
             inputFxBtns[n]->setBounds (272, yy + 7, 30, 22);
     }
 }
@@ -669,10 +973,15 @@ void MatrixView::layoutTopRail()
     for (int m = 0; m < (int) outputTrims.size(); ++m)
     {
         const int xx = m * cellSize;
-        outputTrims   [m]->setBounds (xx + 2,  60,  32, 32);
-        outputMeters  [m]->setBounds (xx + 11, 96,  14, 42);
-        outputMuteBtns[m]->setBounds (xx + 9,  140, 18, 16);
-        outputFxBtns  [m]->setBounds (xx + 5,  160, 26, 18);
+        // Collapse/expand button (first column of every device, plus the
+        // header for any collapsed column).
+        if (m < outputCollapseBtns.size() && outputCollapseBtns[m] != nullptr)
+            outputCollapseBtns[m]->setBounds (xx + (cellSize - 18) / 2, topRailWidgetsY, 18, 18);
+        if (outputTrims   [m] == nullptr) continue;   // collapsed column has no per-channel widgets
+        outputTrims   [m]->setBounds (xx + 2,  topRailWidgetsY + 24,  32, 32);
+        outputMeters  [m]->setBounds (xx + 11, topRailWidgetsY + 60, 14, 42);
+        outputMuteBtns[m]->setBounds (xx + 9,  topRailWidgetsY + 104, 18, 16);
+        outputFxBtns  [m]->setBounds (xx + 5,  topRailWidgetsY + 124, 26, 18);
     }
 }
 
@@ -773,23 +1082,64 @@ void MatrixView::paintTopRail (juce::Graphics& g)
         }
     }
 
-    // Rotated column names
-    g.setColour (juce::Colour::fromRGB (160, 160, 165));
-    g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 10.0f, 0));
+    // Per-column vertical labels rotated 90 deg CCW on screen.  JUCE's
+    // positive rotation goes CW on screen (because the y-axis points
+    // down), so we pass -halfPi to actually rotate CCW.  Two parallel
+    // strips per column so the channel marker doesn't get truncated
+    // when the device name is long:
+    //   * Left strip (device name)   -- centered at pivotX - 8
+    //   * Right strip (ch.N or "(N ch)" for collapsed) -- centered at pivotX + 8
+    // Each strip is ~14 px wide on screen; with cellSize = 32 we have
+    // plenty of margin so adjacent columns never overlap.
+    const float textLenPx = (float) (topRailWidgetsY - 8);   // vertical room above widgets
+    const float pivotYRot = (float) (topRailWidgetsY - 4);
+
     for (int m = mStart; m < mEnd; ++m)
     {
-        const int xx = m * cellSize;
         const auto& lbl = outputLabels[(size_t) m];
-        const juce::String text = lbl.deviceName + " ch." + juce::String (lbl.channelIndex);
 
-        juce::Graphics::ScopedSaveState state (g);
-        const float cx = (float) xx + cellSize * 0.5f;
-        const float cy = 52.0f;
-        g.addTransform (juce::AffineTransform::rotation (-0.6f, cx, cy));
-        g.drawText (text,
-                    (int) cx, (int) cy - 8,
-                    220, 16,
-                    juce::Justification::centredLeft, true);
+        juce::String nameText, chText;
+        juce::Colour col;
+        if (lbl.isCollapsedRow)
+        {
+            nameText = lbl.deviceName;
+            chText   = "(" + juce::String (lbl.channelCount) + " ch)";
+            col      = juce::Colour::fromRGB (0, 200, 220);
+        }
+        else
+        {
+            nameText = lbl.deviceName;
+            chText   = "ch." + juce::String (lbl.channelIndex);
+            col      = lbl.startsNewGroup
+                        ? juce::Colour::fromRGB (215, 215, 220)
+                        : juce::Colour::fromRGB (165, 165, 170);
+        }
+
+        const float colCx = (float) (m * cellSize) + cellSize * 0.5f;
+
+        // Helper: draw one rotated vertical strip with text climbing
+        // upward from pivot (colCx + xOffset, pivotYRot).
+        auto drawVertStrip = [&] (const juce::String& text,
+                                  float xOffset,
+                                  float fontSize,
+                                  juce::Colour textCol)
+        {
+            juce::Graphics::ScopedSaveState state (g);
+            const float pivotX = colCx + xOffset;
+            g.addTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi,
+                                                             pivotX, pivotYRot));
+            g.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), fontSize, 0));
+            g.setColour (textCol);
+            g.drawText (text,
+                        (int) pivotX, (int) pivotYRot - 7,
+                        (int) textLenPx, 14,
+                        juce::Justification::centredLeft, true);
+        };
+
+        // Left strip = device name (slightly larger).  Right strip =
+        // channel marker in a muted tint so the eye reads name first.
+        drawVertStrip (nameText, -8.0f, 12.0f, col);
+        drawVertStrip (chText,   +7.0f, 10.5f, col.darker (0.2f));
     }
 }
 
@@ -850,12 +1200,18 @@ void MatrixView::timerCallback()
     const int nOut = (int) outputMeters.size();
     for (int n = 0; n < nIn;  ++n)
     {
-        inputMeters[n]->pushPeak  (engine.getInputPeak  (n));
+        if (inputMeters[n] == nullptr) continue;       // collapsed row
+        const int engCh = n < (int) inputLabels.size()
+                          ? inputLabels[(size_t) n].firstChannel : n;
+        inputMeters[n]->pushPeak  (engine.getInputPeak  (engCh));
         inputMeters[n]->tickDecay (decay);
     }
     for (int m = 0; m < nOut; ++m)
     {
-        outputMeters[m]->pushPeak  (engine.getOutputPeak (m));
+        if (outputMeters[m] == nullptr) continue;      // collapsed column
+        const int engOut = m < (int) outputLabels.size()
+                           ? outputLabels[(size_t) m].firstChannel : m;
+        outputMeters[m]->pushPeak  (engine.getOutputPeak (engOut));
         outputMeters[m]->tickDecay (decay);
     }
 }
@@ -865,12 +1221,31 @@ static PluginHost* getHost (AudioEngine& e, bool isInput, int ch)
     return isInput ? e.getInputPluginHost (ch) : e.getPluginHost (ch);
 }
 
-void MatrixView::updateFxButtonAppearance (bool isInput, int ch)
+// Walk the label list to find which visible row/column corresponds to a
+// given engine channel.  Returns -1 if the channel lives inside a
+// collapsed device row (no per-channel widget exists).
+static int findLabelIdxForEngineCh (const std::vector<MatrixView::ChannelLabel>& labels,
+                                    int engCh)
 {
-    auto& btns = isInput ? inputFxBtns : outputFxBtns;
-    if (ch < 0 || ch >= btns.size()) return;
-    auto* host = getHost (engine, isInput, ch);
-    auto* btn  = btns[ch];
+    for (int i = 0; i < (int) labels.size(); ++i)
+    {
+        const auto& l = labels[(size_t) i];
+        if (l.isCollapsedRow) continue;
+        if (l.firstChannel == engCh) return i;
+    }
+    return -1;
+}
+
+void MatrixView::updateFxButtonAppearance (bool isInput, int engCh)
+{
+    const auto& labels = isInput ? inputLabels : outputLabels;
+    auto&       btns   = isInput ? inputFxBtns : outputFxBtns;
+    const int labelIdx = findLabelIdxForEngineCh (labels, engCh);
+    if (labelIdx < 0 || labelIdx >= btns.size()) return;
+    auto* btn = btns[labelIdx];
+    if (btn == nullptr) return;     // collapsed-row safety net
+
+    auto* host = getHost (engine, isInput, engCh);
 
     // Color states (user-specified):
     //  - no plugins        : default dark grey (unchanged look)
@@ -885,27 +1260,38 @@ void MatrixView::updateFxButtonAppearance (bool isInput, int ch)
     btn->setButtonText ("FX");
 }
 
-void MatrixView::openFxMenuFor (bool isInput, int ch)
+void MatrixView::openFxMenuFor (bool isInput, int engCh)
 {
-    auto* host = getHost (engine, isInput, ch);
+    auto* host = getHost (engine, isInput, engCh);
     if (host == nullptr) return;
 
-    auto& btns = isInput ? inputFxBtns : outputFxBtns;
-    if (ch < 0 || ch >= btns.size()) return;
+    const auto& labels = isInput ? inputLabels : outputLabels;
+    auto&       btns   = isInput ? inputFxBtns : outputFxBtns;
+    const int labelIdx = findLabelIdxForEngineCh (labels, engCh);
+    if (labelIdx < 0 || labelIdx >= btns.size() || btns[labelIdx] == nullptr) return;
 
-    // Build the broadcast target list.  If the clicked channel is part of
-    // a multi-channel selection on its side, every operation in the popup
-    // applies to all of them.  Otherwise just the clicked channel.
+    // Build the broadcast target list IN ENGINE CHANNEL space.  Selection
+    // is stored as label indices; convert each selected label to its
+    // engine channel and drop collapsed-row entries.
     std::vector<int> targets;
-    auto sel = getSelectedChannels (isInput);
-    if (sel.size() > 1
-        && std::find (sel.begin(), sel.end(), ch) != sel.end())
-        targets = std::move (sel);
+    auto selLabels = getSelectedChannels (isInput);
+    if (selLabels.size() > 1
+        && std::find (selLabels.begin(), selLabels.end(), labelIdx) != selLabels.end())
+    {
+        for (int li : selLabels)
+        {
+            if (li < 0 || li >= (int) labels.size()) continue;
+            if (labels[(size_t) li].isCollapsedRow)  continue;
+            targets.push_back (labels[(size_t) li].firstChannel);
+        }
+    }
     else
-        targets = { ch };
+    {
+        targets = { engCh };
+    }
 
-    auto popup = std::make_unique<FxChainPopupContent> (*this, isInput, ch, std::move (targets));
-    auto bounds = btns[ch]->getScreenBounds();
+    auto popup = std::make_unique<FxChainPopupContent> (*this, isInput, engCh, std::move (targets));
+    auto bounds = btns[labelIdx]->getScreenBounds();
     juce::CallOutBox::launchAsynchronously (std::move (popup), bounds, nullptr);
 }
 
@@ -968,12 +1354,23 @@ void MatrixView::TopRailContent::mouseDown (const juce::MouseEvent& e)
     // Only the rotated-label band (above the trim/meter row) triggers
     // selection; the widget rows below pass clicks through to their own
     // children (which never delegate to us in the first place).
-    constexpr int labelBandHeight = 55;
+    const int labelBandHeight = topRailWidgetsY;
     if (e.y < labelBandHeight)
     {
         const int col = e.x / owner.cellSize;
         if (col >= 0 && col < (int) owner.outputLabels.size())
         {
+            // Collapsed-device column: clicking anywhere in the rotated
+            // name area also expands (the "+" button below handles its
+            // own clicks).  Expanded columns: the "-" button on the
+            // first-of-device column handles collapse; rotated-text
+            // clicks here drive normal selection.
+            const auto& lbl = owner.outputLabels[(size_t) col];
+            if (lbl.isCollapsedRow)
+            {
+                owner.setDeviceCollapsed (false, lbl.deviceName, false);
+                return;
+            }
             owner.handleChannelHeaderClick (false, col, e.mods);
             return;
         }
@@ -1158,10 +1555,20 @@ void MatrixView::closeAllPluginEditors()
 void MatrixView::refreshMuteButtonStates()
 {
     auto& m = engine.getRoutingMatrix();
-    for (int n = 0; n < inputMuteBtns.size()  && n < m.getNumInputs();  ++n)
-        inputMuteBtns[n] ->setToggleState (m.getInputMute (n),  juce::dontSendNotification);
-    for (int o = 0; o < outputMuteBtns.size() && o < m.getNumOutputs(); ++o)
-        outputMuteBtns[o]->setToggleState (m.getOutputMute (o), juce::dontSendNotification);
+    for (int n = 0; n < inputMuteBtns.size() && n < (int) inputLabels.size(); ++n)
+    {
+        if (inputMuteBtns[n] == nullptr) continue;     // collapsed row
+        const int engCh = inputLabels[(size_t) n].firstChannel;
+        if (engCh >= m.getNumInputs()) continue;
+        inputMuteBtns[n]->setToggleState (m.getInputMute (engCh), juce::dontSendNotification);
+    }
+    for (int o = 0; o < outputMuteBtns.size() && o < (int) outputLabels.size(); ++o)
+    {
+        if (outputMuteBtns[o] == nullptr) continue;    // collapsed column
+        const int engOut = outputLabels[(size_t) o].firstChannel;
+        if (engOut >= m.getNumOutputs()) continue;
+        outputMuteBtns[o]->setToggleState (m.getOutputMute (engOut), juce::dontSendNotification);
+    }
 }
 
 void MatrixView::loadPluginInto (bool isInput, int ch, int slotIdx)

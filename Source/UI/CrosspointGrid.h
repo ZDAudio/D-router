@@ -20,9 +20,19 @@ class CrosspointGrid : public juce::Component
 public:
     explicit CrosspointGrid (RoutingMatrix& matrix);
 
+    // Each visible row or column may correspond to a RANGE of engine
+    // channels (when a device is collapsed in the matrix view).  count==1
+    // is the normal "expanded" case; count>1 makes the cell render as a
+    // Dante-style aggregate (lit iff any underlying engine crosspoint
+    // has gain > 0), and clicks on aggregate cells are no-ops.
+    struct CellSpan { int firstCh = 0; int count = 1; };
+
     // Reconfigure with the engine's current channel layout. Call after engine
-    // (re)start.
-    void setDimensions (int numIns, int numOuts, int cellSize);
+    // (re)start.  If spans aren't supplied, every visible row/column is a
+    // 1:1 normal channel.
+    void setDimensions (int numIns, int numOuts, int cellSize,
+                        std::vector<CellSpan> inSpans  = {},
+                        std::vector<CellSpan> outSpans = {});
 
     int getCellSize() const noexcept { return cellSize; }
     int getNumIns()   const noexcept { return numIns;   }
@@ -41,6 +51,12 @@ public:
 
     // Set boundaries between different devices to draw visual separators across the grid
     void setDeviceBoundaries (std::vector<int> ins, std::vector<int> outs);
+
+    // Fired when the user clicks an "aggregate" cell (any cell where at
+    // least one side is a collapsed device).  MatrixView wires this to
+    // expand both involved devices so the user can route precisely.
+    // Arguments are visible row / column indices into the label list.
+    std::function<void (int outIdx, int inIdx)> onAggregateCellClicked;
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -67,6 +83,27 @@ private:
     int numIns   = 0;
     int numOuts  = 0;
     int cellSize = 36;
+
+    // Per visible row / column, which range of engine channels does it
+    // represent.  When a span has count == 1 the cell is a normal
+    // crosspoint; when count > 1 it's a "device aggregate" cell whose
+    // visible state is the OR-reduce of every underlying (firstCh..firstCh+count).
+    std::vector<CellSpan> inSpans;
+    std::vector<CellSpan> outSpans;
+
+    // Helpers -- safe even when spans are empty (treats every row/col as 1:1).
+    CellSpan inSpan  (int vIn)  const noexcept;
+    CellSpan outSpan (int vOut) const noexcept;
+    bool     cellIsAggregate (int vOut, int vIn) const noexcept;
+    bool     aggregateActive (int vOut, int vIn) const noexcept;
+
+    // Translate visible row/column to engine channel.  CRITICAL: visible
+    // index != engine index once any device is collapsed -- using `m` as
+    // the engine channel in matrix.get/setCrosspoint shifts every route
+    // visually rightward / downward past the fold point (the actual
+    // engine state stays correct, but the wrong cell lights up).
+    int engOutForCol (int vOut) const noexcept { return outSpan (vOut).firstCh; }
+    int engInForRow  (int vIn)  const noexcept { return inSpan  (vIn) .firstCh; }
 
     // Drag state
     int  dragOut = -1, dragIn = -1;

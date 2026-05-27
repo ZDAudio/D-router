@@ -33,6 +33,12 @@ MainComponent::MainComponent()
 
     setSize (1100, 700);
 
+    // Required so MainComponent::keyPressed() receives Cmd+S / Cmd+O /
+    // Cmd+= / Cmd+- shortcuts.  setWantsKeyboardFocus alone isn't enough --
+    // the component still has to be the focused one, which it will be by
+    // default once the window opens since no child has called grabKeyboard.
+    setWantsKeyboardFocus (true);
+
     title.setFont (juce::FontOptions (22.0f, juce::Font::bold));
     // App brand label is always white -- not theme-tinted -- so the brand
     // reads cleanly against any accent colour the user picks.
@@ -113,9 +119,35 @@ MainComponent::MainComponent()
     addAndMakeVisible (saveButton);
     addAndMakeVisible (loadButton);
     addAndMakeVisible (logsButton);
+    addAndMakeVisible (layoutButton);
     addAndMakeVisible (stopButton);
 
     logsButton.onClick = [] { LogViewerDialog::launch(); };
+
+    // Matrix layout menu: bulk expand/collapse all devices per direction.
+    // Per-device expand/collapse is still available by clicking the [+]
+    // header / alt-clicking a device's first channel label.
+    layoutButton.setTooltip ("Bulk expand or collapse devices in the matrix view");
+    layoutButton.onClick = [this]
+    {
+        juce::PopupMenu m;
+        m.addSectionHeader ("Inputs (rows)");
+        m.addItem ("Expand all input devices",   [this] { matrixView.collapseAllDevices (true,  false); });
+        m.addItem ("Collapse all input devices", [this] { matrixView.collapseAllDevices (true,  true);  });
+        m.addSeparator();
+        m.addSectionHeader ("Outputs (columns)");
+        m.addItem ("Expand all output devices",   [this] { matrixView.collapseAllDevices (false, false); });
+        m.addItem ("Collapse all output devices", [this] { matrixView.collapseAllDevices (false, true);  });
+        m.showMenuAsync (juce::PopupMenu::Options()
+                            .withTargetComponent (&layoutButton));
+    };
+
+    // Auto-save whenever the user folds / unfolds a device so the next
+    // launch reflects the layout they left -- same pattern other panels use.
+    matrixView.onCollapseStateChanged = [this]
+    {
+        SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
+    };
     logsButton.setTooltip ("Open in-app diagnostics log.  Contents are also flushed to "
                            "~/Library/Logs/D-Router/ on every line so a crash leaves the "
                            "lead-up context recoverable.");
@@ -318,15 +350,21 @@ MainComponent::~MainComponent()
     // touching us / engine / matrixView through dangling references.
     aliveToken->store (false, std::memory_order_release);
 
-    // CRITICAL ORDER: stop the audio engine BEFORE harvesting the snapshot.
-    // gatherCurrentSnapshot() reads every PluginHost's getStateInformation()
-    // -- a non-RT API that mutates plugin internals -- and the matrix audio
-    // thread is meanwhile calling processBlock() on the same instances.
-    // Concurrent getStateInformation + processBlock is undefined per JUCE
-    // contract; we have seen plugins corrupt their parameter caches and
-    // crash here.  Stop first, then read state safely.
+    // CRITICAL ORDER:
+    //   1. stopProcessor() -- halt the matrix-processing thread so no more
+    //      processBlock calls fire.  Plugin hosts STAY ALIVE.
+    //   2. gatherCurrentSnapshot() -- safe to call getStateInformation()
+    //      on every plugin now that nothing is processing them concurrently.
+    //   3. engine.stop() -- full teardown that drops pluginHosts, workers
+    //      and devices.
+    // Previously we called engine.stop() first which clears pluginHosts,
+    // so the snapshot saw an empty channel chain list and per-channel FX
+    // never persisted across launches.  The stopProcessor() variant lets
+    // us keep the race-protection AND save the FX.
+    engine.stopProcessor();
+    auto outgoingSnap = gatherCurrentSnapshot();
     engine.stop();
-    SnapshotStore::save (SnapshotStore::getLastUsedFile(), gatherCurrentSnapshot());
+    SnapshotStore::save (SnapshotStore::getLastUsedFile(), outgoingSnap);
     // Only mark the clean-exit marker AFTER the snapshot write has been
     // requested; if save() throws or the process is killed before this
     // line, the marker stays on disk and next launch will prompt the user.
@@ -352,6 +390,33 @@ void MainComponent::paint (juce::Graphics& g)
     g.fillAll (juce::Colour::fromRGB (12, 12, 14)); // Deep cyber black background
 }
 
+bool MainComponent::keyPressed (const juce::KeyPress& k)
+{
+    // Cmd+S / Cmd+O -- map directly onto the existing Save... / Load...
+    // dialogs so the toolbar button workflow stays unchanged.
+    if (k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0))
+    {
+        saveSnapshotInteractive();
+        return true;
+    }
+    if (k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0))
+    {
+        loadSnapshotInteractive();
+        return true;
+    }
+    // Cmd+= / Cmd++ (both produce '=' on US layouts since '+' needs shift) /
+    // Cmd+- adjust the engine-monitor body font size when that panel has any
+    // visibility (covers detached window too).  Cmd+0 resets to default.
+    if (k.getModifiers().isCommandDown())
+    {
+        const auto c = k.getTextCharacter();
+        if (c == '=' || c == '+') { statusPanel.bumpBodyFontSize (+1); return true; }
+        if (c == '-' || c == '_') { statusPanel.bumpBodyFontSize (-1); return true; }
+        if (c == '0')             { statusPanel.bumpBodyFontSize ( 0); return true; }
+    }
+    return false;
+}
+
 void MainComponent::resized()
 {
     // Loading overlay always covers the entire window.
@@ -368,6 +433,8 @@ void MainComponent::resized()
     settingsButton.setBounds (top.removeFromLeft (90));
     top.removeFromLeft (4);
     groupsButton  .setBounds (top.removeFromLeft (90));
+    top.removeFromLeft (4);
+    layoutButton  .setBounds (top.removeFromLeft (90));
 
     // Right Session Section (Save, Load, Logs, PANIC)
     stopButton.setBounds (top.removeFromRight (60));
@@ -936,6 +1003,11 @@ Snapshot MainComponent::gatherCurrentSnapshot() const
     gatherGroupChains (const_cast<AudioEngine&> (engine).getGroupManager(),      false, s.groupChains);
     gatherGroupChains (const_cast<AudioEngine&> (engine).getInputGroupManager(), true,  s.groupChains);
 
+    // Matrix-view UI state: which devices are folded.  Stored as names so a
+    // future device ordering change doesn't silently shift the mapping.
+    s.collapsedInputDevices  = matrixView.getCollapsedDeviceNames (true);
+    s.collapsedOutputDevices = matrixView.getCollapsedDeviceNames (false);
+
     return s;
 }
 
@@ -989,6 +1061,11 @@ void MainComponent::applySnapshot (const Snapshot& s)
     pendingSnap.channelChains = s.channelChains;
     pendingSnap.groupChains   = s.groupChains;
     pendingSnap.valid = true;
+
+    // Restore matrix-view UI collapse state BEFORE the rebuild so the
+    // first paint already reflects it (no flash-then-collapse).
+    matrixView.setCollapsedDeviceNames (true,  s.collapsedInputDevices);
+    matrixView.setCollapsedDeviceNames (false, s.collapsedOutputDevices);
 
     applyDeviceSelection (s.devices);
     // Don't touch the matrix or rebuildFromEngine() here.  applyDeviceSelection

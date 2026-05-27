@@ -24,6 +24,16 @@ public:
     // Force an immediate refresh (e.g. after engine restart).
     void refreshNow() { refresh(); }
 
+    // Cmd+= / Cmd+- / Cmd+0 hooks from MainComponent.  delta > 0 grows
+    // by 1 pt, < 0 shrinks, == 0 resets to the 11 pt default.  Clamped
+    // to [8, 24] so the user can't accidentally make text unreadable.
+    void bumpBodyFontSize (int delta);
+
+    // Reset xrun counters across all device workers.  Used by the
+    // "Reset" button next to the XRUN gauge so the user can zero the
+    // cold-start noise once the engine has stabilised.
+    void resetXrun();
+
     // Freeze polling while the engine is being reconfigured -- otherwise the
     // timer can iterate workers / read inputPeaks while they're being torn
     // down / moved by AudioEngine::stop()+start() on the worker thread.
@@ -43,6 +53,9 @@ private:
 
     juce::Label      title    { {}, "Engine status" };
     juce::TextButton popOutBtn { "->" };
+    juce::TextButton resetXrunBtn { "Reset XRUN" };
+
+    float            bodyFontPt = 11.0f;   // adjusted via Cmd+= / Cmd+-
 
     // Self-painted gauge strip at the top of the panel; the body below is
     // still a monospaced TextEditor for the latency table.

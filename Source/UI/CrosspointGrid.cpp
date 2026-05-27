@@ -86,13 +86,46 @@ float CrosspointGrid::linToDb (float lin) noexcept
     return 20.0f * std::log10 (lin);
 }
 
-void CrosspointGrid::setDimensions (int newIns, int newOuts, int newCellSize)
+void CrosspointGrid::setDimensions (int newIns, int newOuts, int newCellSize,
+                                    std::vector<CellSpan> newInSpans,
+                                    std::vector<CellSpan> newOutSpans)
 {
     numIns   = newIns;
     numOuts  = newOuts;
     cellSize = newCellSize;
+    inSpans  = std::move (newInSpans);
+    outSpans = std::move (newOutSpans);
     setSize (numOuts * cellSize, numIns * cellSize);
     repaint();
+}
+
+CrosspointGrid::CellSpan CrosspointGrid::inSpan (int vIn) const noexcept
+{
+    if (vIn >= 0 && vIn < (int) inSpans.size()) return inSpans[(size_t) vIn];
+    return { vIn, 1 };
+}
+
+CrosspointGrid::CellSpan CrosspointGrid::outSpan (int vOut) const noexcept
+{
+    if (vOut >= 0 && vOut < (int) outSpans.size()) return outSpans[(size_t) vOut];
+    return { vOut, 1 };
+}
+
+bool CrosspointGrid::cellIsAggregate (int vOut, int vIn) const noexcept
+{
+    return inSpan (vIn).count > 1 || outSpan (vOut).count > 1;
+}
+
+bool CrosspointGrid::aggregateActive (int vOut, int vIn) const noexcept
+{
+    const auto si = inSpan  (vIn);
+    const auto so = outSpan (vOut);
+    // Already in engine-channel space here (firstCh + count).
+    for (int m = so.firstCh; m < so.firstCh + so.count; ++m)
+        for (int n = si.firstCh; n < si.firstCh + si.count; ++n)
+            if (matrix.getCrosspoint (m, n) > 1.0e-6f)
+                return true;
+    return false;
 }
 
 juce::Rectangle<int> CrosspointGrid::cellBounds (int m, int n) const noexcept
@@ -168,7 +201,38 @@ void CrosspointGrid::paint (juce::Graphics& g)
         for (int n = nStart; n < nEnd; ++n)
         {
             auto r = cellBounds (m, n).toFloat().reduced (1.0f);
-            const float gain = matrix.getCrosspoint (m, n);
+
+            // Aggregate cell: at least one of the row/column spans covers
+            // more than one engine channel.  Render Dante-style -- a single
+            // "device pair" cell, lit if ANY underlying x-point routes,
+            // dark otherwise.  No gain readout, no toggle on click (the
+            // user expands the device first to route precisely).
+            if (cellIsAggregate (m, n))
+            {
+                const bool active = aggregateActive (m, n);
+                if (active)
+                {
+                    g.setColour (juce::Colour::fromRGB (0, 170, 200));   // muted teal
+                    g.fillRect (r);
+                    g.setColour (juce::Colours::white.withAlpha (0.35f));
+                    g.drawRect (r, 1.0f);
+                }
+                else
+                {
+                    g.setColour (juce::Colour::fromRGB (24, 24, 30));    // dim
+                    g.fillRect (r);
+                    g.setColour (juce::Colour::fromRGB (40, 40, 46));
+                    g.drawRect (r, 0.5f);
+                }
+                continue;
+            }
+
+            // m / n are VISIBLE indices; once a device is collapsed they
+            // diverge from engine channel indices, so we have to translate
+            // through the per-row/column span before hitting the matrix.
+            const int engM = engOutForCol (m);
+            const int engN = engInForRow  (n);
+            const float gain = matrix.getCrosspoint (engM, engN);
             const bool on = gain > 1.0e-6f;
 
             if (! on)
@@ -320,6 +384,16 @@ void CrosspointGrid::mouseDown (const juce::MouseEvent& e)
     int m, n;
     if (! hitTestCell (e.x, e.y, m, n)) return;
 
+    // Aggregate cells (one or both sides is a collapsed device) aren't
+    // routable directly.  Fire the click hook so MatrixView can auto-
+    // expand both involved devices -- one tap on a lit aggregate cell
+    // takes the user straight to the precise crosspoints inside.
+    if (cellIsAggregate (m, n))
+    {
+        if (onAggregateCellClicked) onAggregateCellClicked (m, n);
+        return;
+    }
+
     if (e.mods.isShiftDown())
     {
         if (shiftStartOut == -1)
@@ -335,11 +409,17 @@ void CrosspointGrid::mouseDown (const juce::MouseEvent& e)
             shiftStartOut = -1;
             shiftStartIn = -1;
 
+            // getCellsOnLine returns VISIBLE cell coords; matrix.setCrosspoint
+            // wants engine channels.  Translate each before touching the
+            // matrix, but keep the original visible coords for invalidate
+            // (which addresses on-screen rects, not engine state).
             auto cells = getCellsOnLine (startOut, startIn, m, n);
             for (auto& cell : cells)
             {
-                const float cur = matrix.getCrosspoint (cell.first, cell.second);
-                matrix.setCrosspoint (cell.first, cell.second, cur > 1.0e-6f ? 0.0f : 1.0f);
+                const int em = engOutForCol (cell.first);
+                const int en = engInForRow  (cell.second);
+                const float cur = matrix.getCrosspoint (em, en);
+                matrix.setCrosspoint (em, en, cur > 1.0e-6f ? 0.0f : 1.0f);
                 invalidateCell (cell.first, cell.second);
             }
             repaint();
@@ -354,7 +434,9 @@ void CrosspointGrid::mouseDown (const juce::MouseEvent& e)
     }
 
     dragOut = m; dragIn = n;
-    dragStartDb = linToDb (matrix.getCrosspoint (m, n));
+    const int engM = engOutForCol (m);
+    const int engN = engInForRow  (n);
+    dragStartDb = linToDb (matrix.getCrosspoint (engM, engN));
     if (e.mods.isPopupMenu())
     {
         promptForDb (m, n);
@@ -369,7 +451,7 @@ void CrosspointGrid::mouseDrag (const juce::MouseEvent& e)
     draggedSinceMouseDown = true;
     const float newDb = juce::jlimit (-60.0f, 12.0f,
                                        dragStartDb + (-e.getDistanceFromDragStartY()) * 0.25f);
-    matrix.setCrosspoint (dragOut, dragIn, dbToLin (newDb));
+    matrix.setCrosspoint (engOutForCol (dragOut), engInForRow (dragIn), dbToLin (newDb));
     invalidateCell (dragOut, dragIn);
 }
 
@@ -378,8 +460,10 @@ void CrosspointGrid::mouseUp (const juce::MouseEvent& e)
     if (dragOut < 0 || e.mods.isPopupMenu()) { dragOut = dragIn = -1; return; }
     if (! draggedSinceMouseDown)
     {
-        const float cur = matrix.getCrosspoint (dragOut, dragIn);
-        matrix.setCrosspoint (dragOut, dragIn, cur > 1.0e-6f ? 0.0f : 1.0f);
+        const int em = engOutForCol (dragOut);
+        const int en = engInForRow  (dragIn);
+        const float cur = matrix.getCrosspoint (em, en);
+        matrix.setCrosspoint (em, en, cur > 1.0e-6f ? 0.0f : 1.0f);
         invalidateCell (dragOut, dragIn);
     }
     dragOut = dragIn = -1;
@@ -389,21 +473,27 @@ void CrosspointGrid::mouseDoubleClick (const juce::MouseEvent& e)
 {
     int m, n;
     if (! hitTestCell (e.x, e.y, m, n)) return;
-    matrix.setCrosspoint (m, n, 1.0f);
+    if (cellIsAggregate (m, n)) return;
+    matrix.setCrosspoint (engOutForCol (m), engInForRow (n), 1.0f);
     invalidateCell (m, n);
 }
 
 void CrosspointGrid::promptForDb (int m, int n)
 {
+    // m / n are visible coords; engine coords are needed for the matrix
+    // get/set calls.  invalidateCell stays in visible coord space.
+    const int engM = engOutForCol (m);
+    const int engN = engInForRow  (n);
+
     auto* dialog = new juce::AlertWindow ("Crosspoint gain",
                                           "Enter gain in dB (-60 to +12, or 'off')",
                                           juce::AlertWindow::NoIcon);
-    dialog->addTextEditor ("db", juce::String (linToDb (matrix.getCrosspoint (m, n)), 1));
+    dialog->addTextEditor ("db", juce::String (linToDb (matrix.getCrosspoint (engM, engN)), 1));
     dialog->addButton ("OK",     1, juce::KeyPress (juce::KeyPress::returnKey));
     dialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
     dialog->enterModalState (true,
-        juce::ModalCallbackFunction::create ([this, dialog, m, n] (int result)
+        juce::ModalCallbackFunction::create ([this, dialog, m, n, engM, engN] (int result)
         {
             if (result == 1)
             {
@@ -413,7 +503,7 @@ void CrosspointGrid::promptForDb (int m, int n)
                     gain = 0.0f;
                 else
                     gain = dbToLin (juce::jlimit (-60.0f, 12.0f, txt.getFloatValue()));
-                matrix.setCrosspoint (m, n, gain);
+                matrix.setCrosspoint (engM, engN, gain);
                 invalidateCell (m, n);
             }
             delete dialog;

@@ -38,6 +38,9 @@ namespace ids {
 
     static const juce::Identifier channelChains  ("channelChains");
     static const juce::Identifier groupChains    ("groupChains");
+    static const juce::Identifier collapsedIn    ("collapsedInputDevices");
+    static const juce::Identifier collapsedOut   ("collapsedOutputDevices");
+    static const juce::Identifier deviceNameProp ("deviceName");
     static const juce::Identifier chain          ("chain");
     static const juce::Identifier slot           ("slot");
     static const juce::Identifier globalIdx      ("globalIdx");
@@ -197,6 +200,25 @@ juce::ValueTree SnapshotStore::toValueTree (const Snapshot& s)
     }
     root.addChild (gc, -1, nullptr);
 
+    // Collapsed device-name lists (per direction).  Stored as one <device>
+    // child per name with a deviceName attribute -- ValueTree doesn't have
+    // a native string-array type and this is the established style elsewhere
+    // in the file.
+    auto writeNameList = [&] (const juce::Identifier& listId,
+                              const std::vector<juce::String>& names)
+    {
+        juce::ValueTree list (listId);
+        for (const auto& n : names)
+        {
+            juce::ValueTree node (ids::device);
+            node.setProperty (ids::deviceNameProp, n, nullptr);
+            list.addChild (node, -1, nullptr);
+        }
+        root.addChild (list, -1, nullptr);
+    };
+    writeNameList (ids::collapsedIn,  s.collapsedInputDevices);
+    writeNameList (ids::collapsedOut, s.collapsedOutputDevices);
+
     return root;
 }
 
@@ -327,6 +349,21 @@ Snapshot SnapshotStore::fromValueTree (const juce::ValueTree& root)
         readSlots (gv, g.slots);
         s.groupChains.push_back (std::move (g));
     }
+
+    auto readNameList = [&] (const juce::Identifier& listId,
+                             std::vector<juce::String>& out)
+    {
+        auto list = root.getChildWithName (listId);
+        for (auto node : list)
+        {
+            if (! node.hasType (ids::device)) continue;
+            const juce::String n = node.getProperty (ids::deviceNameProp, juce::String());
+            if (n.isNotEmpty()) out.push_back (n);
+        }
+    };
+    readNameList (ids::collapsedIn,  s.collapsedInputDevices);
+    readNameList (ids::collapsedOut, s.collapsedOutputDevices);
+
     return s;
 }
 

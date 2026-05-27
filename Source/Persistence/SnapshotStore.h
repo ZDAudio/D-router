@@ -63,6 +63,13 @@ struct Snapshot
     };
     std::vector<ChannelChain> channelChains;
     std::vector<GroupChain>   groupChains;
+
+    // Per-direction list of device names whose channels are folded in the
+    // matrix view.  Stored as device-name strings rather than indices so
+    // adding/removing a device in the future doesn't silently shift the
+    // collapse mapping.
+    std::vector<juce::String> collapsedInputDevices;
+    std::vector<juce::String> collapsedOutputDevices;
 };
 
 // Disk persistence of Snapshots as XML ValueTrees.

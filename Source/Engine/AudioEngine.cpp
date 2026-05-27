@@ -241,6 +241,20 @@ double AudioEngine::getMostRecentUnderrunMs() const noexcept
     return m;
 }
 
+void AudioEngine::resetXrunCounters() noexcept
+{
+    for (auto& w : workers) w->resetXrunCounters();
+}
+
+void AudioEngine::stopProcessor() noexcept
+{
+    // Just halt the matrix-processing thread.  Workers, plugin hosts, and
+    // device callbacks stay alive -- needed so MainComponent's shutdown
+    // path can still call plugin->getStateInformation() safely without a
+    // concurrent processBlock racing the read.
+    processor.stop();
+}
+
 double AudioEngine::LatencyReport::DeviceItem::getInputLatencyMs (double engineSr) const
 {
     if (! hasInput || deviceSampleRate <= 0.0 || engineSr <= 0.0) return 0.0;
