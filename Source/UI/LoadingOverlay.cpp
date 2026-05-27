@@ -4,11 +4,14 @@ namespace dcr {
 
 LoadingOverlay::LoadingOverlay()
 {
-    // Sit on top of everything else.  Don't intercept mouse so the user
-    // could still click into the matrix if they wanted (they probably
-    // can't change anything useful while we're mid-rebuild, but it's not
-    // the overlay's job to block them).
-    setInterceptsMouseClicks (false, false);
+    // Sit on top of everything else.  EAT every mouse event so the user
+    // can't click through into a half-built matrix tree -- if they hit a
+    // crosspoint while the engine is mid-reconfigure they can race
+    // matrix.resize() and segfault.  This replaces a per-component
+    // setEnabled(false/true) cycle that used to recursively repaint
+    // hundreds of children, flooding the message thread right when we
+    // were trying to settle.
+    setInterceptsMouseClicks (true, false);
     setOpaque (false);
     setAlwaysOnTop (true);
 }

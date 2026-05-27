@@ -677,17 +677,12 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     inputGroupPanel.pauseUpdates();
     stopTimer();
 
-    // Disable INPUT to the matrix grid + group cards too, not just the timers.
-    // While engine.start() runs matrix.resize() on the worker thread, any UI
-    // mouse click that calls matrix.setCrosspoint / setInputTrim / set*Mute
-    // races with the non-atomic vector move and can UAF.  setEnabled(false)
-    // propagates down the children and stops mouse events at the root.
-    matrixView.setEnabled (false);
-    groupPanel.setEnabled (false);
-    inputGroupPanel.setEnabled (false);
-
     // Show the loading splash so the user knows the app is busy and
     // hasn't crashed.  Hidden when matrixView's chunked rebuild finishes.
+    // The overlay is AlwaysOnTop and intercepts every mouse click, which
+    // also serves as our input-disable guard against the matrix.resize()
+    // UAF race -- much cheaper than recursively setEnabled(false) on
+    // 600+ children (each enablementChanged() triggers repaint()).
     loadingOverlay.showOverlay ("Reconfiguring engine...");
 
     if (reconfigThread.joinable()) reconfigThread.join();
@@ -756,10 +751,10 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             statusPanel.resumeUpdates();
             groupPanel.resumeUpdates();
             inputGroupPanel.resumeUpdates();
-            // Re-enable matrix input now that engine is back in a stable state.
-            matrixView.setEnabled (true);
-            groupPanel.setEnabled (true);
-            inputGroupPanel.setEnabled (true);
+            // Input was blocked via the loadingOverlay's interceptsMouseClicks,
+            // which the overlay drops on its own when it hides.  No setEnabled
+            // toggle needed any more (and it was triggering hundreds of
+            // enablementChanged() repaints, lagging the UI right after rebuild).
             startTimer (engine.getSettings().statusTimerMs);
             refreshStatus();
 

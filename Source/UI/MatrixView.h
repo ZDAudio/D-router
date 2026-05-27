@@ -256,12 +256,14 @@ private:
     // from a previous invocation bail out at their entry check.
     struct RebuildState
     {
-        uint64_t generation   = 0;
-        bool     active       = false;
-        int      nextInputIdx = 0;
+        uint64_t generation    = 0;
+        bool     active        = false;
+        int      nextInputIdx  = 0;
         int      nextOutputIdx = 0;
-        int      totalInputs  = 0;
-        int      totalOutputs = 0;
+        int      totalInputs   = 0;
+        int      totalOutputs  = 0;
+        uint32_t startMs       = 0;   // for perf logging only
+        int      chunkCount    = 0;
     };
     RebuildState rebuildState;
     uint64_t     rebuildGenerationCounter = 0;

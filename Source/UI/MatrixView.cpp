@@ -29,6 +29,15 @@ namespace
 
 namespace
 {
+    juce::uint32 nowMs() { return juce::Time::getMillisecondCounter(); }
+    void logRebuildStep (const char* what, juce::uint32 startMs)
+    {
+        juce::Logger::writeToLog (juce::String ("MatrixView::rebuild: ") + what
+                                  + " @ "
+                                  + juce::String (nowMs() - startMs)
+                                  + " ms");
+    }
+
     float dbToLin (float db) noexcept
     {
         return db <= -60.0f ? 0.0f : std::pow (10.0f, db * 0.05f);
@@ -175,6 +184,8 @@ juce::Slider* MatrixView::makeTrimSlider()
 
 void MatrixView::rebuildFromEngine()
 {
+    rebuildState.startMs = juce::Time::getMillisecondCounter();
+
     // Channel counts may change.  Drop selection so it can't refer to a
     // channel that no longer exists -- a stale index would point at a
     // different device after device add/remove.
@@ -190,6 +201,9 @@ void MatrixView::rebuildFromEngine()
     if (! inputLabels.empty() && samePhysicalLayout())
     {
         softRefreshFromEngine();
+        juce::Logger::writeToLog ("MatrixView::rebuild: fast-path soft refresh ("
+                                  + juce::String (juce::Time::getMillisecondCounter()
+                                                  - rebuildState.startMs) + " ms)");
         if (onRebuildFinished) onRebuildFinished();
         return;
     }
@@ -329,6 +343,8 @@ void MatrixView::continueRebuild()
 {
     if (! rebuildState.active) return;
 
+    const auto chunkStart = nowMs();
+
     // Bigger chunks now that each row sets its own bounds inline -- the
     // earlier 16-per-side cap existed because we were re-laying-out ALL
     // existing widgets every tick (O(N) work per tick).  Per-row layout
@@ -336,20 +352,28 @@ void MatrixView::continueRebuild()
     // can comfortably do 64 per side.
     constexpr int kBatch = 64;
 
-    int done = 0;
-    while (done < kBatch && rebuildState.nextInputIdx < rebuildState.totalInputs)
+    int inputsBuilt = 0;
+    while (inputsBuilt < kBatch && rebuildState.nextInputIdx < rebuildState.totalInputs)
     {
         buildInputRowWidgets (rebuildState.nextInputIdx);
         ++rebuildState.nextInputIdx;
-        ++done;
+        ++inputsBuilt;
     }
-    done = 0;
-    while (done < kBatch && rebuildState.nextOutputIdx < rebuildState.totalOutputs)
+    int outputsBuilt = 0;
+    while (outputsBuilt < kBatch && rebuildState.nextOutputIdx < rebuildState.totalOutputs)
     {
         buildOutputColumnWidgets (rebuildState.nextOutputIdx);
         ++rebuildState.nextOutputIdx;
-        ++done;
+        ++outputsBuilt;
     }
+
+    juce::Logger::writeToLog ("MatrixView::rebuild: chunk #"
+                              + juce::String (rebuildState.chunkCount + 1)
+                              + " built " + juce::String (inputsBuilt) + " in + "
+                              + juce::String (outputsBuilt) + " out in "
+                              + juce::String (nowMs() - chunkStart) + " ms");
+
+    ++rebuildState.chunkCount;
 
     if (onRebuildProgress)
         onRebuildProgress (rebuildState.nextInputIdx + rebuildState.nextOutputIdx,
@@ -372,8 +396,11 @@ void MatrixView::continueRebuild()
     }
 }
 
+
 void MatrixView::finishRebuild()
 {
+    logRebuildStep ("chunks done", rebuildState.startMs);
+
     auto& matrix = engine.getRoutingMatrix();
     grid = std::make_unique<CrosspointGrid> (matrix);
     grid->setDimensions (rebuildState.totalInputs, rebuildState.totalOutputs, cellSize);
@@ -403,6 +430,10 @@ void MatrixView::finishRebuild()
     repaint();
 
     rebuildState.active = false;
+    juce::Logger::writeToLog ("MatrixView::rebuild: DONE ("
+                              + juce::String (rebuildState.chunkCount) + " chunks, "
+                              + juce::String (juce::Time::getMillisecondCounter()
+                                              - rebuildState.startMs) + " ms total)");
     if (onRebuildFinished) onRebuildFinished();
 }
 
