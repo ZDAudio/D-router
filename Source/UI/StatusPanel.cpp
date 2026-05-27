@@ -71,6 +71,22 @@ void StatusPanel::resumeUpdates()
 
 void StatusPanel::refresh()
 {
+    // Hard gate -- when the panel isn't actually on screen (e.g. user is on
+    // the Matrix tab and the Status tab is hidden) there's no point spending
+    // hundreds of microseconds building a multi-thousand-char status string
+    // and another big chunk pushing it into TextEditor.  MainComponent's
+    // 250 ms timer still calls refreshNow() unconditionally; that used to
+    // chew so much of the message thread that the meter timer dropped to
+    // ~4 Hz for the first ~55 s after launch (until the engine's startup
+    // CPU peak decayed enough to leave headroom).
+    if (! isShowing()) return;
+
+    // Sampled perf log -- one in every 12 refreshes (~3 s at the default
+    // 250 ms cadence).  Lets us see how heavy the refresh actually is.
+    static thread_local int refreshCounter = 0;
+    const auto refreshStart = juce::Time::getMillisecondCounter();
+    const bool logThis = ((refreshCounter++ % 12) == 0);
+
     juce::String s;
 
     s << "Engine " << (int) engine.getEngineSampleRate() << " Hz / "
@@ -251,6 +267,14 @@ void StatusPanel::refresh()
         ? (juce::Time::getMillisecondCounterHiRes() - lastUnderrunMs) / 1000.0
         : -1.0;
     gauges.repaint();
+
+    if (logThis)
+        juce::Logger::writeToLog ("StatusPanel::refresh #"
+                                  + juce::String (refreshCounter)
+                                  + " took "
+                                  + juce::String (juce::Time::getMillisecondCounter()
+                                                  - refreshStart)
+                                  + " ms");
 }
 
 void StatusPanel::GaugeStrip::timerCallback()

@@ -14,22 +14,30 @@ CrosspointGrid::CrosspointGrid (RoutingMatrix& m) : matrix (m)
 
 // ---- Hover tracking ----------------------------------------------------
 // Halo extends in 8 directions (full row, full column, both diagonals).
-// Earlier this just called repaint() on the whole grid -- visually correct
-// but it queued a JUCE paint event covering the entire (huge) grid on
-// EVERY mouse-move-to-a-new-cell.  With the user's mouse hovering over
-// the matrix at all that flooded the message thread, dragging the visible
-// frame rate to a few FPS.  Now we invalidate only the row + column
-// stripes that actually changed -- the diagonals are visually subtle so
-// we accept the small overdraw at the row/col intersection rather than
-// invalidating the entire huge rectangle that would contain them.
+// Must invalidate every region that has halo pixels in either the OLD
+// or the NEW position, otherwise we leave ghost cells behind that the
+// user perceives as the UI being stuck.  Row + column are easy (cellSize
+// stripes); the diagonals are bounded by a square of side
+// (2*kHaloDiagonalCells + 1) * cellSize around the hovered cell.
+// JUCE coalesces repaints between vsync ticks so even fast mouse motion
+// only triggers ~60 paints/sec.
 void CrosspointGrid::repaintHoverHalo (int outIdx, int inIdx)
 {
-    if (outIdx < 0 || inIdx < 0) return;
-    // Full row stripe + full column stripe of the hovered cell.  These two
-    // rectangles cover every cell that has the row/column halo lit; cheap
-    // to invalidate.
-    repaint (0, inIdx  * cellSize, getWidth(), cellSize);
+    if (outIdx < 0 || inIdx < 0 || cellSize <= 0) return;
+
+    // Row stripe (full width).
+    repaint (0, inIdx * cellSize, getWidth(), cellSize);
+    // Column stripe (full height).
     repaint (outIdx * cellSize, 0, cellSize, getHeight());
+
+    // Bounding square for the diagonals.  See paint() for the matching
+    // kHaloDiagonalCells used when actually drawing them.
+    const int D = kHaloDiagonalCells;
+    const int x0 = juce::jmax (0, (outIdx - D)) * cellSize;
+    const int y0 = juce::jmax (0, (inIdx  - D)) * cellSize;
+    const int x1 = juce::jmin (numOuts, outIdx + D + 1) * cellSize;
+    const int y1 = juce::jmin (numIns,  inIdx  + D + 1) * cellSize;
+    repaint (x0, y0, x1 - x0, y1 - y0);
 }
 
 void CrosspointGrid::mouseMove (const juce::MouseEvent& e)
@@ -271,8 +279,13 @@ void CrosspointGrid::paint (juce::Graphics& g)
         g.fillRect (hoverOut * cellSize, 0, cellSize, numIns  * cellSize);
 
         // Two diagonals.  Walk a single offset d in both directions; clip
-        // bound stays per-cell.
-        const int maxD = juce::jmax (numOuts, numIns);
+        // bound stays per-cell.  Cap at kHaloDiagonalCells -- past ~24
+        // cells the diagonal is off-screen on any sensible viewport size
+        // anyway, and capping keeps repaintHoverHalo's invalidation rect
+        // bounded so we don't have to repaint the whole grid on every
+        // cursor move.
+        const int maxD = juce::jmin (kHaloDiagonalCells,
+                                     juce::jmax (numOuts, numIns));
         for (int d = -maxD; d <= maxD; ++d)
         {
             if (d == 0) continue;   // center already covered by row/col

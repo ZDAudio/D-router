@@ -192,7 +192,18 @@ MainComponent::MainComponent()
     };
     matrixView.onRebuildFinished = [this]
     {
-        loadingOverlay.hideOverlay();
+        // Hide the overlay only once BOTH the chunked widget rebuild AND
+        // the serialized plugin-restore queue have drained.  If we hide
+        // while plugins are still loading, the user perceives the UI as
+        // "frozen" because the message thread is pegged installing AUs
+        // even though the splash is gone.  processNextPluginLoad bumps
+        // pluginLoadCursor as it finishes each load; when cursor reaches
+        // size (or the queue was empty to begin with) we're done.
+        if (pluginLoadCursor >= (int) pluginLoadQueue.size())
+            loadingOverlay.hideOverlay();
+        else
+            loadingOverlay.setMessage ("Loading saved plugins  0 / "
+                                       + juce::String (pluginLoadQueue.size()));
     };
 
     // When the user clicks any per-channel mute button while a panic is
@@ -989,11 +1000,22 @@ void MainComponent::restorePluginChainsAsync()
     if (pendingSnap.channelChains.empty() && pendingSnap.groupChains.empty())
         return;
 
-    auto& fmt = engine.getPluginFormatManager();
-    const double sr = engine.getEngineSampleRate();
-    const int    bs = engine.getEngineBlockSize();
+    // Build a single linear queue, then drain it strictly one-at-a-time
+    // from processNextPluginLoad().  Firing all loads at once used to
+    // peg the message thread for ~30 s on a snapshot with a dozen heavy
+    // AUs -- see PendingPluginLoad's comment.
+    pluginLoadQueue.clear();
+    pluginLoadCursor  = 0;
+    pluginLoadStartMs = (uint32_t) juce::Time::getMillisecondCounter();
 
-    // ----- per-channel chains -----------------------------------------------
+    auto decode = [] (const juce::String& b64, juce::MemoryBlock& out)
+    {
+        if (b64.isEmpty()) return;
+        juce::MemoryOutputStream mos (out, false);
+        juce::Base64::convertFromBase64 (mos, b64);
+    };
+
+    // Per-channel chains.
     for (auto& ch : pendingSnap.channelChains)
     {
         for (int slotIdx = 0; slotIdx < (int) ch.slots.size(); ++slotIdx)
@@ -1001,102 +1023,163 @@ void MainComponent::restorePluginChainsAsync()
             const auto& ps = ch.slots[(size_t) slotIdx];
             if (ps.isEmpty()) continue;
 
-            juce::PluginDescription desc;
-            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, desc)) continue;
-
-            // Decode plugin's own state once on the message thread; the captured
-            // copy is then moved into the async callback below.
-            juce::MemoryBlock state;
-            if (ps.stateB64.isNotEmpty())
-            {
-                juce::MemoryOutputStream mos (state, false);
-                juce::Base64::convertFromBase64 (mos, ps.stateB64);
-            }
-            const bool wasBypassed = ps.bypassed;
-            const bool isInput     = ch.isInput;
-            const int  globalIdx   = ch.globalIdx;
-
-            auto alive = aliveToken;
-            fmt.createPluginInstanceAsync (desc, sr, bs,
-                [this, alive, isInput, globalIdx, slotIdx, state, wasBypassed]
-                (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
-                {
-                    juce::ignoreUnused (err);
-                    // MainComponent (and therefore engine + matrixView) may
-                    // already be gone if the user quit or kicked off another
-                    // reconfigure while this load was still pending.
-                    if (! alive->load (std::memory_order_acquire)) return;
-                    if (instance == nullptr) return;
-                    if (state.getSize() > 0)
-                        dcr::safe::setStateInformation (*instance,
-                                                        state.getData(),
-                                                        (int) state.getSize());
-                    auto* host = isInput ? engine.getInputPluginHost (globalIdx)
-                                         : engine.getPluginHost     (globalIdx);
-                    if (host == nullptr) return;
-                    host->setPluginAt (slotIdx, std::move (instance));
-                    host->setBypassedAt (slotIdx, wasBypassed);
-                    matrixView.updateFxButtonAppearance (isInput, globalIdx);
-                });
+            PendingPluginLoad job;
+            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, job.desc))
+                continue;
+            decode (ps.stateB64, job.state);
+            job.bypassed         = ps.bypassed;
+            job.slotIdx          = slotIdx;
+            job.kind             = PendingPluginLoad::Kind::ChannelSlot;
+            job.isInputChannel   = ch.isInput;
+            job.globalChannelIdx = ch.globalIdx;
+            pluginLoadQueue.push_back (std::move (job));
         }
     }
 
-    // ----- per-group chains -------------------------------------------------
-    // OutputGroupManager and InputGroupManager are sibling classes (no shared
-    // base), so the lookup is duplicated rather than dispatched via a cast.
-    auto getGroupForChain = [this] (bool isInput, int groupIdx) -> OutputGroup*
-    {
-        return isInput ? engine.getInputGroupManager().getGroup (groupIdx)
-                       : engine.getGroupManager()     .getGroup (groupIdx);
-    };
-
+    // Per-group chains.
     for (auto& gc : pendingSnap.groupChains)
     {
-        auto* g = getGroupForChain (gc.isInput, gc.groupIdx);
+        // channelSet is captured at queue time -- this lets the worker
+        // resolve which channels the group covers without re-looking-up the
+        // OutputGroup pointer until just before the install.
+        OutputGroup* g = gc.isInput ? engine.getInputGroupManager().getGroup (gc.groupIdx)
+                                    : engine.getGroupManager()     .getGroup (gc.groupIdx);
         if (g == nullptr) continue;
-        const auto channelSet = g->channelSet;
+
         for (int slotIdx = 0; slotIdx < (int) gc.slots.size(); ++slotIdx)
         {
             const auto& ps = gc.slots[(size_t) slotIdx];
             if (ps.isEmpty()) continue;
 
-            juce::PluginDescription desc;
-            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, desc)) continue;
-
-            juce::MemoryBlock state;
-            if (ps.stateB64.isNotEmpty())
-            {
-                juce::MemoryOutputStream mos (state, false);
-                juce::Base64::convertFromBase64 (mos, ps.stateB64);
-            }
-            const bool wasBypassed = ps.bypassed;
-            const bool isInput     = gc.isInput;
-            const int  groupIdx    = gc.groupIdx;
-
-            auto alive = aliveToken;
-            fmt.createPluginInstanceAsync (desc, sr, bs,
-                [this, alive, isInput, groupIdx, slotIdx, state, wasBypassed, channelSet, getGroupForChain]
-                (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
-                {
-                    juce::ignoreUnused (err);
-                    if (! alive->load (std::memory_order_acquire)) return;
-                    if (instance == nullptr) return;
-                    if (state.getSize() > 0)
-                        dcr::safe::setStateInformation (*instance,
-                                                        state.getData(),
-                                                        (int) state.getSize());
-                    auto* g2 = getGroupForChain (isInput, groupIdx);
-                    if (g2 == nullptr) return;
-                    if (slotIdx < 0 || slotIdx >= (int) g2->pluginSlots.size()) return;
-                    auto& host = g2->pluginSlots[(size_t) slotIdx];
-                    if (! host) return;
-                    host->setPlugin (std::move (instance), channelSet);
-                    host->setBypassed (wasBypassed);
-                    if (isInput) inputGroupPanel.rebuild();
-                    else         groupPanel.rebuild();
-                });
+            PendingPluginLoad job;
+            if (! dcr::safe::loadPluginDescriptionFromXml (ps.descriptionXml, job.desc))
+                continue;
+            decode (ps.stateB64, job.state);
+            job.bypassed     = ps.bypassed;
+            job.slotIdx      = slotIdx;
+            job.kind         = PendingPluginLoad::Kind::GroupSlot;
+            job.isInputGroup = gc.isInput;
+            job.groupIdx     = gc.groupIdx;
+            job.channelSet   = g->channelSet;
+            pluginLoadQueue.push_back (std::move (job));
         }
     }
+
+    if (pluginLoadQueue.empty()) return;
+
+    juce::Logger::writeToLog ("PluginRestore: queued " + juce::String (pluginLoadQueue.size())
+                              + " plugin(s) for serialized cold-start instantiation");
+    processNextPluginLoad();
+}
+
+void MainComponent::processNextPluginLoad()
+{
+    if (pluginLoadCursor >= (int) pluginLoadQueue.size())
+    {
+        juce::Logger::writeToLog ("PluginRestore: queue drained ("
+                                  + juce::String ((uint32_t) juce::Time::getMillisecondCounter()
+                                                  - pluginLoadStartMs)
+                                  + " ms total)");
+        // Now that the queue is empty we can safely drop the splash.
+        // The matrix-rebuild branch may have already tried to hide it
+        // and bailed because we were still loading; clean it up here.
+        loadingOverlay.hideOverlay();
+        return;
+    }
+
+    const auto& job = pluginLoadQueue[(size_t) pluginLoadCursor];
+    const auto  jobStart = juce::Time::getMillisecondCounter();
+    const auto  cursor   = pluginLoadCursor;
+    const auto  pluginName = job.desc.name;
+
+    // Show progress on the splash so the user sees the app is busy
+    // doing useful work, not stuck.
+    loadingOverlay.setMessage ("Loading saved plugins  "
+                               + juce::String (cursor + 1) + " / "
+                               + juce::String (pluginLoadQueue.size())
+                               + "   (" + pluginName + ")");
+    loadingOverlay.setProgress (cursor, (int) pluginLoadQueue.size());
+
+    auto& fmt = engine.getPluginFormatManager();
+    const double sr = engine.getEngineSampleRate();
+    const int    bs = engine.getEngineBlockSize();
+
+    juce::Logger::writeToLog ("PluginRestore: [" + juce::String (cursor + 1) + "/"
+                              + juce::String (pluginLoadQueue.size())
+                              + "] loading '" + pluginName + "'...");
+
+    auto alive = aliveToken;
+    fmt.createPluginInstanceAsync (job.desc, sr, bs,
+        [this, alive, jobStart, cursor, pluginName]
+        (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
+        {
+            juce::ignoreUnused (err);
+            if (! alive->load (std::memory_order_acquire)) return;
+            // Re-read the job (its slot in the queue may have moved if a new
+            // restore was kicked off, but pluginLoadCursor is stable per-run).
+            if (cursor >= (int) pluginLoadQueue.size()) return;
+            const auto& j = pluginLoadQueue[(size_t) cursor];
+
+            if (instance != nullptr)
+            {
+                if (j.state.getSize() > 0)
+                    dcr::safe::setStateInformation (*instance,
+                                                    j.state.getData(),
+                                                    (int) j.state.getSize());
+
+                if (j.kind == PendingPluginLoad::Kind::ChannelSlot)
+                {
+                    auto* host = j.isInputChannel
+                                    ? engine.getInputPluginHost (j.globalChannelIdx)
+                                    : engine.getPluginHost      (j.globalChannelIdx);
+                    if (host != nullptr)
+                    {
+                        host->setPluginAt (j.slotIdx, std::move (instance));
+                        host->setBypassedAt (j.slotIdx, j.bypassed);
+                        matrixView.updateFxButtonAppearance (j.isInputChannel,
+                                                             j.globalChannelIdx);
+                    }
+                }
+                else // GroupSlot
+                {
+                    auto* g = j.isInputGroup
+                                ? engine.getInputGroupManager().getGroup (j.groupIdx)
+                                : engine.getGroupManager()     .getGroup (j.groupIdx);
+                    if (g != nullptr
+                        && j.slotIdx >= 0
+                        && j.slotIdx < (int) g->pluginSlots.size())
+                    {
+                        auto& host = g->pluginSlots[(size_t) j.slotIdx];
+                        if (host)
+                        {
+                            host->setPlugin (std::move (instance), j.channelSet);
+                            host->setBypassed (j.bypassed);
+                            if (j.isInputGroup) inputGroupPanel.rebuild();
+                            else                groupPanel.rebuild();
+                        }
+                    }
+                }
+            }
+
+            juce::Logger::writeToLog ("PluginRestore: [" + juce::String (cursor + 1) + "/"
+                                      + juce::String (pluginLoadQueue.size())
+                                      + "] '" + pluginName + "' done in "
+                                      + juce::String ((uint32_t) juce::Time::getMillisecondCounter()
+                                                      - jobStart) + " ms");
+
+            ++pluginLoadCursor;
+
+            // YIELD before kicking the next one -- this is the whole point of
+            // the queue.  callAsync goes to the back of the message queue, so
+            // any pending paint/mouse/meter events run before the next plugin
+            // instantiation starts.  Without this the UI stays at ~1 fps for
+            // the entire duration of the queue drain.
+            juce::MessageManager::callAsync ([this, alive]
+            {
+                if (! alive->load (std::memory_order_acquire)) return;
+                processNextPluginLoad();
+            });
+        });
 }
 
 MainComponent::MatrixStateByName MainComponent::captureMatrixByName() const
