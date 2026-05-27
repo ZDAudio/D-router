@@ -82,11 +82,21 @@ private:
     std::vector<int> inputDeviceBoundaries;
     std::vector<int> outputDeviceBoundaries;
 
-    // Hover cell (-1 == no hover).  When this changes the old + new 3x3
-    // neighborhoods get a targeted repaint so the rest of the grid (which
-    // can be hundreds of thousands of cells) isn't touched.
+    // Hover cell (-1 == no hover).  When this changes we invalidate the
+    // row stripe, column stripe and a (2D+1)-cell diagonal bounding box
+    // around the hovered cell at BOTH the old and new positions, so the
+    // halo cleanly clears as the mouse moves and doesn't leave ghost
+    // grey cells behind.
     int hoverOut = -1, hoverIn = -1;
     void repaintHoverHalo (int outIdx, int inIdx);
+
+    // Max diagonal extent (in cells) drawn from the hovered cell.  Looks
+    // essentially "infinite" inside any reasonable viewport while keeping
+    // the per-hover invalidation rect bounded -- otherwise a 48x66 grid
+    // would invalidate the whole canvas every time the cursor crossed a
+    // cell boundary, and the visible ghost cells past the cap looked like
+    // the UI was running at 1-3 fps.
+    static constexpr int kHaloDiagonalCells = 24;
 };
 
 } // namespace dcr
