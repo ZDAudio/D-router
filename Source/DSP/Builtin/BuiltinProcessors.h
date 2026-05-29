@@ -1,8 +1,10 @@
 #pragma once
 
+#include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -31,6 +33,11 @@ namespace ids
     static constexpr const char* filter     = "builtin:filter";
     static constexpr const char* eq         = "builtin:eq";
     static constexpr const char* compressor = "builtin:compressor";
+    static constexpr const char* gate       = "builtin:gate";
+    static constexpr const char* limiter    = "builtin:limiter";
+    static constexpr const char* reverb     = "builtin:reverb";
+    static constexpr const char* delay      = "builtin:delay";
+    static constexpr const char* tone       = "builtin:tone";
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +515,337 @@ protected:
 
 private:
     float envelope = 0.0f;
+};
+
+// ===========================================================================
+// 5. Noise Gate -- channel-linked, attack / hold / release, attenuation range.
+// ===========================================================================
+class NoiseGateProcessor : public BuiltinProcessor
+{
+public:
+    NoiseGateProcessor() : BuiltinProcessor (ids::gate, "Noise Gate", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "threshold", 1 }, "Threshold",
+            juce::NormalisableRange<float> (-80.0f, 0.0f, 0.1f), -40.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "attack", 1 }, "Attack",
+            juce::NormalisableRange<float> (0.1f, 100.0f, 0.1f, 0.4f), 1.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "hold", 1 }, "Hold",
+            juce::NormalisableRange<float> (0.0f, 500.0f, 1.0f, 0.5f), 50.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "release", 1 }, "Release",
+            juce::NormalisableRange<float> (5.0f, 2000.0f, 1.0f, 0.4f), 200.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "range", 1 }, "Range",
+            juce::NormalisableRange<float> (-100.0f, 0.0f, 0.1f), -80.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int) override
+    {
+        dspSampleRate = sr;
+        gain = 0.0f;
+        holdCounter = 0;
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+
+        const float threshLin = std::pow (10.0f, param ("threshold") * 0.05f);
+        const float rangeLin  = std::pow (10.0f, param ("range") * 0.05f);
+        const float attCoeff  = std::exp (-1.0f / (float) (juce::jmax (0.1f, param ("attack"))  * 0.001 * dspSampleRate));
+        const float relCoeff  = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("release")) * 0.001 * dspSampleRate));
+        const int   holdSamps = (int) (juce::jmax (0.0f, param ("hold")) * 0.001f * (float) dspSampleRate);
+
+        for (int i = 0; i < ns; ++i)
+        {
+            float peak = 0.0f;
+            for (int ch = 0; ch < nch; ++ch)
+                peak = juce::jmax (peak, std::abs (buffer.getReadPointer (ch)[i]));
+
+            float target;
+            if (peak >= threshLin)      { target = 1.0f; holdCounter = holdSamps; }
+            else if (holdCounter > 0)   { target = 1.0f; --holdCounter; }
+            else                          target = rangeLin;
+
+            const float coeff = (target > gain) ? attCoeff : relCoeff;
+            gain = coeff * gain + (1.0f - coeff) * target;
+
+            for (int ch = 0; ch < nch; ++ch)
+                buffer.getWritePointer (ch)[i] *= gain;
+        }
+    }
+
+private:
+    float gain = 0.0f;
+    int   holdCounter = 0;
+};
+
+// ===========================================================================
+// 6. Limiter -- channel-linked brickwall, instant attack, smooth release.
+// ===========================================================================
+class LimiterProcessor : public BuiltinProcessor
+{
+public:
+    LimiterProcessor() : BuiltinProcessor (ids::limiter, "Limiter", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "ceiling", 1 }, "Ceiling",
+            juce::NormalisableRange<float> (-24.0f, 0.0f, 0.1f), -0.3f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "release", 1 }, "Release",
+            juce::NormalisableRange<float> (1.0f, 1000.0f, 1.0f, 0.4f), 100.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "gain", 1 }, "Input Gain",
+            juce::NormalisableRange<float> (0.0f, 24.0f, 0.1f), 0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int) override { dspSampleRate = sr; gain = 1.0f; }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+
+        const float ceilLin  = std::pow (10.0f, param ("ceiling") * 0.05f);
+        const float inLin     = std::pow (10.0f, param ("gain") * 0.05f);
+        const float relCoeff = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("release")) * 0.001 * dspSampleRate));
+
+        for (int i = 0; i < ns; ++i)
+        {
+            // Apply input gain first, then find the linked peak.
+            float peak = 0.0f;
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                buffer.getWritePointer (ch)[i] *= inLin;
+                peak = juce::jmax (peak, std::abs (buffer.getReadPointer (ch)[i]));
+            }
+
+            const float desired = peak > ceilLin ? (ceilLin / peak) : 1.0f;
+            if (desired < gain) gain = desired;                     // instant attack
+            else                gain = relCoeff * gain + (1.0f - relCoeff) * 1.0f;
+
+            for (int ch = 0; ch < nch; ++ch)
+                buffer.getWritePointer (ch)[i] *= gain;
+        }
+    }
+
+private:
+    float gain = 1.0f;
+};
+
+// ===========================================================================
+// 7. Reverb -- Freeverb (juce::Reverb), one mono tank per channel.
+// ===========================================================================
+class ReverbProcessor : public BuiltinProcessor
+{
+public:
+    ReverbProcessor() : BuiltinProcessor (ids::reverb, "Reverb", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "size", 1 }, "Room Size",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.5f));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "damping", 1 }, "Damping",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.5f));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "wet", 1 }, "Wet",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.33f));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "dry", 1 }, "Dry",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 1.0f));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int numChannels) override
+    {
+        reverbs.clear();
+        for (int i = 0; i < numChannels; ++i)
+        {
+            auto r = std::make_unique<juce::Reverb>();
+            r->setSampleRate (sr);
+            r->reset();
+            reverbs.push_back (std::move (r));
+        }
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        juce::Reverb::Parameters p;
+        p.roomSize   = param ("size");
+        p.damping    = param ("damping");
+        p.wetLevel   = param ("wet");
+        p.dryLevel   = param ("dry");
+        p.width      = 1.0f;
+        p.freezeMode = 0.0f;
+
+        const int ns  = buffer.getNumSamples();
+        const int nch = juce::jmin (buffer.getNumChannels(), (int) reverbs.size());
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            reverbs[(size_t) ch]->setParameters (p);
+            reverbs[(size_t) ch]->processMono (buffer.getWritePointer (ch), ns);
+        }
+    }
+
+private:
+    std::vector<std::unique_ptr<juce::Reverb>> reverbs;
+};
+
+// ===========================================================================
+// 8. Delay -- per-channel feedback delay with wet/dry mix.
+// ===========================================================================
+class DelayProcessor : public BuiltinProcessor
+{
+public:
+    DelayProcessor() : BuiltinProcessor (ids::delay, "Delay", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "time", 1 }, "Time",
+            juce::NormalisableRange<float> (1.0f, 2000.0f, 1.0f, 0.4f), 300.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "feedback", 1 }, "Feedback",
+            juce::NormalisableRange<float> (0.0f, 0.95f, 0.01f), 0.35f));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "mix", 1 }, "Mix",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.3f));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int blockSize, int numChannels) override
+    {
+        dspSampleRate = sr;
+        maxDelaySamps = (int) (2.0 * sr) + 8;
+        line.setMaximumDelayInSamples (maxDelaySamps);
+        line.prepare ({ sr, (juce::uint32) juce::jmax (1, blockSize),
+                        (juce::uint32) juce::jmax (1, numChannels) });
+        line.reset();
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+
+        const float timeSamps = juce::jlimit (1.0f, (float) (maxDelaySamps - 1),
+                                              param ("time") * 0.001f * (float) dspSampleRate);
+        const float fb  = juce::jlimit (0.0f, 0.95f, param ("feedback"));
+        const float mix = juce::jlimit (0.0f, 1.0f,  param ("mix"));
+        line.setDelay (timeSamps);
+
+        for (int i = 0; i < ns; ++i)
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                const float in = buffer.getReadPointer (ch)[i];
+                const float d  = line.popSample (ch);
+                line.pushSample (ch, in + d * fb);
+                buffer.getWritePointer (ch)[i] = in * (1.0f - mix) + d * mix;
+            }
+    }
+
+private:
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> line { 96008 };
+    int maxDelaySamps = 96000;
+};
+
+// ===========================================================================
+// 9. Tone Generator -- sine / white / pink test signal (replaces the input).
+//    Handy in a router for verifying a signal path end-to-end.
+// ===========================================================================
+class ToneProcessor : public BuiltinProcessor
+{
+public:
+    ToneProcessor() : BuiltinProcessor (ids::tone, "Tone Generator", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterChoice>(
+            juce::ParameterID { "mode", 1 }, "Mode",
+            juce::StringArray { "Off (pass-through)", "Sine", "White Noise", "Pink Noise" }, 0));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "freq", 1 }, "Frequency",
+            juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), 1000.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("Hz")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "level", 1 }, "Level",
+            juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -12.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int) override { dspSampleRate = sr; phase = 0.0; pink = 0.0f; }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int mode = (int) param ("mode");
+        if (mode == 0) return;                       // pass-through
+
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+        const float lvl = std::pow (10.0f, param ("level") * 0.05f);
+        const double inc = juce::jlimit (20.0f, 20000.0f, param ("freq")) / dspSampleRate;
+
+        for (int i = 0; i < ns; ++i)
+        {
+            float s = 0.0f;
+            if (mode == 1)                            // sine
+            {
+                s = std::sin (phase * juce::MathConstants<double>::twoPi);
+                phase += inc;
+                if (phase >= 1.0) phase -= 1.0;
+            }
+            else if (mode == 2)                       // white
+            {
+                s = rng.nextFloat() * 2.0f - 1.0f;
+            }
+            else                                      // pink (one-pole coloured approx)
+            {
+                const float w = rng.nextFloat() * 2.0f - 1.0f;
+                pink = 0.98f * pink + 0.02f * w;
+                s = pink * 3.0f;
+            }
+            s *= lvl;
+            for (int ch = 0; ch < nch; ++ch)
+                buffer.getWritePointer (ch)[i] = s;   // replace -- it's a source
+        }
+    }
+
+private:
+    double      phase = 0.0;
+    float       pink  = 0.0f;
+    juce::Random rng;
 };
 
 } // namespace dcr::builtin

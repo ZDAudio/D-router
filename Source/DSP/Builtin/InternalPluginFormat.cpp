@@ -12,6 +12,11 @@ namespace
         if (id == ids::filter)     return std::make_unique<FilterProcessor>();
         if (id == ids::eq)         return std::make_unique<ParametricEQ>();
         if (id == ids::compressor) return std::make_unique<CompressorProcessor>();
+        if (id == ids::gate)       return std::make_unique<NoiseGateProcessor>();
+        if (id == ids::limiter)    return std::make_unique<LimiterProcessor>();
+        if (id == ids::reverb)     return std::make_unique<ReverbProcessor>();
+        if (id == ids::delay)      return std::make_unique<DelayProcessor>();
+        if (id == ids::tone)       return std::make_unique<ToneProcessor>();
         return nullptr;
     }
 }
@@ -19,7 +24,10 @@ namespace
 juce::Array<juce::PluginDescription> InternalPluginFormat::getBuiltinDescriptions()
 {
     juce::Array<juce::PluginDescription> out;
-    const char* allIds[] = { ids::gain, ids::filter, ids::eq, ids::compressor };
+    const char* allIds[] = {
+        ids::gain, ids::filter, ids::eq, ids::compressor,
+        ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone
+    };
     for (auto* id : allIds)
         if (auto p = makeById (id))
         {
