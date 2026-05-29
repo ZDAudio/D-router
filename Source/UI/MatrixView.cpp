@@ -2,6 +2,7 @@
 
 #include "Engine/AudioEngine.h"
 #include "DSP/PluginHost.h"
+#include "DSP/Builtin/InternalPluginFormat.h"
 #include "UI/PluginEditorWindow.h"
 #include "Routing/RoutingMatrix.h"
 
@@ -1658,6 +1659,77 @@ void MatrixView::loadPluginIntoMulti (bool isInput, std::vector<int> channels, i
 {
     if (channels.empty()) return;
 
+    // First choose a SOURCE: a built-in DSP module (instant) or an AU from
+    // disk.  Built-ins live in their own submenu so they're one click away
+    // and never require a file browse.
+    juce::PopupMenu menu;
+
+    juce::PopupMenu builtinMenu;
+    for (const auto& d : dcr::builtin::InternalPluginFormat::getBuiltinDescriptions())
+    {
+        auto desc = d;
+        builtinMenu.addItem (desc.name, [this, isInput, channels, slotIdx, desc]
+        {
+            instantiateAndBroadcast (isInput, channels, slotIdx, desc);
+        });
+    }
+    menu.addSubMenu ("Built-in", builtinMenu);
+    menu.addSeparator();
+    menu.addItem ("Load Audio Unit from file...", [this, isInput, channels, slotIdx]
+    {
+        browseForAuAndBroadcast (isInput, channels, slotIdx);
+    });
+
+    // Anchor the menu on the clicked channel's FX button when we can find it.
+    auto& btns = isInput ? inputFxBtns : outputFxBtns;
+    const auto& labels = isInput ? inputLabels : outputLabels;
+    int anchorLabelIdx = -1;
+    for (int i = 0; i < (int) labels.size(); ++i)
+        if (! labels[(size_t) i].isCollapsedRow
+            && labels[(size_t) i].firstChannel == channels.front())
+        { anchorLabelIdx = i; break; }
+
+    if (anchorLabelIdx >= 0 && anchorLabelIdx < btns.size() && btns[anchorLabelIdx] != nullptr)
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (btns[anchorLabelIdx]));
+    else
+        menu.showMenuAsync (juce::PopupMenu::Options());
+}
+
+void MatrixView::instantiateAndBroadcast (bool isInput, std::vector<int> channels, int slotIdx,
+                                          juce::PluginDescription desc)
+{
+    juce::Logger::writeToLog ("FX load: broadcasting '" + desc.name + "' to "
+                              + juce::String ((int) channels.size()) + " "
+                              + juce::String (isInput ? "input" : "output")
+                              + " channel(s), slot " + juce::String (slotIdx + 1));
+
+    // One instance per channel -- plugin instances (AU or built-in) are
+    // per-host and can't be shared.  Built-ins instantiate synchronously;
+    // AUs land async.  Either way the callback runs on the message thread.
+    for (int targetCh : channels)
+    {
+        engine.getPluginFormatManager().createPluginInstanceAsync (
+            desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
+            [this, isInput, targetCh, slotIdx]
+            (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
+            {
+                if (instance == nullptr)
+                {
+                    juce::Logger::writeToLog ("  ch." + juce::String (targetCh + 1)
+                                              + " load failed: " + err);
+                    return;
+                }
+                auto* host = getHost (engine, isInput, targetCh);
+                if (host == nullptr) return;
+                closeEditorFor (isInput, targetCh, slotIdx);
+                host->setPluginAt (slotIdx, std::move (instance));
+                updateFxButtonAppearance (isInput, targetCh);
+            });
+    }
+}
+
+void MatrixView::browseForAuAndBroadcast (bool isInput, std::vector<int> channels, int slotIdx)
+{
     juce::File startDir ("/Library/Audio/Plug-Ins/Components");
     if (! startDir.isDirectory())
         startDir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
@@ -1678,6 +1750,7 @@ void MatrixView::loadPluginIntoMulti (bool isInput, std::vector<int> channels, i
             auto file = fc.getResult();
             if (file == juce::File{}) return;
 
+            // The AU format is index 0 (registered before the Internal format).
             auto& fmt = *engine.getPluginFormatManager().getFormat (0);
             juce::OwnedArray<juce::PluginDescription> descs;
             fmt.findAllTypesForFile (descs, file.getFullPathName());
@@ -1693,42 +1766,9 @@ void MatrixView::loadPluginIntoMulti (bool isInput, std::vector<int> channels, i
                 return;
             }
 
-            // For each target channel we fire a separate createPluginInstanceAsync
-            // -- AU instances are per-host, can't be shared.  All callbacks land
-            // on the message thread; whichever finishes first installs first.
-            auto chooseDesc = [this, isInput, channels, slotIdx] (juce::PluginDescription desc)
-            {
-                juce::Logger::writeToLog ("loadPluginIntoMulti: broadcasting '" + desc.name
-                                          + "' to " + juce::String ((int) channels.size())
-                                          + " " + juce::String (isInput ? "input" : "output")
-                                          + " channels, slot " + juce::String (slotIdx + 1));
-                for (int targetCh : channels)
-                {
-                    engine.getPluginFormatManager().createPluginInstanceAsync (
-                        desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
-                        [this, isInput, targetCh, slotIdx]
-                        (std::unique_ptr<juce::AudioPluginInstance> instance, const juce::String& err)
-                        {
-                            if (instance == nullptr)
-                            {
-                                juce::Logger::writeToLog ("  ch." + juce::String (targetCh + 1)
-                                                          + " load failed: " + err);
-                                return;
-                            }
-                            auto* host = getHost (engine, isInput, targetCh);
-                            if (host == nullptr) return;
-                            // Replace whatever was there -- the whole point of
-                            // broadcast is "make all selected the same".
-                            closeEditorFor (isInput, targetCh, slotIdx);
-                            host->setPluginAt (slotIdx, std::move (instance));
-                            updateFxButtonAppearance (isInput, targetCh);
-                        });
-                }
-            };
-
             if (descs.size() == 1)
             {
-                chooseDesc (*descs[0]);
+                instantiateAndBroadcast (isInput, channels, slotIdx, *descs[0]);
             }
             else
             {
@@ -1736,18 +1776,11 @@ void MatrixView::loadPluginIntoMulti (bool isInput, std::vector<int> channels, i
                 std::vector<juce::PluginDescription> copies;
                 copies.reserve ((size_t) descs.size());
                 for (auto* d : descs) copies.push_back (*d);
-                for (size_t i = 0; i < copies.size(); ++i)
-                {
-                    auto d = copies[i];
+                for (auto d : copies)
                     pick.addItem (d.name + "  -  " + d.manufacturerName,
-                                  [d, chooseDesc] { chooseDesc (d); });
-                }
-                auto& btns = isInput ? inputFxBtns : outputFxBtns;
-                const int primary = channels.front();
-                if (primary >= 0 && primary < btns.size())
-                    pick.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (btns[primary]));
-                else
-                    pick.showMenuAsync (juce::PopupMenu::Options());
+                                  [this, isInput, channels, slotIdx, d]
+                                  { instantiateAndBroadcast (isInput, channels, slotIdx, d); });
+                pick.showMenuAsync (juce::PopupMenu::Options());
             }
         });
 }

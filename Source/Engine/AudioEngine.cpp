@@ -1,5 +1,7 @@
 #include "Engine/AudioEngine.h"
 
+#include "DSP/Builtin/InternalPluginFormat.h"
+
 #include <limits>
 
 namespace dcr {
@@ -14,6 +16,10 @@ AudioEngine::AudioEngine()
     }
 
     pluginFormatManager.addFormat (new juce::AudioUnitPluginFormat());
+    // Built-in DSP modules (gain, filter, EQ, compressor) ride the same
+    // format-manager pipeline as AUs, so they instantiate / serialize /
+    // restore through identical code paths.
+    pluginFormatManager.addFormat (new dcr::builtin::InternalPluginFormat());
 }
 
 AudioEngine::~AudioEngine()

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <functional>
@@ -140,6 +141,9 @@ private:
     int pendingLoadSlotIdx = -1;
 
     void requestLoadPlugin (int cardIdx, int slotIdx);
+    // Install one PluginDescription (built-in or AU) into a group slot.
+    void installPluginIntoGroup (int cardIdx, int slotIdx, juce::PluginDescription desc);
+    void browseForAuIntoGroup   (int cardIdx, int slotIdx);
 };
 
 } // namespace dcr

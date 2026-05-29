@@ -1,5 +1,6 @@
 #include "UI/OutputGroupPanel.h"
 
+#include "DSP/Builtin/InternalPluginFormat.h"
 #include "DSP/MultiChannelPluginHost.h"
 #include "Engine/AudioEngine.h"
 #include "Routing/OutputGroup.h"
@@ -510,9 +511,58 @@ void OutputGroupPanel::timerCallback()
 
 void OutputGroupPanel::requestLoadPlugin (int cardIdx, int slotIdx)
 {
-    pendingLoadCardIdx = cardIdx;
-    pendingLoadSlotIdx = slotIdx;
+    // Choose a source: built-in DSP (instant) or an AU from disk.
+    juce::PopupMenu menu;
 
+    juce::PopupMenu builtinMenu;
+    for (const auto& d : dcr::builtin::InternalPluginFormat::getBuiltinDescriptions())
+    {
+        auto desc = d;
+        builtinMenu.addItem (desc.name, [this, cardIdx, slotIdx, desc]
+        {
+            installPluginIntoGroup (cardIdx, slotIdx, desc);
+        });
+    }
+    menu.addSubMenu ("Built-in", builtinMenu);
+    menu.addSeparator();
+    menu.addItem ("Load Audio Unit from file...", [this, cardIdx, slotIdx]
+    {
+        browseForAuIntoGroup (cardIdx, slotIdx);
+    });
+    menu.showMenuAsync (juce::PopupMenu::Options());
+}
+
+void OutputGroupPanel::installPluginIntoGroup (int cardIdx, int slotIdx, juce::PluginDescription desc)
+{
+    engine.getPluginFormatManager().createPluginInstanceAsync (
+        desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
+        [this, cardIdx, slotIdx] (std::unique_ptr<juce::AudioPluginInstance> instance,
+                                  const juce::String& error)
+        {
+            if (instance == nullptr)
+            {
+                juce::NativeMessageBox::showAsync (
+                    juce::MessageBoxOptions()
+                        .withIconType (juce::MessageBoxIconType::WarningIcon)
+                        .withTitle ("Plugin load failed")
+                        .withMessage (error),
+                    nullptr);
+                return;
+            }
+            auto* g = mgrGetGroup (cardIdx);
+            if (g == nullptr) return;
+            if (slotIdx < 0 || slotIdx >= (int) g->pluginSlots.size()) return;
+            auto& host = g->pluginSlots[(size_t) slotIdx];
+            if (! host) return;
+            host->setPlugin (std::move (instance), g->channelSet);
+
+            for (auto* c : cards)
+                if (c->groupIdx == cardIdx) { c->refreshSlotAppearance (slotIdx); break; }
+        });
+}
+
+void OutputGroupPanel::browseForAuIntoGroup (int cardIdx, int slotIdx)
+{
     juce::File start ("/Library/Audio/Plug-Ins/Components");
     if (! start.isDirectory())
         start = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
@@ -525,12 +575,8 @@ void OutputGroupPanel::requestLoadPlugin (int cardIdx, int slotIdx)
         juce::FileBrowserComponent::openMode
       | juce::FileBrowserComponent::canSelectFiles
       | juce::FileBrowserComponent::canSelectDirectories,
-        [this] (const juce::FileChooser& fc)
+        [this, cardIdx, slotIdx] (const juce::FileChooser& fc)
         {
-            const int gIdx = pendingLoadCardIdx;
-            const int sIdx = pendingLoadSlotIdx;
-            pendingLoadCardIdx = pendingLoadSlotIdx = -1;
-
             auto file = fc.getResult();
             if (file == juce::File{}) return;
 
@@ -547,33 +593,7 @@ void OutputGroupPanel::requestLoadPlugin (int cardIdx, int slotIdx)
                     nullptr);
                 return;
             }
-            auto desc = *descs[0];
-            engine.getPluginFormatManager().createPluginInstanceAsync (
-                desc, engine.getEngineSampleRate(), engine.getEngineBlockSize(),
-                [this, gIdx, sIdx] (std::unique_ptr<juce::AudioPluginInstance> instance,
-                                    const juce::String& error)
-                {
-                    if (instance == nullptr)
-                    {
-                        juce::NativeMessageBox::showAsync (
-                            juce::MessageBoxOptions()
-                                .withIconType (juce::MessageBoxIconType::WarningIcon)
-                                .withTitle ("Plugin load failed")
-                                .withMessage (error),
-                            nullptr);
-                        return;
-                    }
-                    auto* g = mgrGetGroup (gIdx);
-                    if (g == nullptr) return;
-                    if (sIdx < 0 || sIdx >= (int) g->pluginSlots.size()) return;
-                    auto& host = g->pluginSlots[(size_t) sIdx];
-                    if (! host) return;
-                    host->setPlugin (std::move (instance), g->channelSet);
-
-                    // Refresh card UI.
-                    for (auto* c : cards)
-                        if (c->groupIdx == gIdx) { c->refreshSlotAppearance (sIdx); break; }
-                });
+            installPluginIntoGroup (cardIdx, slotIdx, *descs[0]);
         });
 }
 

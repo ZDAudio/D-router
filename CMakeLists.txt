@@ -57,6 +57,7 @@ target_sources(dcorerouter PRIVATE
     Source/DSP/PluginHost.mm
     Source/DSP/MultiChannelPluginHost.mm
     Source/DSP/SafePluginOps.mm
+    Source/DSP/Builtin/InternalPluginFormat.cpp
     Source/UI/PluginEditorWindow.mm
 )
 

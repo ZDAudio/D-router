@@ -325,6 +325,12 @@ private:
     // instantiate it into the SAME slot on every channel in `channels`,
     // wiping whatever was previously there.
     void loadPluginIntoMulti (bool isInput, std::vector<int> channels, int slotIdx);
+    // Instantiate one PluginDescription (built-in or AU) into `slotIdx` on
+    // every channel in `channels`.  Shared tail of both the built-in menu
+    // pick and the AU file-browse pick.
+    void instantiateAndBroadcast (bool isInput, std::vector<int> channels, int slotIdx,
+                                  juce::PluginDescription desc);
+    void browseForAuAndBroadcast (bool isInput, std::vector<int> channels, int slotIdx);
     void showEditorFor  (bool isInput, int ch, int slotIdx);
     void closeEditorFor (bool isInput, int ch, int slotIdx);
 
