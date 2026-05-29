@@ -56,11 +56,13 @@ public:
         CrashHandler::install();
         mainWindow.reset (new MainWindow (getApplicationName()));
 
-        // Menu-bar-only presence: drop the Dock icon entirely and live in the
-        // status bar.  The red close button HIDES the window (engine keeps
-        // running in the background); the tray menu shows it again or quits
-        // for real.  No Dock icon means we never have to juggle a Dock-reopen
-        // event -- the tray icon is the single, always-present entry point.
+        // HYBRID presence:
+        //   * Window visible -> regular app: Dock icon + native top menu bar
+        //     (File/Edit/View/Window/Developer, installed by MainComponent).
+        //   * Red close button -> window hides AND Dock icon drops, so we
+        //     become a pure menu-bar utility while hidden.
+        //   * Tray icon brings it back (Dock + menu bar return).
+        // We launch as a regular app, so do NOT go accessory here.
         trayIcon.reset (new TrayIcon());
         trayIcon->setIconImage (makeTrayGlyph (juce::Colour::fromRGB (0, 255, 210)),  // colour (Win/Linux)
                                 makeTrayGlyph (juce::Colours::black));                 // template (macOS)
@@ -69,7 +71,6 @@ public:
         trayIcon->onToggleWindow  = [this] { toggleWindow(); };
         trayIcon->onQuit          = [this] { quit(); };
 
-        juce::Process::setDockIconVisible (false);
         mainWindow->toFront (true);
     }
 
@@ -101,8 +102,14 @@ public:
         }
 
         // Hide to the menu bar instead of quitting.  The audio engine and all
-        // timers keep running; the tray menu brings the window back.
-        void closeButtonPressed() override { setVisible (false); }
+        // timers keep running; the tray menu brings the window back.  Also
+        // drop the Dock icon so we're a pure menu-bar utility while hidden
+        // (hybrid mode -- Dock + top menu bar return when shown again).
+        void closeButtonPressed() override
+        {
+            setVisible (false);
+            juce::Process::setDockIconVisible (false);
+        }
     };
 
 private:
@@ -131,13 +138,16 @@ private:
         if (mainWindow->isVisible())
         {
             mainWindow->setVisible (false);
+            juce::Process::setDockIconVisible (false);   // hide -> pure menu-bar
         }
         else
         {
+            // Restore regular-app status FIRST (Dock + top menu bar), then
+            // show + foreground so the window gets focus (accessory apps
+            // don't auto-activate).
+            juce::Process::setDockIconVisible (true);
             mainWindow->setVisible (true);
             mainWindow->toFront (true);
-            // Accessory apps don't auto-activate; pull us to the foreground so
-            // the window actually gets keyboard focus and comes to the front.
             juce::Process::makeForegroundProcess();
         }
     }

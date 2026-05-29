@@ -20,6 +20,7 @@
 namespace dcr {
 
 class MainComponent : public juce::Component,
+                      public juce::MenuBarModel,
                       private juce::Timer
 {
 public:
@@ -31,8 +32,21 @@ public:
     void parentHierarchyChanged() override;
     bool keyPressed (const juce::KeyPress& k) override;
 
+    // ----- juce::MenuBarModel (native macOS top menu bar) --------------------
+    // Installed via setMacMainMenu(this) in the ctor.  The menu only shows
+    // while the app is a "regular" app (window visible / Dock icon on); when
+    // the window is hidden to the tray the app becomes accessory and macOS
+    // hides the menu bar automatically -- the model stays installed.
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu   getMenuForIndex (int topLevelMenuIndex, const juce::String& menuName) override;
+    void              menuItemSelected (int menuItemID, int topLevelMenuIndex) override;
+
 private:
     void timerCallback() override;
+
+    // Hide the window to the menu bar (and drop the Dock icon).  Shared by
+    // the red close button, File > Close Window, and the tray toggle.
+    void hideToTray();
 
     void openDeviceDialog();
     void applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs);

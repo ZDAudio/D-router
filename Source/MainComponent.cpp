@@ -3,6 +3,7 @@
 #include "DSP/PluginHost.h"
 #include "DSP/MultiChannelPluginHost.h"
 #include "DSP/SafePluginOps.h"
+#include "Diagnostics/Logger.h"
 #include "Persistence/CrashGuard.h"
 #include "Persistence/SettingsStore.h"
 #include "Routing/InputGroupManager.h"
@@ -342,12 +343,25 @@ MainComponent::MainComponent()
     refreshStatus();
     switchTab (RoutingTab);
     startTimer (engine.getSettings().statusTimerMs);
+
+   #if JUCE_MAC
+    // Install the native top menu bar (File / Edit / View / Window / Developer).
+    // Shows only while the app is "regular" (window visible); macOS hides it
+    // automatically when we drop to accessory (window hidden to the tray).
+    juce::MenuBarModel::setMacMainMenu (this);
+   #endif
 }
 
 void MainComponent::timerCallback() { refreshStatus(); }
 
 MainComponent::~MainComponent()
 {
+   #if JUCE_MAC
+    // Tear the global menu's reference to us down FIRST, before any member
+    // it dispatches into starts unwinding.
+    juce::MenuBarModel::setMacMainMenu (nullptr);
+   #endif
+
     // Detach GPU context before the component tree starts unwinding.
     if (openGLContext.isAttached()) openGLContext.detach();
 
@@ -426,6 +440,155 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
         if (c == '0')             { statusPanel.bumpBodyFontSize ( 0); return true; }
     }
     return false;
+}
+
+// ============================================================================
+// Native macOS menu bar (File / Edit / View / Window / Developer)
+// ============================================================================
+namespace
+{
+    // Menu item command IDs.  Grouped by top-level menu for readability.
+    enum MenuId
+    {
+        // File
+        miSave = 1000, miLoad, miDevices, miSettings, miGroups, miCloseWindow, miQuit,
+        // Edit
+        miPanic = 1100, miReset,
+        // View
+        miTabMatrix = 1200, miTabGroups, miTabMonitor,
+        miExpandAll, miCollapseAll, miFontBigger, miFontSmaller, miFontReset,
+        // Window
+        miMinimize = 1300, miBringToFront,
+        // Developer
+        miOpenLogs = 1400, miRevealLogFolder, miRevealSettings, miForceRestart
+    };
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "File", "Edit", "View", "Window", "Developer" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex (int topLevelMenuIndex, const juce::String&)
+{
+    juce::PopupMenu m;
+    const auto cmd = juce::ModifierKeys::commandModifier;
+
+    switch (topLevelMenuIndex)
+    {
+        case 0: // File
+            m.addItem (miSave,     "Save Snapshot...",  true, false);
+            m.addItem (miLoad,     "Load Snapshot...",  true, false);
+            m.addSeparator();
+            m.addItem (miDevices,  "Devices...",        true, false);
+            m.addItem (miSettings, "Settings...",       true, false);
+            m.addItem (miGroups,   "Groups...",         true, false);
+            m.addSeparator();
+            m.addItem (miCloseWindow, "Close Window (hide to menu bar)", true, false);
+            m.addItem (miQuit,        "Quit D-Router",  true, false);
+            break;
+
+        case 1: // Edit
+            m.addItem (miPanic, inPanic ? "Release PANIC (restore mutes)" : "PANIC (mute everything)",
+                       true, inPanic);
+            m.addItem (miReset, "Reset Engine (keep routing & FX)",
+                       ! currentSpecs.empty(), false);
+            break;
+
+        case 2: // View
+            m.addItem (miTabMatrix,  "Matrix Routing", true, currentTab == RoutingTab);
+            m.addItem (miTabGroups,  "In / Out Groups", true, currentTab == GroupsTab);
+            m.addItem (miTabMonitor, "Engine Monitor",  true, currentTab == StatusTab);
+            m.addSeparator();
+            m.addItem (miExpandAll,   "Expand All Devices",   true, false);
+            m.addItem (miCollapseAll, "Collapse All Devices", true, false);
+            m.addSeparator();
+            m.addItem (miFontBigger,  "Monitor Font Bigger",  true, false);
+            m.addItem (miFontSmaller, "Monitor Font Smaller", true, false);
+            m.addItem (miFontReset,   "Monitor Font Reset",   true, false);
+            break;
+
+        case 3: // Window
+            m.addItem (miMinimize,     "Minimize", true, false);
+            m.addItem (miBringToFront, "Bring D-Router to Front", true, false);
+            break;
+
+        case 4: // Developer
+            m.addItem (miOpenLogs,        "Open Logs...",          true, false);
+            m.addItem (miRevealLogFolder, "Reveal Log Folder",     true, false);
+            m.addItem (miRevealSettings,  "Reveal Settings File",  true, false);
+            m.addSeparator();
+            m.addItem (miForceRestart,    "Force Engine Restart (re-sync devices)",
+                       ! currentSpecs.empty(), false);
+            break;
+
+        default: break;
+    }
+
+    juce::ignoreUnused (cmd);
+    return m;
+}
+
+void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
+{
+    auto fire = [] (juce::TextButton& b) { if (b.onClick) b.onClick(); };
+
+    switch (menuItemID)
+    {
+        // File
+        case miSave:     saveSnapshotInteractive(); break;
+        case miLoad:     loadSnapshotInteractive(); break;
+        case miDevices:  fire (devicesButton);      break;
+        case miSettings: fire (settingsButton);     break;
+        case miGroups:   fire (groupsButton);       break;
+        case miCloseWindow: hideToTray();           break;
+        case miQuit:
+            if (auto* app = juce::JUCEApplication::getInstance()) app->systemRequestedQuit();
+            break;
+
+        // Edit
+        case miPanic: if (inPanic) panicRelease(); else panicActivate(); break;
+        case miReset: panicResetRestart(); break;
+
+        // View
+        case miTabMatrix:   switchTab (RoutingTab); break;
+        case miTabGroups:   switchTab (GroupsTab);  break;
+        case miTabMonitor:  switchTab (StatusTab);  break;
+        case miExpandAll:   matrixView.collapseAllDevices (true, false);
+                            matrixView.collapseAllDevices (false, false); break;
+        case miCollapseAll: matrixView.collapseAllDevices (true, true);
+                            matrixView.collapseAllDevices (false, true);  break;
+        case miFontBigger:  statusPanel.bumpBodyFontSize (+1); break;
+        case miFontSmaller: statusPanel.bumpBodyFontSize (-1); break;
+        case miFontReset:   statusPanel.bumpBodyFontSize ( 0); break;
+
+        // Window
+        case miMinimize:
+            if (auto* w = getTopLevelComponent())
+                if (auto* dw = dynamic_cast<juce::DocumentWindow*> (w))
+                    dw->setMinimised (true);
+            break;
+        case miBringToFront:
+            if (auto* w = getTopLevelComponent()) w->toFront (true);
+            break;
+
+        // Developer
+        case miOpenLogs:        fire (logsButton); break;
+        case miRevealLogFolder: Logger::getLogDirectory().revealToUser(); break;
+        case miRevealSettings:  SettingsStore::getFile().revealToUser(); break;
+        case miForceRestart:    if (! currentSpecs.empty()) applyDeviceSelection (currentSpecs); break;
+
+        default: break;
+    }
+}
+
+void MainComponent::hideToTray()
+{
+    if (auto* w = getTopLevelComponent()) w->setVisible (false);
+   #if JUCE_MAC
+    // Drop the Dock icon + menu bar -> pure menu-bar utility while hidden.
+    juce::Process::setDockIconVisible (false);
+   #endif
 }
 
 void MainComponent::resized()
