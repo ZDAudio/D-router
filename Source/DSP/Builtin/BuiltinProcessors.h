@@ -142,6 +142,12 @@ public:
     // ----- prepare / process ------------------------------------------------
     void prepareToPlay (double sr, int blockSize) override
     {
+        // Register the rate/size so getSampleRate()/getBlockSize() report the
+        // truth.  The DSP uses the `sr` argument directly, but the editors'
+        // response curves call getSampleRate() -- without this it returns 0,
+        // the curve falls back to an 8 kHz assumption, and every band's
+        // response is drawn aliased above 4 kHz (spurious high-freq notches).
+        setRateAndBufferSizeDetails (sr, blockSize);
         preparedChannels = juce::jmax (2, getTotalNumInputChannels(),
                                           getTotalNumOutputChannels());
         prepareDsp (sr, blockSize, preparedChannels);
