@@ -135,6 +135,12 @@ bool DeviceWorker::open (const EngineSettings& settings)
     scratchEngine      .assign ((size_t) scratchSize, 0.0f);
     scratchEngineForOut.assign ((size_t) scratchSize, 0.0f);
 
+    // Pre-size the input-padding silence buffer to the device buffer size so
+    // the IO callback never has to grow it (a heap allocation on the audio
+    // thread).  The callback keeps a >= guard as a fallback for the rare case
+    // the OS hands us a larger block than it advertised.
+    silenceScratch.assign ((size_t) juce::jmax (devBuf, engineBlockSize), 0.0f);
+
     // Pre-fill output rings with settings.outputPreFillBlocks engine blocks
     // of silence (clamped to ring capacity).
     const size_t preroll = juce::jmin ((size_t) (settings.outputPreFillBlocks * engineBlockSize),
