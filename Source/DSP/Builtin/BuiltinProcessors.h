@@ -38,6 +38,8 @@ namespace ids
     static constexpr const char* reverb     = "builtin:reverb";
     static constexpr const char* delay      = "builtin:delay";
     static constexpr const char* tone       = "builtin:tone";
+    static constexpr const char* tremolo    = "builtin:tremolo";
+    static constexpr const char* width      = "builtin:width";
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +165,9 @@ public:
         if (auto xml = getXmlFromBinary (data, size))
             apvts.replaceState (juce::ValueTree::fromXml (*xml));
     }
+
+    // Exposed so custom editors can read/write parameters.
+    APVTS& getValueTreeState() noexcept { return apvts; }
 
     // ----- AudioPluginInstance ---------------------------------------------
     void fillInPluginDescription (juce::PluginDescription& d) const override
@@ -335,6 +340,17 @@ public:
 
     ParametricEQ() : BuiltinProcessor (ids::eq, "Parametric EQ", createLayout()) {}
 
+    // Custom editor with a draggable frequency-response curve (defined in
+    // ParametricEqEditor.h; createEditor is implemented in
+    // InternalPluginFormat.cpp to avoid a header cycle).
+    juce::AudioProcessorEditor* createEditor() override;
+
+    // Parameter id scheme -- shared by the processor and the editor.
+    static juce::String paramId (int band, juce::StringRef suffix)
+    {
+        return "b" + juce::String (band) + "_" + suffix;
+    }
+
     static APVTS::ParameterLayout createLayout()
     {
         APVTS::ParameterLayout l;
@@ -385,10 +401,7 @@ protected:
     }
 
 private:
-    juce::String pid (int b, const char* suffix) const
-    {
-        return "b" + juce::String (b) + "_" + suffix;
-    }
+    juce::String pid (int b, const char* suffix) const { return paramId (b, suffix); }
 
     struct BandCache { int type = -1; float freq = -1, gain = -999, q = -1; };
 
@@ -846,6 +859,101 @@ private:
     double      phase = 0.0;
     float       pink  = 0.0f;
     juce::Random rng;
+};
+
+// ===========================================================================
+// 10. Tremolo -- amplitude LFO (sine / triangle / square).
+// ===========================================================================
+class TremoloProcessor : public BuiltinProcessor
+{
+public:
+    TremoloProcessor() : BuiltinProcessor (ids::tremolo, "Tremolo", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "rate", 1 }, "Rate",
+            juce::NormalisableRange<float> (0.1f, 20.0f, 0.01f, 0.4f), 5.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("Hz")));
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "depth", 1 }, "Depth",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.5f));
+        l.add (std::make_unique<juce::AudioParameterChoice>(
+            juce::ParameterID { "shape", 1 }, "Shape",
+            juce::StringArray { "Sine", "Triangle", "Square" }, 0));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int) override { dspSampleRate = sr; phase = 0.0; }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+        const float depth = juce::jlimit (0.0f, 1.0f, param ("depth"));
+        const int   shape = (int) param ("shape");
+        const double inc  = juce::jlimit (0.1f, 20.0f, param ("rate")) / dspSampleRate;
+
+        for (int i = 0; i < ns; ++i)
+        {
+            float lfo;                          // -1 .. 1
+            if (shape == 1)      lfo = 4.0f * std::abs ((float) phase - 0.5f) - 1.0f;   // triangle
+            else if (shape == 2) lfo = (phase < 0.5 ? 1.0f : -1.0f);                    // square
+            else                 lfo = std::sin ((float) phase * juce::MathConstants<float>::twoPi);
+
+            phase += inc; if (phase >= 1.0) phase -= 1.0;
+
+            const float gain = 1.0f - depth * (0.5f - 0.5f * lfo);   // [1-depth .. 1]
+            for (int ch = 0; ch < nch; ++ch)
+                buffer.getWritePointer (ch)[i] *= gain;
+        }
+    }
+
+private:
+    double phase = 0.0;
+};
+
+// ===========================================================================
+// 11. Stereo Width -- M/S widener on channel pairs (no-op on mono).
+// ===========================================================================
+class StereoWidthProcessor : public BuiltinProcessor
+{
+public:
+    StereoWidthProcessor() : BuiltinProcessor (ids::width, "Stereo Width", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "width", 1 }, "Width",
+            juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f), 1.0f));
+        return l;
+    }
+
+protected:
+    void prepareDsp (double, int, int) override {}
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const float w   = juce::jlimit (0.0f, 2.0f, param ("width"));
+        const int   ns  = buffer.getNumSamples();
+        const int   nch = buffer.getNumChannels();
+        // Process consecutive L/R pairs; an odd trailing channel is left alone.
+        for (int base = 0; base + 1 < nch; base += 2)
+        {
+            auto* L = buffer.getWritePointer (base);
+            auto* R = buffer.getWritePointer (base + 1);
+            for (int i = 0; i < ns; ++i)
+            {
+                const float mid  = 0.5f * (L[i] + R[i]);
+                const float side = 0.5f * (L[i] - R[i]) * w;
+                L[i] = mid + side;
+                R[i] = mid - side;
+            }
+        }
+    }
 };
 
 } // namespace dcr::builtin
