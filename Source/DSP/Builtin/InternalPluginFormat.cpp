@@ -4,6 +4,7 @@
 #include "DSP/Builtin/CompressorEditor.h"
 #include "DSP/Builtin/DeEsserEditor.h"
 #include "DSP/Builtin/ChannelStripEditor.h"
+#include "DSP/Builtin/MultibandCompEditor.h"
 
 namespace dcr::builtin
 {
@@ -14,6 +15,7 @@ juce::AudioProcessorEditor* ParametricEQ::createEditor()        { return new Par
 juce::AudioProcessorEditor* CompressorProcessor::createEditor() { return new CompressorEditor (*this); }
 juce::AudioProcessorEditor* DeEsserProcessor::createEditor()    { return new DeEsserEditor (*this); }
 juce::AudioProcessorEditor* ChannelStripProcessor::createEditor() { return new ChannelStripEditor (*this); }
+juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
 
 namespace
 {
@@ -32,6 +34,7 @@ namespace
         if (id == ids::width)      return std::make_unique<StereoWidthProcessor>();
         if (id == ids::deesser)    return std::make_unique<DeEsserProcessor>();
         if (id == ids::strip)      return std::make_unique<ChannelStripProcessor>();
+        if (id == ids::mbcomp)     return std::make_unique<MultibandCompProcessor>();
         return nullptr;
     }
 }
@@ -42,7 +45,7 @@ juce::Array<juce::PluginDescription> InternalPluginFormat::getBuiltinDescription
     const char* allIds[] = {
         ids::gain, ids::filter, ids::eq, ids::compressor,
         ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone,
-        ids::tremolo, ids::width, ids::deesser, ids::strip
+        ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp
     };
     for (auto* id : allIds)
         if (auto p = makeById (id))

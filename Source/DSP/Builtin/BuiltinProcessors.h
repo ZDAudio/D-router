@@ -43,6 +43,7 @@ namespace ids
     static constexpr const char* width      = "builtin:width";
     static constexpr const char* deesser    = "builtin:deesser";
     static constexpr const char* strip      = "builtin:strip";
+    static constexpr const char* mbcomp     = "builtin:mbcomp";
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,6 +1308,186 @@ private:
     float gateEnv = 0.0f, gateGain = 0.0f, compEnv = 0.0f, lastHpFreq = -1.0f;
     std::atomic<float> compGr { 0.0f };
     juce::SmoothedValue<float> outSmoothed;
+};
+
+// ===========================================================================
+// 14. Multiband Compressor -- 4 bands split by 3 Linkwitz-Riley crossovers,
+//     each band compressed independently (channel-linked), then summed.
+// ===========================================================================
+class MultibandCompProcessor : public BuiltinProcessor
+{
+public:
+    static constexpr int kBands = 4;
+
+    MultibandCompProcessor() : BuiltinProcessor (ids::mbcomp, "Multiband Compressor", createLayout()) {}
+
+    juce::AudioProcessorEditor* createEditor() override;   // MultibandCompEditor.h
+
+    float getBandGrDb (int b) const noexcept
+    {
+        return (b >= 0 && b < kBands) ? bandGr[(size_t) b].load (std::memory_order_relaxed) : 0.0f;
+    }
+    float getCrossover (int i) const   // i = 0..2
+    {
+        if (i == 0) return paramOf ("x1");
+        if (i == 1) return paramOf ("x2");
+        return paramOf ("x3");
+    }
+
+    static juce::String bandId (int b, juce::StringRef s) { return "b" + juce::String (b) + "_" + s; }
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        using BoolP  = juce::AudioParameterBool;
+        using FloatP = juce::AudioParameterFloat;
+        using Group  = juce::AudioProcessorParameterGroup;
+        auto fa = [] (const char* u) { return juce::AudioParameterFloatAttributes().withLabel (u); };
+
+        APVTS::ParameterLayout l;
+
+        l.add (std::make_unique<Group> ("xo", "Crossovers", "|",
+            std::make_unique<FloatP> (juce::ParameterID { "x1", 1 }, "Low / Low-Mid",
+                juce::NormalisableRange<float> (40.0f, 500.0f, 1.0f, 0.4f), 120.0f, fa ("Hz")),
+            std::make_unique<FloatP> (juce::ParameterID { "x2", 1 }, "Low-Mid / High-Mid",
+                juce::NormalisableRange<float> (200.0f, 4000.0f, 1.0f, 0.4f), 1000.0f, fa ("Hz")),
+            std::make_unique<FloatP> (juce::ParameterID { "x3", 1 }, "High-Mid / High",
+                juce::NormalisableRange<float> (2000.0f, 16000.0f, 1.0f, 0.4f), 6000.0f, fa ("Hz"))));
+
+        const char* bandNames[kBands] = { "Low", "Low-Mid", "High-Mid", "High" };
+        for (int b = 0; b < kBands; ++b)
+        {
+            const juce::String gname = juce::String (b + 1) + "  Band: " + bandNames[b];
+            l.add (std::make_unique<Group> (bandId (b, "grp").toStdString(), gname.toStdString(), "|",
+                std::make_unique<BoolP>  (juce::ParameterID { bandId (b, "on"), 1 }, "On", true),
+                std::make_unique<FloatP> (juce::ParameterID { bandId (b, "thresh"), 1 }, "Threshold",
+                    juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -18.0f, fa ("dB")),
+                std::make_unique<FloatP> (juce::ParameterID { bandId (b, "ratio"), 1 }, "Ratio",
+                    juce::NormalisableRange<float> (1.0f, 20.0f, 0.1f, 0.4f), 3.0f, fa (": 1")),
+                std::make_unique<FloatP> (juce::ParameterID { bandId (b, "attack"), 1 }, "Attack",
+                    juce::NormalisableRange<float> (0.1f, 200.0f, 0.1f, 0.4f), 10.0f, fa ("ms")),
+                std::make_unique<FloatP> (juce::ParameterID { bandId (b, "rel"), 1 }, "Release",
+                    juce::NormalisableRange<float> (5.0f, 1000.0f, 1.0f, 0.4f), 120.0f, fa ("ms")),
+                std::make_unique<FloatP> (juce::ParameterID { bandId (b, "makeup"), 1 }, "Makeup",
+                    juce::NormalisableRange<float> (-12.0f, 24.0f, 0.1f), 0.0f, fa ("dB"))));
+        }
+
+        l.add (std::make_unique<Group> ("out", "Output", "|",
+            std::make_unique<FloatP> (juce::ParameterID { "out_gain", 1 }, "Output Gain",
+                juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f, fa ("dB"))));
+
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int blockSize, int numChannels) override
+    {
+        dspSampleRate = sr;
+        chans = numChannels;
+        juce::dsp::ProcessSpec spec { sr, (juce::uint32) juce::jmax (1, blockSize),
+                                      (juce::uint32) juce::jmax (1, numChannels) };
+        lr1.prepare (spec); lr2.prepare (spec); lr3.prepare (spec);
+        for (int b = 0; b < kBands; ++b)
+        {
+            bandScratch[(size_t) b].assign ((size_t) numChannels, 0.0f);
+            bandEnv[(size_t) b] = 0.0f;
+            bandGr[(size_t) b].store (0.0f, std::memory_order_relaxed);
+        }
+        outSmoothed.reset (sr, 0.02);
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = juce::jmin (buffer.getNumChannels(), chans);
+        if (nch == 0) return;
+
+        // Ordered crossover frequencies.
+        float x1 = juce::jlimit (40.0f, 500.0f,   paramOf ("x1"));
+        float x2 = juce::jlimit (x1 + 1.0f, 4000.0f, paramOf ("x2"));
+        float x3 = juce::jlimit (x2 + 1.0f, 18000.0f, paramOf ("x3"));
+        lr1.setCutoffFrequency (x1);
+        lr2.setCutoffFrequency (x2);
+        lr3.setCutoffFrequency (x3);
+
+        // Per-band params.
+        struct BP { float thr, ratio, makeup, attCoeff, relCoeff; bool on; };
+        BP bp[kBands];
+        for (int b = 0; b < kBands; ++b)
+        {
+            bp[b].on     = paramOf (bandId (b, "on").toRawUTF8()) > 0.5f;
+            bp[b].thr    = paramOf (bandId (b, "thresh").toRawUTF8());
+            bp[b].ratio  = juce::jmax (1.0f, paramOf (bandId (b, "ratio").toRawUTF8()));
+            bp[b].makeup = std::pow (10.0f, paramOf (bandId (b, "makeup").toRawUTF8()) * 0.05f);
+            bp[b].attCoeff = std::exp (-1.0f / (float) (juce::jmax (0.1f, paramOf (bandId (b, "attack").toRawUTF8())) * 0.001 * dspSampleRate));
+            bp[b].relCoeff = std::exp (-1.0f / (float) (juce::jmax (1.0f, paramOf (bandId (b, "rel").toRawUTF8()))    * 0.001 * dspSampleRate));
+        }
+
+        float blockMinGr[kBands] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        for (int i = 0; i < ns; ++i)
+        {
+            float bandPeak[kBands] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                const float x = buffer.getReadPointer (ch)[i];
+                float low0, high0, low1, high1, low2, high2;
+                lr1.processSample (ch, x,     low0, high0);
+                lr2.processSample (ch, high0, low1, high1);
+                lr3.processSample (ch, high1, low2, high2);
+                bandScratch[0][(size_t) ch] = low0;
+                bandScratch[1][(size_t) ch] = low1;
+                bandScratch[2][(size_t) ch] = low2;
+                bandScratch[3][(size_t) ch] = high2;
+                for (int b = 0; b < kBands; ++b)
+                    bandPeak[b] = juce::jmax (bandPeak[b], std::abs (bandScratch[(size_t) b][(size_t) ch]));
+            }
+
+            float bandGain[kBands];
+            for (int b = 0; b < kBands; ++b)
+            {
+                const float coeff = (bandPeak[b] > bandEnv[(size_t) b]) ? bp[b].attCoeff : bp[b].relCoeff;
+                bandEnv[(size_t) b] = coeff * bandEnv[(size_t) b] + (1.0f - coeff) * bandPeak[b];
+
+                float grDb = 0.0f;
+                if (bp[b].on)
+                {
+                    const float over = juce::Decibels::gainToDecibels (bandEnv[(size_t) b], -100.0f) - bp[b].thr;
+                    if (over > 0.0f) grDb = -(over * (1.0f - 1.0f / bp[b].ratio));
+                    blockMinGr[b] = juce::jmin (blockMinGr[b], grDb);
+                }
+                bandGain[b] = std::pow (10.0f, grDb * 0.05f) * (bp[b].on ? bp[b].makeup : 1.0f);
+            }
+
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                float o = 0.0f;
+                for (int b = 0; b < kBands; ++b)
+                    o += bandScratch[(size_t) b][(size_t) ch] * bandGain[b];
+                buffer.getWritePointer (ch)[i] = o;
+            }
+        }
+
+        for (int b = 0; b < kBands; ++b)
+            bandGr[(size_t) b].store (blockMinGr[b], std::memory_order_relaxed);
+
+        // Output gain.
+        outSmoothed.setTargetValue (std::pow (10.0f, paramOf ("out_gain") * 0.05f));
+        for (int i = 0; i < ns; ++i)
+        {
+            const float g = outSmoothed.getNextValue();
+            for (int ch = 0; ch < nch; ++ch) buffer.getWritePointer (ch)[i] *= g;
+        }
+    }
+
+private:
+    float paramOf (juce::StringRef id) const { return param (id); }
+
+    juce::dsp::LinkwitzRileyFilter<float> lr1, lr2, lr3;
+    std::array<std::vector<float>, kBands> bandScratch;
+    std::array<float, kBands> bandEnv { { 0.0f, 0.0f, 0.0f, 0.0f } };
+    std::array<std::atomic<float>, kBands> bandGr;
+    juce::SmoothedValue<float> outSmoothed;
+    int chans = 2;
 };
 
 } // namespace dcr::builtin
