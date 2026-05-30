@@ -168,7 +168,6 @@ private:
     juce::TextButton saveButton     { "Save..." };
     juce::TextButton loadButton     { "Load..." };
     juce::TextButton logsButton     { "Logs..." };
-    juce::TextButton layoutButton   { "Layout..." };   // matrix collapse/expand menu
     juce::TextButton stopButton     { "PANIC" };
     // Appears beside PANIC only while panic is engaged.  Restores the
     // pre-panic mute state, then does a preserve-state engine restart --

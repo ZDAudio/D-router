@@ -294,6 +294,14 @@ private:
     TopRailContent  topRailContent  { *this };
     CornerCell      cornerCell      { *this };
 
+    // Expand/Collapse-all buttons sitting in the top-left corner legend,
+    // next to the INPUTS (bottom-left) and OUTPUTS (top-right) labels.
+    // These are the same actions previously buried in the "Layout..." menu.
+    juce::TextButton inExpandAllBtn    { "Expand" };
+    juce::TextButton inCollapseAllBtn  { "Collapse" };
+    juce::TextButton outExpandAllBtn   { "Expand" };
+    juce::TextButton outCollapseAllBtn { "Collapse" };
+
     // Direction-aware FX helpers.  isInput = true addresses input plugin
     // hosts (engine.getInputPluginHost), false the output ones.
     // ---- Rebuild helpers (chunked) ----

@@ -135,6 +135,21 @@ MatrixView::MatrixView (AudioEngine& e) : engine (e)
 
     addAndMakeVisible (cornerCell);
 
+    // Expand/Collapse-all buttons in the corner legend.  Added AFTER
+    // cornerCell so they paint on top of its background.
+    auto setupCornerBtn = [this] (juce::TextButton& b, const char* tip,
+                                  bool isInput, bool collapse)
+    {
+        b.setTooltip (tip);
+        b.setColour (juce::TextButton::buttonColourId, juce::Colour::fromRGB (58, 58, 66));
+        b.onClick = [this, isInput, collapse] { collapseAllDevices (isInput, collapse); };
+        addAndMakeVisible (b);
+    };
+    setupCornerBtn (outExpandAllBtn,   "Expand all output devices",   false, false);
+    setupCornerBtn (outCollapseAllBtn, "Collapse all output devices", false, true);
+    setupCornerBtn (inExpandAllBtn,    "Expand all input devices",    true,  false);
+    setupCornerBtn (inCollapseAllBtn,  "Collapse all input devices",  true,  true);
+
     // Register scrollbar listeners for synchronized scrolling (Excel-style freeze)
     gridViewport.getVerticalScrollBar().addListener (this);
     gridViewport.getHorizontalScrollBar().addListener (this);
@@ -999,6 +1014,15 @@ void MatrixView::layoutTopRail()
 void MatrixView::resized()
 {
     cornerCell.setBounds (0, 0, labelColWidth, labelRowHeight);
+
+    // Corner expand/collapse-all buttons.  Outputs sit under the OUTPUTS
+    // legend (top-right); inputs sit above the INPUTS legend (bottom-left).
+    constexpr int bw = 66, bh = 20, gap = 4;
+    outExpandAllBtn  .setBounds (labelColWidth - 8 - bw * 2 - gap, 36, bw, bh);
+    outCollapseAllBtn.setBounds (labelColWidth - 8 - bw,           36, bw, bh);
+    inExpandAllBtn   .setBounds (12,                labelRowHeight - 52, bw, bh);
+    inCollapseAllBtn .setBounds (12 + bw + gap,     labelRowHeight - 52, bw, bh);
+
     topRailViewport.setBounds (labelColWidth, 0, getWidth() - labelColWidth, labelRowHeight);
     leftRailViewport.setBounds (0, labelRowHeight, labelColWidth, getHeight() - labelRowHeight);
     gridViewport.setBounds (labelColWidth, labelRowHeight, getWidth() - labelColWidth, getHeight() - labelRowHeight);

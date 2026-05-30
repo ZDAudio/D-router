@@ -130,29 +130,14 @@ MainComponent::MainComponent()
     addAndMakeVisible (saveButton);
     addAndMakeVisible (loadButton);
     addAndMakeVisible (logsButton);
-    addAndMakeVisible (layoutButton);
     addAndMakeVisible (stopButton);
     addChildComponent (resetButton);   // visibility toggled with panic state
 
     logsButton.onClick = [] { LogViewerDialog::launch(); };
 
-    // Matrix layout menu: bulk expand/collapse all devices per direction.
-    // Per-device expand/collapse is still available by clicking the [+]
-    // header / alt-clicking a device's first channel label.
-    layoutButton.setTooltip ("Bulk expand or collapse devices in the matrix view");
-    layoutButton.onClick = [this]
-    {
-        juce::PopupMenu m;
-        m.addSectionHeader ("Inputs (rows)");
-        m.addItem ("Expand all input devices",   [this] { matrixView.collapseAllDevices (true,  false); });
-        m.addItem ("Collapse all input devices", [this] { matrixView.collapseAllDevices (true,  true);  });
-        m.addSeparator();
-        m.addSectionHeader ("Outputs (columns)");
-        m.addItem ("Expand all output devices",   [this] { matrixView.collapseAllDevices (false, false); });
-        m.addItem ("Collapse all output devices", [this] { matrixView.collapseAllDevices (false, true);  });
-        m.showMenuAsync (juce::PopupMenu::Options()
-                            .withTargetComponent (&layoutButton));
-    };
+    // Bulk expand/collapse-all now lives as four buttons in the matrix
+    // corner legend (next to INPUTS / OUTPUTS).  The View menu also still
+    // exposes Expand-all / Collapse-all for both directions at once.
 
     // Auto-save whenever the user folds / unfolds a device so the next
     // launch reflects the layout they left -- same pattern other panels use.
@@ -608,7 +593,6 @@ void MainComponent::resized()
     top.removeFromLeft (4);
     groupsButton  .setBounds (top.removeFromLeft (90));
     top.removeFromLeft (4);
-    layoutButton  .setBounds (top.removeFromLeft (90));
 
     // Right Session Section (Save, Load, Logs, [Reset], PANIC)
     stopButton.setBounds (top.removeFromRight (60));
