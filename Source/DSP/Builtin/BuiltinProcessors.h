@@ -42,6 +42,7 @@ namespace ids
     static constexpr const char* tremolo    = "builtin:tremolo";
     static constexpr const char* width      = "builtin:width";
     static constexpr const char* deesser    = "builtin:deesser";
+    static constexpr const char* strip      = "builtin:strip";
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,23 @@ private:
     std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> filters;
     juce::dsp::IIR::Coefficients<float>::Ptr coeffs;
 };
+
+// Shared EQ-band coefficient builder (type: 0 bell, 1 low-shelf, 2 high-shelf,
+// 3 high-pass, 4 low-pass).  Used by ParametricEQ, ChannelStrip and their
+// editors so the response curves match the DSP exactly.
+inline juce::dsp::IIR::Coefficients<float>::Ptr makeEqBandCoeffs (int type, double sr,
+                                                                  float freq, float q, float gainDb)
+{
+    const float g = std::pow (10.0f, gainDb * 0.05f);
+    switch (type)
+    {
+        case 1:  return juce::dsp::IIR::Coefficients<float>::makeLowShelf  (sr, freq, q, g);
+        case 2:  return juce::dsp::IIR::Coefficients<float>::makeHighShelf (sr, freq, q, g);
+        case 3:  return juce::dsp::IIR::Coefficients<float>::makeHighPass  (sr, freq, q);
+        case 4:  return juce::dsp::IIR::Coefficients<float>::makeLowPass   (sr, freq, q);
+        default: return juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, freq, q, g);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Base class -- handles all the AudioPluginInstance boilerplate + APVTS.
@@ -982,6 +1000,13 @@ class DeEsserProcessor : public BuiltinProcessor
 public:
     DeEsserProcessor() : BuiltinProcessor (ids::deesser, "De-esser", createLayout()) {}
 
+    // Custom editor (DeEsserEditor.h) -- band level + GR meter.
+    juce::AudioProcessorEditor* createEditor() override;
+
+    // Live readouts for the editor (peak over the last block).
+    float getGainReductionDb() const noexcept { return grReadout .load (std::memory_order_relaxed); }
+    float getBandLevelDb()     const noexcept { return bandLevel .load (std::memory_order_relaxed); }
+
     static APVTS::ParameterLayout createLayout()
     {
         APVTS::ParameterLayout l;
@@ -1022,6 +1047,8 @@ protected:
         highScratch.assign ((size_t) numChannels, 0.0f);
         lowScratch .assign ((size_t) numChannels, 0.0f);
         env = 0.0f; grGain = 1.0f; lastFreq = -1.0f;
+        grReadout.store (0.0f, std::memory_order_relaxed);
+        bandLevel.store (-100.0f, std::memory_order_relaxed);
     }
 
     void processDsp (juce::AudioBuffer<float>& buffer) override
@@ -1044,6 +1071,8 @@ protected:
         const float attCoeff  = std::exp (-1.0f / (float) (juce::jmax (0.1f, param ("attack"))  * 0.001 * dspSampleRate));
         const float relCoeff  = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("release")) * 0.001 * dspSampleRate));
 
+        float blockMaxLevel = -100.0f, blockMinGr = 0.0f;
+
         for (int i = 0; i < ns; ++i)
         {
             float peak = 0.0f;
@@ -1060,6 +1089,7 @@ protected:
             env = coeff * env + (1.0f - coeff) * peak;
 
             const float levelDb = juce::Decibels::gainToDecibels (env, -100.0f);
+            blockMaxLevel = juce::jmax (blockMaxLevel, levelDb);
             const float over    = levelDb - threshold;
             float grDb = over > 0.0f ? -(over * (1.0f - 1.0f / ratio)) : 0.0f;
             grDb = juce::jmax (grDb, rangeDb);                    // clamp reduction
@@ -1067,17 +1097,216 @@ protected:
 
             const float gc = (targetGain < grGain) ? attCoeff : relCoeff;
             grGain = gc * grGain + (1.0f - gc) * targetGain;
+            blockMinGr = juce::jmin (blockMinGr, juce::Decibels::gainToDecibels (grGain, -48.0f));
 
             for (int ch = 0; ch < nch; ++ch)
                 buffer.getWritePointer (ch)[i] = lowScratch[(size_t) ch]
                                                + highScratch[(size_t) ch] * grGain;
         }
+
+        bandLevel.store (blockMaxLevel, std::memory_order_relaxed);
+        grReadout.store (blockMinGr,    std::memory_order_relaxed);
     }
 
 private:
     std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> hp;
     std::vector<float> highScratch, lowScratch;
     float env = 0.0f, grGain = 1.0f, lastFreq = -1.0f;
+    std::atomic<float> grReadout { 0.0f };
+    std::atomic<float> bandLevel { -100.0f };
+};
+
+// ===========================================================================
+// 13. Channel Strip -- console-style all-in-one: HP filter -> Gate -> 4-band
+//     EQ -> Compressor -> Output gain, in one plugin with one editor.
+// ===========================================================================
+class ChannelStripProcessor : public BuiltinProcessor
+{
+public:
+    static constexpr int kEqBands = 4;
+
+    ChannelStripProcessor() : BuiltinProcessor (ids::strip, "Channel Strip", createLayout()) {}
+
+    juce::AudioProcessorEditor* createEditor() override;   // ChannelStripEditor.h
+
+    float getCompGainReductionDb() const noexcept { return compGr.load (std::memory_order_relaxed); }
+
+    static juce::String eqId (int b, juce::StringRef s) { return "eq" + juce::String (b) + "_" + s; }
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        using BoolP   = juce::AudioParameterBool;
+        using FloatP  = juce::AudioParameterFloat;
+        using ChoiceP = juce::AudioParameterChoice;
+        using Group   = juce::AudioProcessorParameterGroup;
+        auto fa = [] (const char* unit) { return juce::AudioParameterFloatAttributes().withLabel (unit); };
+
+        APVTS::ParameterLayout l;
+
+        l.add (std::make_unique<Group> ("hp", "1  HP Filter", "|",
+            std::make_unique<BoolP> (juce::ParameterID { "hp_on", 1 }, "HP On", false),
+            std::make_unique<FloatP> (juce::ParameterID { "hp_freq", 1 }, "HP Freq",
+                juce::NormalisableRange<float> (20.0f, 1000.0f, 1.0f, 0.3f), 80.0f, fa ("Hz"))));
+
+        l.add (std::make_unique<Group> ("gate", "2  Gate", "|",
+            std::make_unique<BoolP> (juce::ParameterID { "g_on", 1 }, "Gate On", false),
+            std::make_unique<FloatP> (juce::ParameterID { "g_thresh", 1 }, "Gate Threshold",
+                juce::NormalisableRange<float> (-80.0f, 0.0f, 0.1f), -40.0f, fa ("dB")),
+            std::make_unique<FloatP> (juce::ParameterID { "g_range", 1 }, "Gate Range",
+                juce::NormalisableRange<float> (-100.0f, 0.0f, 0.1f), -60.0f, fa ("dB")),
+            std::make_unique<FloatP> (juce::ParameterID { "g_rel", 1 }, "Gate Release",
+                juce::NormalisableRange<float> (5.0f, 2000.0f, 1.0f, 0.4f), 150.0f, fa ("ms"))));
+
+        // EQ group (4 bands).
+        auto eqGroup = std::make_unique<Group> ("eq", "3  EQ", "|");
+        const float defFreqs[kEqBands] = { 120.0f, 800.0f, 3000.0f, 9000.0f };
+        for (int b = 0; b < kEqBands; ++b)
+        {
+            const juce::String lab = "EQ" + juce::String (b + 1) + " ";
+            eqGroup->addChild (
+                std::make_unique<BoolP> (juce::ParameterID { eqId (b, "on"), 1 }, lab + "On", b == 1 || b == 2),
+                std::make_unique<ChoiceP> (juce::ParameterID { eqId (b, "type"), 1 }, lab + "Type",
+                    juce::StringArray { "Bell", "Low Shelf", "High Shelf", "High-pass", "Low-pass" },
+                    b == 0 ? 1 : (b == kEqBands - 1 ? 2 : 0)),
+                std::make_unique<FloatP> (juce::ParameterID { eqId (b, "freq"), 1 }, lab + "Freq",
+                    juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), defFreqs[b], fa ("Hz")),
+                std::make_unique<FloatP> (juce::ParameterID { eqId (b, "gain"), 1 }, lab + "Gain",
+                    juce::NormalisableRange<float> (-18.0f, 18.0f, 0.1f), 0.0f, fa ("dB")),
+                std::make_unique<FloatP> (juce::ParameterID { eqId (b, "q"), 1 }, lab + "Q",
+                    juce::NormalisableRange<float> (0.1f, 10.0f, 0.01f, 0.3f), 0.707f));
+        }
+        l.add (std::move (eqGroup));
+
+        l.add (std::make_unique<Group> ("comp", "4  Compressor", "|",
+            std::make_unique<BoolP> (juce::ParameterID { "c_on", 1 }, "Comp On", false),
+            std::make_unique<FloatP> (juce::ParameterID { "c_thresh", 1 }, "Comp Threshold",
+                juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -18.0f, fa ("dB")),
+            std::make_unique<FloatP> (juce::ParameterID { "c_ratio", 1 }, "Comp Ratio",
+                juce::NormalisableRange<float> (1.0f, 20.0f, 0.1f, 0.4f), 3.0f, fa (": 1")),
+            std::make_unique<FloatP> (juce::ParameterID { "c_attack", 1 }, "Comp Attack",
+                juce::NormalisableRange<float> (0.1f, 200.0f, 0.1f, 0.4f), 10.0f, fa ("ms")),
+            std::make_unique<FloatP> (juce::ParameterID { "c_rel", 1 }, "Comp Release",
+                juce::NormalisableRange<float> (5.0f, 1000.0f, 1.0f, 0.4f), 120.0f, fa ("ms")),
+            std::make_unique<FloatP> (juce::ParameterID { "c_makeup", 1 }, "Comp Makeup",
+                juce::NormalisableRange<float> (-12.0f, 24.0f, 0.1f), 0.0f, fa ("dB"))));
+
+        l.add (std::make_unique<Group> ("out", "5  Output", "|",
+            std::make_unique<FloatP> (juce::ParameterID { "out_gain", 1 }, "Output Gain",
+                juce::NormalisableRange<float> (-24.0f, 24.0f, 0.1f), 0.0f, fa ("dB"))));
+
+        return l;
+    }
+
+protected:
+    void prepareDsp (double sr, int, int numChannels) override
+    {
+        dspSampleRate = sr;
+        hpf.prepare (sr, numChannels);
+        for (auto& b : eqBands) b.prepare (sr, numChannels);
+        for (auto& c : eqCache) c = {};
+        gateEnv = 0.0f; gateGain = 0.0f;
+        compEnv = 0.0f;
+        compGr.store (0.0f, std::memory_order_relaxed);
+        lastHpFreq = -1.0f;
+        outSmoothed.reset (sr, 0.02);
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+
+        // --- 1. HP filter ---------------------------------------------------
+        if (param ("hp_on") > 0.5f)
+        {
+            const float f = juce::jlimit (20.0f, 1000.0f, param ("hp_freq"));
+            if (std::abs (f - lastHpFreq) > 0.5f)
+            {
+                lastHpFreq = f;
+                hpf.setCoefficients (juce::dsp::IIR::Coefficients<float>::makeHighPass (dspSampleRate, f, 0.707f));
+            }
+            if (hpf.hasCoefficients()) hpf.process (buffer, ns);
+        }
+
+        // --- 2. Gate --------------------------------------------------------
+        if (param ("g_on") > 0.5f)
+        {
+            const float threshLin = std::pow (10.0f, param ("g_thresh") * 0.05f);
+            const float rangeLin  = std::pow (10.0f, param ("g_range") * 0.05f);
+            const float relCoeff  = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("g_rel")) * 0.001 * dspSampleRate));
+            const float attCoeff  = std::exp (-1.0f / (float) (1.0 * 0.001 * dspSampleRate));   // 1 ms fixed
+            for (int i = 0; i < ns; ++i)
+            {
+                float peak = 0.0f;
+                for (int ch = 0; ch < nch; ++ch) peak = juce::jmax (peak, std::abs (buffer.getReadPointer (ch)[i]));
+                const float target = (peak >= threshLin) ? 1.0f : rangeLin;
+                const float coeff = (target > gateGain) ? attCoeff : relCoeff;
+                gateGain = coeff * gateGain + (1.0f - coeff) * target;
+                for (int ch = 0; ch < nch; ++ch) buffer.getWritePointer (ch)[i] *= gateGain;
+            }
+        }
+
+        // --- 3. EQ ----------------------------------------------------------
+        for (int b = 0; b < kEqBands; ++b)
+        {
+            if (param (eqId (b, "on").toRawUTF8()) < 0.5f) continue;
+            const int   type = (int) param (eqId (b, "type").toRawUTF8());
+            const float freq = juce::jlimit (20.0f, 20000.0f, param (eqId (b, "freq").toRawUTF8()));
+            const float gain = param (eqId (b, "gain").toRawUTF8());
+            const float q    = juce::jlimit (0.1f, 10.0f, param (eqId (b, "q").toRawUTF8()));
+            auto& c = eqCache[(size_t) b];
+            if (type != c.type || std::abs (freq - c.freq) > 0.5f
+                || std::abs (gain - c.gain) > 0.01f || std::abs (q - c.q) > 0.001f)
+            {
+                c = { type, freq, gain, q };
+                eqBands[(size_t) b].setCoefficients (makeEqBandCoeffs (type, dspSampleRate, freq, q, gain));
+            }
+            if (eqBands[(size_t) b].hasCoefficients()) eqBands[(size_t) b].process (buffer, ns);
+        }
+
+        // --- 4. Compressor --------------------------------------------------
+        if (param ("c_on") > 0.5f)
+        {
+            const float threshold = param ("c_thresh");
+            const float ratio     = juce::jmax (1.0f, param ("c_ratio"));
+            const float makeupLin = std::pow (10.0f, param ("c_makeup") * 0.05f);
+            const float attCoeff  = std::exp (-1.0f / (float) (juce::jmax (0.1f, param ("c_attack")) * 0.001 * dspSampleRate));
+            const float relCoeff  = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("c_rel"))    * 0.001 * dspSampleRate));
+            float blockMinGr = 0.0f;
+            for (int i = 0; i < ns; ++i)
+            {
+                float peak = 0.0f;
+                for (int ch = 0; ch < nch; ++ch) peak = juce::jmax (peak, std::abs (buffer.getReadPointer (ch)[i]));
+                const float coeff = (peak > compEnv) ? attCoeff : relCoeff;
+                compEnv = coeff * compEnv + (1.0f - coeff) * peak;
+                const float over = juce::Decibels::gainToDecibels (compEnv, -100.0f) - threshold;
+                const float grDb = over > 0.0f ? -(over * (1.0f - 1.0f / ratio)) : 0.0f;
+                blockMinGr = juce::jmin (blockMinGr, grDb);
+                const float gain = std::pow (10.0f, grDb * 0.05f) * makeupLin;
+                for (int ch = 0; ch < nch; ++ch) buffer.getWritePointer (ch)[i] *= gain;
+            }
+            compGr.store (blockMinGr, std::memory_order_relaxed);
+        }
+        else compGr.store (0.0f, std::memory_order_relaxed);
+
+        // --- 5. Output gain -------------------------------------------------
+        outSmoothed.setTargetValue (std::pow (10.0f, param ("out_gain") * 0.05f));
+        for (int i = 0; i < ns; ++i)
+        {
+            const float g = outSmoothed.getNextValue();
+            for (int ch = 0; ch < nch; ++ch) buffer.getWritePointer (ch)[i] *= g;
+        }
+    }
+
+private:
+    struct BandCache { int type = -1; float freq = -1, gain = -999, q = -1; };
+
+    MultiBiquad hpf;
+    std::array<MultiBiquad, kEqBands> eqBands;
+    std::array<BandCache,   kEqBands> eqCache;
+    float gateEnv = 0.0f, gateGain = 0.0f, compEnv = 0.0f, lastHpFreq = -1.0f;
+    std::atomic<float> compGr { 0.0f };
+    juce::SmoothedValue<float> outSmoothed;
 };
 
 } // namespace dcr::builtin
