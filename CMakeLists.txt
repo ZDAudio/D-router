@@ -19,6 +19,9 @@ juce_add_gui_app(dcorerouter
     COMPANY_NAME "ZDAudio"
     COMPANY_COPYRIGHT "Copyright (C) ZDAudio"
     BUNDLE_ID com.zdaudio.drouter
+    # App icon (Dock / Finder / About).  JUCE generates the .icns from this
+    # 1024x1024 PNG and sets CFBundleIconFile automatically.
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "D-Router routes audio between devices and needs microphone access."
 )
