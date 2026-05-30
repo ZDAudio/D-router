@@ -201,11 +201,18 @@ void MatrixView::rebuildFromEngine()
     lastClickedInput  = -1;
     lastClickedOutput = -1;
 
+    // Consume the one-shot force flag.  A collapse/expand changes the label
+    // STRUCTURE without changing the engine's physical channel list, so the
+    // fast path below (which only compares against the engine) can't tell --
+    // the caller sets this to force a real rebuild.
+    const bool forceFull = forceStructuralRebuild;
+    forceStructuralRebuild = false;
+
     // FAST PATH: settings-only restart leaves the channel layout intact.
     // No reason to throw away 500+ widgets just to recreate identical ones --
     // just refresh their values from the engine and return.  Single-digit
     // milliseconds vs multiple seconds.
-    if (! inputLabels.empty() && samePhysicalLayout())
+    if (! forceFull && ! inputLabels.empty() && samePhysicalLayout())
     {
         softRefreshFromEngine();
         juce::Logger::writeToLog ("MatrixView::rebuild: fast-path soft refresh ("
@@ -424,9 +431,10 @@ void MatrixView::setDeviceCollapsed (bool isInput,
     if (collapsed) set.insert (deviceName);
     else           set.erase  (deviceName);
 
-    // Force a structural rebuild -- the row/column list changed shape.
-    // samePhysicalLayout() will return false because the label count
-    // differs, so the chunked rebuild kicks in.
+    // Force a structural rebuild -- the row/column list changed shape but the
+    // engine's physical channel list did NOT, so the fast path can't detect
+    // the change on its own.
+    forceStructuralRebuild = true;
     rebuildFromEngine();
     notifyCollapseChanged();
 }
@@ -452,6 +460,7 @@ void MatrixView::collapseAllDevices (bool isInput, bool collapsed)
         }
     }
     if (set.size() == prev && ! collapsed) return;   // nothing to do (was already empty)
+    forceStructuralRebuild = true;
     rebuildFromEngine();
     notifyCollapseChanged();
 }
@@ -468,6 +477,7 @@ void MatrixView::setCollapsedDeviceNames (bool isInput,
     auto& set = isInput ? collapsedInputDevices : collapsedOutputDevices;
     set.clear();
     for (auto& n : names) set.insert (std::move (n));
+    forceStructuralRebuild = true;
     rebuildFromEngine();
     // No notifyCollapseChanged() here -- this is called from snapshot
     // restore so we don't want to re-save what we just loaded.

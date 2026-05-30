@@ -261,6 +261,13 @@ private:
     std::set<juce::String> collapsedOutputDevices;
     void notifyCollapseChanged();
 
+    // One-shot: set by collapse/expand calls so the next rebuildFromEngine()
+    // skips the same-physical-layout fast path and does a real structural
+    // rebuild.  Without this the fast path sees the (not-yet-rebuilt) labels
+    // still matching the engine's physical channel list and bails, so the
+    // first collapse while everything is expanded silently does nothing.
+    bool forceStructuralRebuild = false;
+
     // Per-input-row widgets
     juce::OwnedArray<juce::Label>        inputNames;
     juce::OwnedArray<juce::Slider>       inputTrims;
