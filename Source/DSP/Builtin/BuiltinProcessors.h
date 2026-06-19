@@ -44,6 +44,7 @@ namespace ids
     static constexpr const char* deesser    = "builtin:deesser";
     static constexpr const char* strip      = "builtin:strip";
     static constexpr const char* mbcomp     = "builtin:mbcomp";
+    static constexpr const char* leveler    = "builtin:leveler";
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +832,121 @@ protected:
 private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> line { 96008 };
     int maxDelaySamps = 96000;
+};
+
+// ===========================================================================
+// 8b. Level Rider -- slow auto-leveler / loudness rider.  Measures the program
+// RMS over an adjustable observation window and rides a smoothed trim gain to
+// hold a target level, bounded by a max range.  Use it to balance the
+// perceived loudness of one program against another.  Feed-forward (it reads
+// the INPUT level, not its own output), so it rides level without the pumping
+// of a fast compressor.
+// ===========================================================================
+class LevelerProcessor : public BuiltinProcessor
+{
+public:
+    LevelerProcessor() : BuiltinProcessor (ids::leveler, "Level Rider", createLayout()) {}
+
+    static APVTS::ParameterLayout createLayout()
+    {
+        APVTS::ParameterLayout l;
+        // Loudness target the rider holds the program at.
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "target", 1 }, "Target",
+            juce::NormalisableRange<float> (-36.0f, 0.0f, 0.1f), -18.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB RMS")));
+        // Observation window: how long the RMS detector averages over.  Long =
+        // slow, gentle program-to-program balancing; short = quicker reaction.
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "window", 1 }, "Window",
+            juce::NormalisableRange<float> (50.0f, 5000.0f, 1.0f, 0.35f), 800.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        // Max amount the rider may boost or cut.
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "range", 1 }, "Range",
+            juce::NormalisableRange<float> (0.0f, 24.0f, 0.1f), 12.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("+/- dB")));
+        // How fast the applied gain itself moves (gain smoothing time).
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "smooth", 1 }, "Smooth",
+            juce::NormalisableRange<float> (1.0f, 2000.0f, 1.0f, 0.4f), 400.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+        // Below this measured level the rider freezes -- so pauses / noise
+        // floor don't get ridden up.
+        l.add (std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID { "gate", 1 }, "Gate",
+            juce::NormalisableRange<float> (-80.0f, -20.0f, 0.1f), -50.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+        return l;
+    }
+
+    // Current applied rider gain in dB (for a future meter / custom editor).
+    float getRiderGainDb() const noexcept { return gainReadout.load (std::memory_order_relaxed); }
+
+protected:
+    void prepareDsp (double sr, int, int) override
+    {
+        dspSampleRate = sr;
+        meanSq        = 1.0e-8f;   // ~ -80 dB; avoids log(0) on the first block
+        currentGainDb = 0.0f;
+        gainReadout.store (0.0f, std::memory_order_relaxed);
+    }
+
+    void processDsp (juce::AudioBuffer<float>& buffer) override
+    {
+        const int ns  = buffer.getNumSamples();
+        const int nch = buffer.getNumChannels();
+        if (nch <= 0) return;
+
+        const float targetDb = param ("target");
+        const float winMs    = juce::jmax (1.0f, param ("window"));
+        const float rangeDb  = juce::jmax (0.0f, param ("range"));
+        const float smoothMs = juce::jmax (1.0f, param ("smooth"));
+        const float gateDb   = param ("gate");
+
+        const float winCoeff    = std::exp (-1.0f / (float) (winMs    * 0.001 * dspSampleRate));
+        const float smoothCoeff = std::exp (-1.0f / (float) (smoothMs * 0.001 * dspSampleRate));
+        const float invNch      = 1.0f / (float) nch;
+
+        for (int i = 0; i < ns; ++i)
+        {
+            // Mean-square across channels this sample (channel-linked, so L/R
+            // ride by the SAME gain and the stereo image never shifts).
+            float sq = 0.0f;
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                const float x = buffer.getReadPointer (ch)[i];
+                sq += x * x;
+            }
+            sq *= invNch;
+
+            // Leaky-integrator RMS detector over the observation window.
+            meanSq = winCoeff * meanSq + (1.0f - winCoeff) * sq;
+            const float measuredDb = 10.0f * std::log10 (juce::jmax (1.0e-12f, meanSq));
+
+            // Feed-forward target gain, bounded by +/- range.  Below the gate
+            // (silence / noise floor) hold the gain so we don't ride noise up.
+            float desiredGainDb = currentGainDb;
+            if (measuredDb > gateDb)
+                desiredGainDb = juce::jlimit (-rangeDb, rangeDb, targetDb - measuredDb);
+
+            // Smooth the applied gain toward the target, then re-clamp in case
+            // the user just shrank the range.
+            currentGainDb = smoothCoeff * currentGainDb + (1.0f - smoothCoeff) * desiredGainDb;
+            currentGainDb = juce::jlimit (-rangeDb, rangeDb, currentGainDb);
+
+            const float g = juce::Decibels::decibelsToGain (currentGainDb);
+            for (int ch = 0; ch < nch; ++ch)
+                buffer.getWritePointer (ch)[i] *= g;
+        }
+
+        gainReadout.store (currentGainDb, std::memory_order_relaxed);
+    }
+
+private:
+    float meanSq        = 1.0e-8f;
+    float currentGainDb = 0.0f;
+    std::atomic<float> gainReadout { 0.0f };
 };
 
 // ===========================================================================

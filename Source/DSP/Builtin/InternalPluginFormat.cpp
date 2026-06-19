@@ -35,6 +35,7 @@ namespace
         if (id == ids::deesser)    return std::make_unique<DeEsserProcessor>();
         if (id == ids::strip)      return std::make_unique<ChannelStripProcessor>();
         if (id == ids::mbcomp)     return std::make_unique<MultibandCompProcessor>();
+        if (id == ids::leveler)    return std::make_unique<LevelerProcessor>();
         return nullptr;
     }
 }
@@ -45,7 +46,8 @@ juce::Array<juce::PluginDescription> InternalPluginFormat::getBuiltinDescription
     const char* allIds[] = {
         ids::gain, ids::filter, ids::eq, ids::compressor,
         ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone,
-        ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp
+        ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp,
+        ids::leveler
     };
     for (auto* id : allIds)
         if (auto p = makeById (id))
