@@ -309,16 +309,24 @@ MainComponent::MainComponent()
                     .withButton ("Start blank"),
                 [this] (int result)
                 {
+                    bool restored = false;
                     if (result == 1)   // first button => Restore
                     {
                         Snapshot s;
                         if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
+                        {
                             applySnapshot (s);
+                            restored = true;
+                        }
                     }
-                    // "Start blank" leaves the engine with no devices selected;
-                    // the user's snapshot stays on disk so they can still
-                    // hand-load it via the Load... button if they change their
-                    // mind later.
+                    // "Start blank" (or a failed restore) leaves the engine with
+                    // no devices selected; the user's snapshot stays on disk so
+                    // they can still hand-load it via Load... later.  Crucially,
+                    // applySnapshot() is what eventually hides the cold-start
+                    // splash (via the matrix rebuild) -- so if we DIDN'T restore,
+                    // hide it here or the app sits on the splash forever.
+                    if (! restored)
+                        loadingOverlay.hideOverlay();
                 });
         });
     }
@@ -328,6 +336,13 @@ MainComponent::MainComponent()
         Snapshot s;
         if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
             applySnapshot (s);
+        else
+            // Fresh install / no saved session: there's nothing to restore, so
+            // applySnapshot() never runs -- and it's what hides the cold-start
+            // splash (via the matrix rebuild).  Hide it here or the app sits on
+            // "Starting engine and building routing..." forever.  (This is what
+            // every first-time tester hits.)
+            loadingOverlay.hideOverlay();
     }
 
     refreshStatus();
