@@ -880,8 +880,12 @@ public:
         return l;
     }
 
-    // Current applied rider gain in dB (for a future meter / custom editor).
+    // Current applied rider gain in dB, for the live meter / history graph.
     float getRiderGainDb() const noexcept { return gainReadout.load (std::memory_order_relaxed); }
+
+    // Custom editor: scrolling rider-gain history + bipolar gain meter
+    // (LevelRiderEditor.h; createEditor implemented in InternalPluginFormat.cpp).
+    juce::AudioProcessorEditor* createEditor() override;
 
 protected:
     void prepareDsp (double sr, int, int) override
