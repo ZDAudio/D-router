@@ -48,6 +48,9 @@ private:
     // the red close button, File > Close Window, and the tray toggle.
     void hideToTray();
 
+    // Modeless About dialog: app name, PRIVATE BETA mark, version, contact.
+    void showAboutDialog();
+
     void openDeviceDialog();
     void applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs);
     void refreshStatus();

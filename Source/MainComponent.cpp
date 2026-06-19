@@ -16,6 +16,11 @@
 
 namespace dcr {
 
+// Apple (app-name) menu "About" command id.  Defined at file scope so both
+// the constructor (which builds the Apple menu) and menuItemSelected (far
+// below, where the rest of the menu ids live) can see it.
+static constexpr int kMenuAboutId = 1500;
+
 MainComponent::MainComponent()
 {
     juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);
@@ -333,7 +338,11 @@ MainComponent::MainComponent()
     // Install the native top menu bar (File / Edit / View / Window / Developer).
     // Shows only while the app is "regular" (window visible); macOS hides it
     // automatically when we drop to accessory (window hidden to the tray).
-    juce::MenuBarModel::setMacMainMenu (this);
+    // "About D-Router" goes in the app-name (Apple) menu where macOS users
+    // expect it.  setMacMainMenu copies the extra menu, so the local is fine.
+    juce::PopupMenu appleMenu;
+    appleMenu.addItem (kMenuAboutId, "About D-Router");
+    juce::MenuBarModel::setMacMainMenu (this, &appleMenu);
    #endif
 }
 
@@ -563,8 +572,99 @@ void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
         case miRevealSettings:  SettingsStore::getFile().revealToUser(); break;
         case miForceRestart:    if (! currentSpecs.empty()) applyDeviceSelection (currentSpecs); break;
 
+        // Apple menu
+        case kMenuAboutId: showAboutDialog(); break;
+
         default: break;
     }
+}
+
+void MainComponent::showAboutDialog()
+{
+    struct AboutContent : public juce::Component
+    {
+        juce::Label       email;
+        juce::TextButton  copyBtn { "Copy email" };
+        juce::TextButton  closeBtn { "Close" };
+        const juce::String kEmail { "yuanmz2005nf@gmail.com" };
+
+        AboutContent()
+        {
+            email.setText (kEmail, juce::dontSendNotification);
+            email.setJustificationType (juce::Justification::centred);
+            email.setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 255, 210));
+            email.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+            addAndMakeVisible (email);
+
+            copyBtn.onClick = [this]
+            {
+                juce::SystemClipboard::copyTextToClipboard (kEmail);
+                copyBtn.setButtonText ("Copied!");
+            };
+            addAndMakeVisible (copyBtn);
+
+            closeBtn.onClick = [this]
+            {
+                if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+                    dw->exitModalState (0);
+            };
+            addAndMakeVisible (closeBtn);
+
+            setSize (440, 320);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (juce::Colour::fromRGB (18, 18, 22));
+            auto r = getLocalBounds().reduced (24).removeFromTop (200);
+
+            g.setColour (juce::Colours::white);
+            g.setFont (juce::FontOptions (32.0f, juce::Font::bold));
+            g.drawText ("D-Router", r.removeFromTop (46), juce::Justification::centred);
+
+            // PRIVATE BETA badge -- neon pill.
+            auto badge = r.removeFromTop (30); r.removeFromTop (4);
+            auto pill = badge.withSizeKeepingCentre (148, 24);
+            g.setColour (juce::Colour::fromRGB (0, 255, 210).withAlpha (0.14f));
+            g.fillRoundedRectangle (pill.toFloat(), 12.0f);
+            g.setColour (juce::Colour::fromRGB (0, 255, 210));
+            g.drawRoundedRectangle (pill.toFloat(), 12.0f, 1.2f);
+            g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+            g.drawText ("PRIVATE BETA", pill, juce::Justification::centred);
+
+            g.setColour (juce::Colour::fromRGB (150, 150, 158));
+            g.setFont (juce::FontOptions (12.0f));
+            g.drawText (juce::String ("Version ") + JUCE_APPLICATION_VERSION_STRING
+                            + "   -   built " + juce::String (__DATE__),
+                        r.removeFromTop (20), juce::Justification::centred);
+            g.drawText ("NxM CoreAudio matrix router  -  ZDAudio",
+                        r.removeFromTop (18), juce::Justification::centred);
+
+            g.setColour (juce::Colour::fromRGB (100, 100, 110));
+            g.setFont (juce::FontOptions (11.0f));
+            g.drawText ("Private beta -- not for redistribution. Contact:",
+                        r.removeFromTop (26).removeFromBottom (16), juce::Justification::centred);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced (24);
+            auto bottom = r.removeFromBottom (40);
+            email.setBounds (r.removeFromBottom (60).removeFromBottom (24));
+            closeBtn.setBounds (bottom.removeFromRight (90));
+            bottom.removeFromRight (8);
+            copyBtn .setBounds (bottom.removeFromRight (110));
+        }
+    };
+
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (new AboutContent());
+    o.dialogTitle                  = "About D-Router";
+    o.dialogBackgroundColour       = juce::Colour::fromRGB (18, 18, 22);
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar            = true;
+    o.resizable                    = false;
+    o.launchAsync();
 }
 
 void MainComponent::hideToTray()
