@@ -150,6 +150,16 @@ MatrixView::MatrixView (AudioEngine& e) : engine (e)
     setupCornerBtn (inExpandAllBtn,    "Expand all input devices",    true,  false);
     setupCornerBtn (inCollapseAllBtn,  "Collapse all input devices",  true,  true);
 
+    // Empty-state guidance.  Added last so it paints on top of the (empty)
+    // grid viewport.  Non-interactive so clicks pass through.
+    emptyHint.setJustificationType (juce::Justification::centred);
+    emptyHint.setInterceptsMouseClicks (false, false);
+    emptyHint.setColour (juce::Label::textColourId, juce::Colour::fromRGB (130, 130, 142));
+    emptyHint.setFont (juce::FontOptions (16.0f));
+    emptyHint.setText ("No devices selected\n\nOpen  Devices...  to choose your inputs and outputs",
+                       juce::dontSendNotification);
+    addChildComponent (emptyHint);   // hidden until updateEmptyHintVisibility() shows it
+
     // Register scrollbar listeners for synchronized scrolling (Excel-style freeze)
     gridViewport.getVerticalScrollBar().addListener (this);
     gridViewport.getHorizontalScrollBar().addListener (this);
@@ -233,6 +243,7 @@ void MatrixView::rebuildFromEngine()
         juce::Logger::writeToLog ("MatrixView::rebuild: fast-path soft refresh ("
                                   + juce::String (juce::Time::getMillisecondCounter()
                                                   - rebuildState.startMs) + " ms)");
+        updateEmptyHintVisibility();
         if (onRebuildFinished) onRebuildFinished();
         return;
     }
@@ -623,6 +634,7 @@ void MatrixView::finishRebuild()
     repaint();
 
     rebuildState.active = false;
+    updateEmptyHintVisibility();
     juce::Logger::writeToLog ("MatrixView::rebuild: DONE ("
                               + juce::String (rebuildState.chunkCount) + " chunks, "
                               + juce::String (juce::Time::getMillisecondCounter()
@@ -1027,8 +1039,20 @@ void MatrixView::resized()
     leftRailViewport.setBounds (0, labelRowHeight, labelColWidth, getHeight() - labelRowHeight);
     gridViewport.setBounds (labelColWidth, labelRowHeight, getWidth() - labelColWidth, getHeight() - labelRowHeight);
 
+    // Empty-state hint sits centred over the grid region.
+    emptyHint.setBounds (labelColWidth, labelRowHeight,
+                         juce::jmax (1, getWidth()  - labelColWidth),
+                         juce::jmax (1, getHeight() - labelRowHeight));
+
     layoutLeftRail();
     layoutTopRail();
+}
+
+void MatrixView::updateEmptyHintVisibility()
+{
+    const bool empty = inputLabels.empty() && outputLabels.empty();
+    emptyHint.setVisible (empty);
+    if (empty) emptyHint.toFront (false);   // keep above the empty grid viewport
 }
 
 void MatrixView::paint (juce::Graphics& g)

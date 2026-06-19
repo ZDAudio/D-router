@@ -302,6 +302,11 @@ private:
     juce::TextButton outExpandAllBtn   { "Expand" };
     juce::TextButton outCollapseAllBtn { "Collapse" };
 
+    // Shown over the (empty) grid area when no devices are selected, to guide
+    // a first-time user to the Devices dialog.  Toggled by the rebuild.
+    juce::Label emptyHint;
+    void updateEmptyHintVisibility();
+
     // Direction-aware FX helpers.  isInput = true addresses input plugin
     // hosts (engine.getInputPluginHost), false the output ones.
     // ---- Rebuild helpers (chunked) ----

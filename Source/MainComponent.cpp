@@ -326,7 +326,10 @@ MainComponent::MainComponent()
                     // splash (via the matrix rebuild) -- so if we DIDN'T restore,
                     // hide it here or the app sits on the splash forever.
                     if (! restored)
+                    {
                         loadingOverlay.hideOverlay();
+                        matrixView.rebuildFromEngine();   // empty matrix + guidance
+                    }
                 });
         });
     }
@@ -337,12 +340,15 @@ MainComponent::MainComponent()
         if (SnapshotStore::load (SnapshotStore::getLastUsedFile(), s))
             applySnapshot (s);
         else
+        {
             // Fresh install / no saved session: there's nothing to restore, so
             // applySnapshot() never runs -- and it's what hides the cold-start
-            // splash (via the matrix rebuild).  Hide it here or the app sits on
-            // "Starting engine and building routing..." forever.  (This is what
-            // every first-time tester hits.)
+            // splash (via the matrix rebuild).  Build the (empty) matrix view
+            // ourselves: that hides the splash AND shows the "No devices
+            // selected" guidance.  (This is what every first-time tester hits.)
             loadingOverlay.hideOverlay();
+            matrixView.rebuildFromEngine();
+        }
     }
 
     refreshStatus();
