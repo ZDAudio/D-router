@@ -5,6 +5,7 @@
 #include "DSP/Builtin/DeEsserEditor.h"
 #include "DSP/Builtin/ChannelStripEditor.h"
 #include "DSP/Builtin/MultibandCompEditor.h"
+#include "DSP/Builtin/LevelRiderEditor.h"
 
 namespace dcr::builtin
 {
@@ -16,6 +17,7 @@ juce::AudioProcessorEditor* CompressorProcessor::createEditor() { return new Com
 juce::AudioProcessorEditor* DeEsserProcessor::createEditor()    { return new DeEsserEditor (*this); }
 juce::AudioProcessorEditor* ChannelStripProcessor::createEditor() { return new ChannelStripEditor (*this); }
 juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
+juce::AudioProcessorEditor* LevelerProcessor::createEditor()       { return new LevelRiderEditor (*this); }
 
 namespace
 {
