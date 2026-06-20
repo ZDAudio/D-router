@@ -51,6 +51,7 @@ target_sources(dcorerouter PRIVATE
     Source/UI/LevelMeter.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp
+    Source/Persistence/AtomicXmlWrite.cpp
     Source/Persistence/CrashGuard.cpp
     Source/Diagnostics/Logger.cpp
     Source/Diagnostics/CrashHandler.mm
