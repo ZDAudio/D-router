@@ -227,14 +227,28 @@ void StatusPanel::refresh()
         inMaxMs  = juce::jmax (inMaxMs,  d.getInputLatencyMs  (eng));
         outMaxMs = juce::jmax (outMaxMs, d.getOutputLatencyMs (eng));
     }
-    const double engMs = rep.getEngineContributionMs();
+    const double engMs  = rep.getEngineContributionMs();
+    const double plugMs = rep.getPluginLatencyMsWorst();
     s << "\n";
     s << "  Engine path  = " << juce::String (engMs, 2) << " ms"
       << "   (1 wait block + " << rep.outputPreFillBlocks << " pre-fill @ "
       << (int) rep.engineBlockSize << " spl / " << (int) eng << " Hz)\n";
+    // Only show the plugin line when something actually reports latency -- keeps
+    // the common (no latent plugin) case uncluttered.
+    if (rep.pluginMaxLatencyEng > 0)
+    {
+        const bool pdcOn = engine.isPdcEnabled();
+        s << "  Plugin lat   = " << juce::String (plugMs, 2) << " ms"
+          << "   (worst output: " << rep.pluginMaxLatencyEng << " spl @ " << (int) eng << " Hz; "
+          << (pdcOn ? "PDC ON: other outputs aligned to it"
+                    : "PDC OFF: other outputs run ahead by up to this")
+          << ")\n";
+    }
     s << "  Round-trip   = " << juce::String (inMaxMs, 2) << " IN"
-      << "  +  " << juce::String (engMs, 2)    << " engine"
-      << "  +  " << juce::String (outMaxMs, 2) << " OUT"
+      << "  +  " << juce::String (engMs, 2)    << " engine";
+    if (rep.pluginMaxLatencyEng > 0)
+        s << "  +  " << juce::String (plugMs, 2) << " plugin";
+    s << "  +  " << juce::String (outMaxMs, 2) << " OUT"
       << "  =  " << juce::String (rep.getRoundTripMsWorst(), 2) << " ms";
 
     if (s != lastBodyText)

@@ -34,6 +34,20 @@ public:
     void setSettings (const EngineSettings& s) { settings = s; }
     const EngineSettings& getSettings() const noexcept { return settings; }
 
+    // Plugin delay compensation: realign every output behind the slowest plugin
+    // chain so a latent plugin on one output stays phase-aligned with the rest.
+    // Live toggle -- no engine restart; replans immediately.  Persisted in
+    // EngineSettings (the caller saves settings).
+    void setPdcEnabled (bool enabled);
+    bool isPdcEnabled() const noexcept { return settings.pdcEnabled; }
+
+    // Recompute the PDC plan from current plugin latencies + the enable flag and
+    // publish per-output compensation delays to the matrix processor.  Message-
+    // thread only; cheap and idempotent (republishing an unchanged plan is a
+    // no-op on the audio thread), so the host's status timer calls it as a
+    // backstop to pick up plugin load/bypass/group-membership changes.
+    void replanPdc();
+
     double getEngineSampleRate() const noexcept { return settings.engineSampleRate; }
     int    getEngineBlockSize()  const noexcept { return settings.engineBlockSize;  }
 
@@ -182,12 +196,23 @@ public:
         int    engineBlockSize  = 128;
         int    outputPreFillBlocks = 8;
 
+        // Worst per-output plugin-chain latency (per-output inserts + the group
+        // insert on that output), in ENGINE samples (plugins run in the engine
+        // clock domain).  0 when no output carries a latent plugin.  This is the
+        // latency the slowest output already incurs today; PDC (when enabled, a
+        // later change) raises the OTHER outputs to match it rather than adding
+        // anything beyond it.
+        int    pluginMaxLatencyEng = 0;
+
         // Pipeline-only contribution: 1 engine block (matrix waits) +
         // pre-fill (static cushion).
         double getEngineContributionMs() const;
 
+        // Worst-output plugin latency as milliseconds at the engine rate.
+        double getPluginLatencyMsWorst() const;
+
         // Worst-case round-trip = max(input device latency) + engine path
-        // + max(output device latency).
+        // + worst-output plugin latency + max(output device latency).
         double getRoundTripMsWorst() const;
     };
 
@@ -208,6 +233,12 @@ public:
 
 private:
     void audioDeviceListChanged() override;
+
+    // Per global output channel: that channel's per-output plugin-chain latency
+    // plus the insert latency of the group it belongs to (samples, engine rate).
+    // Message-thread only.  Shared by the latency report and the PDC planner so
+    // both agree on each output's total plugin latency.
+    std::vector<int> computePerOutputPluginLatencySamples() const;
 
     std::unique_ptr<juce::AudioIODeviceType> deviceType;
     EngineSettings settings;

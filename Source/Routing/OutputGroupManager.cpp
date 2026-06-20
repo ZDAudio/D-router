@@ -261,4 +261,28 @@ void OutputGroupManager::setGroupFaderMode (int groupIdx, OutputGroup::FaderMode
     matrix.touch();
 }
 
+void OutputGroupManager::addGroupInsertLatencySamples (std::vector<int>& perCh) const
+{
+    // No lock by design.  This runs on the message thread, which is the SOLE
+    // mutator of the group list / member channels / slot hosts, so it can't race
+    // its own writers; the audio thread only ever READS this structure (under its
+    // own try-lock in forEachGroupForAudio).  Taking the manager lock here would
+    // instead risk that try-lock failing and dropping a block of group inserts --
+    // the very starvation moveGroupFader()/setGroupMute() go out of their way to
+    // avoid.  Matches the lock-free message-thread reads in getGroup()/etc.
+    for (auto& g : groups)
+    {
+        if (g == nullptr) continue;
+        int groupLat = 0;
+        for (auto& slot : g->pluginSlots)
+            if (slot != nullptr) groupLat += slot->getChainLatencySamples();
+        if (groupLat <= 0) continue;
+        // A group insert delays the whole gathered bus, so its latency lands
+        // on every member output channel equally.
+        for (int ch : g->memberChannels)
+            if (ch >= 0 && (size_t) ch < perCh.size())
+                perCh[(size_t) ch] += groupLat;
+    }
+}
+
 } // namespace dcr

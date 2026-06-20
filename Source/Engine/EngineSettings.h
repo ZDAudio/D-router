@@ -49,6 +49,15 @@ struct EngineSettings
     // output fades out before the engine restarts.
     int gainSmoothingMs          = 25;
 
+    // ===== Plugin delay compensation (PDC) ==================================
+    //  When on, the engine delays every output to match the slowest plugin
+    //  chain, so a latent plugin (e.g. a spectral insert) on one output stays
+    //  phase-aligned with the rest of a multi-device group.  Optional and OFF
+    //  by default -- a live router shouldn't silently add latency; the user
+    //  opts in.  Toggled live (no engine restart) via setPdcEnabled(), so it is
+    //  deliberately NOT part of audioPathEquals().
+    bool pdcEnabled = false;
+
     // ===== UI ===============================================================
     int   meterTimerHz       = 30;          // level meter repaint rate
     float meterDecayFactor   = 0.92f;       // per-frame multiplicative decay

@@ -82,6 +82,16 @@ public:
     // Inspection helpers (UI thread).
     juce::SpinLock& getLock() noexcept { return lock; }
 
+    // Add each group's total insert-chain latency (sum over its plugin slots of
+    // the reported plugin latency, in samples) onto every member channel's entry
+    // in `perChannelLatency` (sized to the global output-channel count).
+    // Message/UI thread, lock-free: it only reads structure the message thread
+    // alone mutates (like getGroup()), so taking the manager lock here would just
+    // risk starving the audio thread's try-lock in forEachGroupForAudio.  Feeds
+    // the latency report / PDC planner so a group insert's latency is attributed
+    // to its members.
+    void addGroupInsertLatencySamples (std::vector<int>& perChannelLatency) const;
+
 private:
     void rebuildChannelLookup();   // call under lock
     void recomputeRouterGains();   // call under lock; rebuilds channelRouterGain from Router groups

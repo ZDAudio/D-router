@@ -19,6 +19,7 @@ namespace
     const juce::Identifier matrixThreadSleepMicros ("matrixThreadSleepMicros");
     const juce::Identifier matrixDrainPerWake ("matrixDrainPerWake");
     const juce::Identifier gainSmoothingMs    ("gainSmoothingMs");
+    const juce::Identifier pdcEnabled         ("pdcEnabled");
     const juce::Identifier meterTimerHz       ("meterTimerHz");
     const juce::Identifier meterDecayFactor   ("meterDecayFactor");
     const juce::Identifier statusTimerMs      ("statusTimerMs");
@@ -57,6 +58,7 @@ EngineSettings SettingsStore::load()
     s.matrixThreadSleepMicros = (int) t.getProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros);
     s.matrixDrainPerWake    = (int)    t.getProperty (matrixDrainPerWake,    s.matrixDrainPerWake);
     s.gainSmoothingMs       = (int)    t.getProperty (gainSmoothingMs,       s.gainSmoothingMs);
+    s.pdcEnabled            = (bool)   t.getProperty (pdcEnabled,            s.pdcEnabled);
     s.meterTimerHz          = (int)    t.getProperty (meterTimerHz,          s.meterTimerHz);
     s.meterDecayFactor      = (float) (double) t.getProperty (meterDecayFactor, (double) s.meterDecayFactor);
     s.statusTimerMs         = (int)    t.getProperty (statusTimerMs,         s.statusTimerMs);
@@ -98,6 +100,7 @@ bool SettingsStore::save (const EngineSettings& s)
     t.setProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros, nullptr);
     t.setProperty (matrixDrainPerWake,    s.matrixDrainPerWake,    nullptr);
     t.setProperty (gainSmoothingMs,       s.gainSmoothingMs,       nullptr);
+    t.setProperty (pdcEnabled,            s.pdcEnabled,            nullptr);
     t.setProperty (meterTimerHz,          s.meterTimerHz,          nullptr);
     t.setProperty (meterDecayFactor,      (double) s.meterDecayFactor, nullptr);
     t.setProperty (statusTimerMs,         s.statusTimerMs,         nullptr);

@@ -3,6 +3,7 @@
 #include <juce_core/juce_core.h>
 
 #include "Engine/EngineSettings.h"
+#include "Engine/PdcDelayLine.h"
 #include "Engine/WorkerPool.h"
 #include "Routing/RoutingMatrix.h"
 
@@ -74,6 +75,11 @@ public:
         masterGainTarget.store (g, std::memory_order_relaxed);
     }
 
+    // Message thread: publish per-output PDC compensation delays (samples).
+    // Entries past the configured output count are ignored.  Cheap atomic
+    // stores; the matrix thread picks them up on its next block.
+    void setPdcTargets (const std::vector<int>& delaysSamples) noexcept;
+
 private:
     void threadLoop();
     bool tryProcessOneBlock();
@@ -144,6 +150,17 @@ private:
     // same one-pole coeff as the route gains.  Never touches per-channel trims.
     std::atomic<float> masterGainTarget  { 1.0f };
     float              masterGainCurrent = 1.0f;
+
+    // ===== Plugin delay compensation (PDC) ==================================
+    // One delay line per output channel, applied as the LAST stage (after the
+    // meter tap, before the output ring) to realign every output behind the
+    // slowest plugin chain.  Targets are computed on the message thread by
+    // AudioEngine::replanPdc() and published via setPdcTargets(); the matrix
+    // thread reads compTargetDelay[o] each block and pushes it into the delay
+    // line, which ramps glitchlessly.  A target of 0 -- the common case (PDC
+    // off / no latent plugin) -- costs only a history copy.
+    std::vector<PdcDelayLine>     outputDelays;
+    std::vector<std::atomic<int>> compTargetDelay;
 
     void refreshSnapshotIfDirty();
 };

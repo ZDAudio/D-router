@@ -82,6 +82,23 @@ public:
         return false;
     }
 
+    // Sum of reported plugin latency (samples) across the slots processBlock()
+    // will actually run -- loaded, NOT bypassed, NOT broken.  Bypassed/broken
+    // slots are skipped on the audio thread so they add no real delay and
+    // count 0.  Message-thread only: reads `current` without the slot lock,
+    // same contract as getPluginAt() (the message thread is the sole mutator
+    // of `current`).  Feeds the latency report / PDC planner.
+    int getChainLatencySamples() const noexcept
+    {
+        int total = 0;
+        for (auto const& s : slots)
+            if (s.current != nullptr
+                && ! s.bypassed.load (std::memory_order_relaxed)
+                && ! s.broken.load   (std::memory_order_relaxed))
+                total += juce::jmax (0, s.current->getLatencySamples());
+        return total;
+    }
+
     // Audio thread: run the whole chain in-place on a mono buffer.
     void processBlock (float* buf, int numSamples);
 
