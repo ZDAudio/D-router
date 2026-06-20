@@ -364,6 +364,12 @@ namespace
         p.engage (m);
         CHECK (p.reset() == true);
         CHECK (!p.isActive());
+        // reset() must NOT touch the matrix -- the caller is about to rebuild it,
+        // and the saved indices belong to the old layout.
+        CHECK (m.getInputMute (0));
+        CHECK (m.getInputMute (1));
+        CHECK (m.getOutputMute (0));
+        CHECK (m.getOutputMute (1));
         CHECK (p.reset() == false);
     }
 
