@@ -12,6 +12,7 @@
 #include "Engine/PdcPlan.h"
 #include "Routing/GroupGain.h"
 #include "Routing/RoutingMatrix.h"
+#include "DSP/Builtin/ResonanceMath.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -472,6 +473,85 @@ void test_pdc_delay_ramp_is_finite()
     for (float v : buf) CHECK (std::isfinite (v));
 }
 
+// ---------------------------------------------------------------------------
+// ResonanceMath (Resonance Suppressor: node log-grid + threshold->reduction).
+// JUCE-free deterministic pieces shared by the processor and editor; the
+// per-bin attack/release smoothing is stateful and lives in the processor
+// (verified by build + real-device listening, not here).
+// ---------------------------------------------------------------------------
+void test_resonance_node_freq()
+{
+    using namespace dcr::resonance;
+    // 31-node log grid spans 20 Hz .. 20 kHz with clean decade anchors.
+    CHECK (feq (nodeFreq (0, 31),  20.0f));
+    CHECK (feq (nodeFreq (30, 31), 20000.0f, 1.0e-2f));
+    CHECK (feq (nodeFreq (10, 31), 200.0f,  1.0e-2f));    // 1000^(1/3) == 10
+    CHECK (feq (nodeFreq (20, 31), 2000.0f, 1.0e-2f));    // 1000^(2/3) == 100
+    CHECK (feq (nodeFreq (15, 31), 632.4555f, 1.0e-2f));  // 20*sqrt(1000)
+    // out-of-range indices clamp to the ends.
+    CHECK (feq (nodeFreq (-5, 31), 20.0f));
+    CHECK (feq (nodeFreq (99, 31), 20000.0f, 1.0e-2f));
+}
+
+void test_resonance_node_interp()
+{
+    using namespace dcr::resonance;
+    // nodeInterp is the inverse of nodeFreq: a node's own frequency maps back
+    // to that node's continuous position lo+frac (== i).  We assert the
+    // position, not the lo/frac split -- at an exact boundary (i,0) and
+    // (i-1,1) are the same point and float rounding may return either.
+    for (int i = 0; i <= 29; ++i)
+    {
+        auto ni = nodeInterp (nodeFreq (i, 31), 31);
+        CHECK (feq ((float) ni.lo + ni.frac, (float) i, 1.0e-3f));
+    }
+    // The top frequency lands on the last segment fully toward the top node.
+    auto top = nodeInterp (nodeFreq (30, 31), 31);
+    CHECK (top.lo == 29);
+    CHECK (feq (top.frac, 1.0f, 1.0e-3f));
+    // A frequency halfway (in log) between nodes 10 and 11 -> frac 0.5.
+    const float fMid = 20.0f * std::pow (1000.0f, 10.5f / 30.0f);
+    auto mid = nodeInterp (fMid, 31);
+    CHECK (mid.lo == 10);
+    CHECK (feq (mid.frac, 0.5f, 1.0e-3f));
+    // Below/above the grid clamp to the end segments.
+    auto lo = nodeInterp (5.0f, 31);
+    CHECK (lo.lo == 0 && feq (lo.frac, 0.0f));
+    auto hi = nodeInterp (40000.0f, 31);
+    CHECK (hi.lo == 29 && feq (hi.frac, 1.0f, 1.0e-3f));
+}
+
+void test_resonance_target_reduction()
+{
+    using namespace dcr::resonance;
+    // Below baseline+threshold -> no reduction.
+    CHECK (feq (targetReductionDb (-40.0f, -50.0f, 12.0f, 0.8f, 24.0f), 0.0f));
+    // Exactly at threshold (excess 0) -> no reduction.
+    CHECK (feq (targetReductionDb (-30.0f, -50.0f, 20.0f, 1.0f, 24.0f), 0.0f));
+    // Excess * sharpness, below the ceiling -> negative reduction. excess 16 * 0.8.
+    CHECK (feq (targetReductionDb (-30.0f, -50.0f, 4.0f, 0.8f, 24.0f), -12.8f, 1.0e-4f));
+    // Clamped at max reduction.
+    CHECK (feq (targetReductionDb (-30.0f, -50.0f, 4.0f, 0.8f, 10.0f), -10.0f));
+    // Raising the (per-frequency) threshold reduces the action monotonically.
+    const float a = targetReductionDb (-30.0f, -50.0f, 10.0f, 1.0f, 24.0f);   // excess 10 -> -10
+    const float b = targetReductionDb (-30.0f, -50.0f, 18.0f, 1.0f, 24.0f);   // excess  2 -> -2
+    CHECK (feq (a, -10.0f));
+    CHECK (feq (b, -2.0f));
+    CHECK (b > a);                 // higher threshold => less (closer to 0) reduction
+    // Reduction is never positive.
+    CHECK (targetReductionDb (0.0f, -90.0f, 0.0f, 2.0f, 24.0f) <= 0.0f);
+}
+
+void test_resonance_base_strength()
+{
+    using namespace dcr::resonance;
+    CHECK (feq (baseStrengthForRes (3),  0.6f));
+    CHECK (feq (baseStrengthForRes (6),  1.2f));
+    CHECK (feq (baseStrengthForRes (12), 2.4f));
+    CHECK (feq (baseStrengthForRes (24), 4.0f));
+    CHECK (feq (baseStrengthForRes (99), 4.0f));   // default = finest/tightest
+}
+
 } // namespace
 
 int main()
@@ -508,6 +588,11 @@ int main()
     test_pdc_delay_change_settles();
     test_pdc_delay_idle_then_activate();
     test_pdc_delay_ramp_is_finite();
+
+    test_resonance_node_freq();
+    test_resonance_node_interp();
+    test_resonance_target_reduction();
+    test_resonance_base_strength();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

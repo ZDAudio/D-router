@@ -11,7 +11,7 @@
 #include "DSP/Builtin/SpectralAutoEqProcessor.h"
 #include "DSP/Builtin/SpectralAutoEqEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
-#include "DSP/Builtin/SpectralCurveEditor.h"
+#include "DSP/Builtin/ResonanceSuppressorEditor.h"
 
 namespace dcr::builtin
 {
@@ -26,7 +26,7 @@ juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new 
 juce::AudioProcessorEditor* LevelerProcessor::createEditor()       { return new LevelRiderEditor (*this); }
 juce::AudioProcessorEditor* PpmMeterProcessor::createEditor()      { return new PpmMeterEditor (*this); }
 juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor()        { return new SpectralAutoEqEditor (*this); }
-juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor()   { return new SpectralCurveEditor<ResonanceSuppressorProcessor> (*this); }
+juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor()   { return new ResonanceSuppressorEditor (*this); }
 
 namespace
 {
