@@ -11,6 +11,7 @@
 #include "Diagnostics/PerfMonitor.h"
 #include "Engine/AudioEngine.h"
 #include "Persistence/SnapshotStore.h"
+#include "Routing/PanicController.h"
 #include "UI/LoadingOverlay.h"
 #include "UI/LookAndFeel.h"
 #include "UI/MatrixView.h"
@@ -72,9 +73,7 @@ namespace dcr
         void panicRelease();
         void panicResetRestart(); // RESET button: restore mutes + preserve-state restart
         void updatePanicButtonAppearance();
-        bool inPanic = false;
-        std::vector<unsigned char> savedInputMutes;
-        std::vector<unsigned char> savedOutputMutes;
+        PanicController panic;
         Snapshot gatherCurrentSnapshot() const;
         // Per-channel FX harvest only (no group chains, no UI state).  Calls
         // getStateInformation() on every AU, so the caller MUST ensure the matrix

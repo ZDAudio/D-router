@@ -99,7 +99,7 @@ namespace dcr
         };
         saveButton.onClick = [this] { saveSnapshotInteractive(); };
         loadButton.onClick = [this] { loadSnapshotInteractive(); };
-        stopButton.onClick = [this] { if (inPanic) panicRelease(); else panicActivate(); };
+        stopButton.onClick = [this] { if (panic.isActive()) panicRelease(); else panicActivate(); };
         stopButton.setTooltip ("Mute every input and output.  Click again to restore the prior state.");
 
         // RESET: restore pre-panic mutes, then preserve-state engine restart.
@@ -248,11 +248,7 @@ namespace dcr
         // mutes everything from scratch (matches the user's spec: "panic forgets
         // the prior state once you manually touch a mute").
         matrixView.onUserMuteChanged = [this] {
-            if (!inPanic)
-                return;
-            inPanic = false;
-            savedInputMutes.clear();
-            savedOutputMutes.clear();
+            panic.noteUserMuteChanged();
             updatePanicButtonAppearance();
         };
 
@@ -561,7 +557,7 @@ namespace dcr
                 break;
 
             case 1: // Edit
-                m.addItem (miPanic, inPanic ? "Release PANIC (restore mutes)" : "PANIC (mute everything)", true, inPanic);
+                m.addItem (miPanic, panic.isActive() ? "Release PANIC (restore mutes)" : "PANIC (mute everything)", true, panic.isActive());
                 m.addItem (miReset, "Reset Engine (keep routing & FX)", !currentSpecs.empty(), false);
                 m.addSeparator();
                 m.addItem (miTogglePdc, "Plugin Delay Compensation (PDC)", true, engine.isPdcEnabled());
@@ -633,7 +629,7 @@ namespace dcr
 
             // Edit
             case miPanic:
-                if (inPanic)
+                if (panic.isActive())
                     panicRelease();
                 else
                     panicActivate();
@@ -1098,25 +1094,8 @@ namespace dcr
 
     void MainComponent::panicActivate()
     {
-        auto& m = engine.getRoutingMatrix();
-        const int nIn = m.getNumInputs();
-        const int nOut = m.getNumOutputs();
-        if (nIn == 0 && nOut == 0)
-            return;
-
-        savedInputMutes.assign ((size_t) nIn, 0);
-        savedOutputMutes.assign ((size_t) nOut, 0);
-        for (int n = 0; n < nIn; ++n)
-        {
-            savedInputMutes[(size_t) n] = m.getInputMute (n) ? 1 : 0;
-            m.setInputMute (n, true);
-        }
-        for (int o = 0; o < nOut; ++o)
-        {
-            savedOutputMutes[(size_t) o] = m.getOutputMute (o) ? 1 : 0;
-            m.setOutputMute (o, true);
-        }
-        inPanic = true;
+        if (!panic.engage (engine.getRoutingMatrix()))
+            return; // empty matrix -- nothing to mute
         matrixView.refreshMuteButtonStates();
         updatePanicButtonAppearance();
         menuItemsChanged(); // Edit menu's PANIC label + tick follow inPanic
@@ -1124,16 +1103,7 @@ namespace dcr
 
     void MainComponent::panicRelease()
     {
-        auto& m = engine.getRoutingMatrix();
-        const int nIn = juce::jmin ((int) savedInputMutes.size(), m.getNumInputs());
-        const int nOut = juce::jmin ((int) savedOutputMutes.size(), m.getNumOutputs());
-        for (int n = 0; n < nIn; ++n)
-            m.setInputMute (n, savedInputMutes[(size_t) n] != 0);
-        for (int o = 0; o < nOut; ++o)
-            m.setOutputMute (o, savedOutputMutes[(size_t) o] != 0);
-        savedInputMutes.clear();
-        savedOutputMutes.clear();
-        inPanic = false;
+        panic.release (engine.getRoutingMatrix());
         matrixView.refreshMuteButtonStates();
         updatePanicButtonAppearance();
         menuItemsChanged(); // Edit menu's PANIC label + tick follow inPanic
@@ -1141,21 +1111,22 @@ namespace dcr
 
     void MainComponent::updatePanicButtonAppearance()
     {
+        const bool active = panic.isActive();
         // Bright red when active so the user always knows panic is engaged.
-        stopButton.setButtonText (inPanic ? "PANIC*" : "PANIC");
+        stopButton.setButtonText (active ? "PANIC*" : "PANIC");
         stopButton.setColour (juce::TextButton::buttonColourId,
-            inPanic ? juce::Colour::fromRGB (180, 30, 30)
-                    : juce::Colour::fromRGB (50, 50, 56));
+            active ? juce::Colour::fromRGB (180, 30, 30)
+                   : juce::Colour::fromRGB (50, 50, 56));
         stopButton.setColour (juce::TextButton::buttonOnColourId,
-            inPanic ? juce::Colour::fromRGB (180, 30, 30)
-                    : juce::Colour::fromRGB (50, 50, 56));
+            active ? juce::Colour::fromRGB (180, 30, 30)
+                   : juce::Colour::fromRGB (50, 50, 56));
         stopButton.repaint();
 
         // RESET appears beside PANIC only while panic is engaged.  Re-run the
         // toolbar layout so the button slides in/out without leaving a gap.
-        if (resetButton.isVisible() != inPanic)
+        if (resetButton.isVisible() != active)
         {
-            resetButton.setVisible (inPanic);
+            resetButton.setVisible (active);
             resized();
         }
     }
@@ -1165,7 +1136,7 @@ namespace dcr
         // 1. Restore the pre-panic mute state FIRST, so the restart harvests the
         //    user's real routing -- not the all-muted panic snapshot (otherwise
         //    everything would come back muted).
-        if (inPanic)
+        if (panic.isActive())
             panicRelease();
 
         // 2. Preserve-state engine restart: re-opens every device (re-reading the
@@ -1198,13 +1169,8 @@ namespace dcr
 
         // Matrix is about to be rebuilt - any saved-panic indices would point at
         // the old channel layout, so drop the panic state cleanly.
-        if (inPanic || !savedInputMutes.empty() || !savedOutputMutes.empty())
-        {
-            inPanic = false;
-            savedInputMutes.clear();
-            savedOutputMutes.clear();
+        if (panic.reset())
             updatePanicButtonAppearance();
-        }
 
         // ---- Preserve per-channel FX chains across the restart ---------------
         // engine.stop() wipes pluginHosts / inputPluginHosts (and the AU
