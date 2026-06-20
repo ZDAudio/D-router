@@ -125,6 +125,15 @@ private:
     uint64_t lastSnapGen = 0;
     float    smoothCoeff = 1.0f;             // 1.0 = no smoothing (instant)
 
+    // Per-output POST-fader gain (output trim, zeroed when muted), applied
+    // AFTER the output plugin chains + group inserts so those process the
+    // pre-fader signal -- standard DAW "inserts before fader" gain staging.
+    // `target` is refreshed from the matrix; `current` is the smoothed value
+    // actually applied, ramped per block to avoid zipper on fader moves.
+    std::vector<float>       outputFaderTarget;
+    std::vector<float>       outputFaderCurrent;
+    bool                     faderInitialised = false;
+
     // Master output fade (engine-restart click suppression).  Target is set
     // from the message thread; current is ramped on the matrix thread with the
     // same one-pole coeff as the route gains.  Never touches per-channel trims.

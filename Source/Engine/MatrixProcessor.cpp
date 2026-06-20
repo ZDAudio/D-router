@@ -136,6 +136,13 @@ void MatrixProcessor::configure (std::vector<GlobalInput>  ins,
     activeRoutes.reserve (inputs.size() * outputs.size());
     lastSnapGen = 0;   // force refresh on first block
 
+    // Post-fader gain stage (applied after the output inserts).  Start at
+    // unity; the first dirty-refresh snaps current -> target so there's no
+    // fade-in artifact on engine start.
+    outputFaderTarget .assign (outputs.size(), 1.0f);
+    outputFaderCurrent.assign (outputs.size(), 1.0f);
+    faderInitialised = false;
+
     // Fresh engine -> master fade starts at unity (the OLD engine's fade-to-0
     // died with its processor; this one plays at full volume immediately).
     masterGainTarget.store (1.0f, std::memory_order_relaxed);
@@ -201,21 +208,36 @@ void MatrixProcessor::refreshSnapshotIfDirty()
     for (auto& r : activeRoutes)
         oldGains[((uint64_t) (uint32_t) r.outIdx << 32) | (uint32_t) r.inIdx] = r.currentGain;
 
-    // Build the new active route list with currentGain carried forward.
+    // Capture the per-output POST-fader gain (trim, zeroed when muted).  This
+    // is applied AFTER the output plugin chains so inserts see the pre-fader
+    // signal.  Output mute/trim therefore do NOT gate the mix below -- the
+    // plugin must keep processing even when the fader is down or muted.
+    for (size_t i = 0; i < outputFaderTarget.size(); ++i)
+    {
+        const int m = (int) i;
+        const float t = (m < nOut && ! matrix->getOutputMute (m))
+                            ? matrix->getOutputTrim (m) : (m < nOut ? 0.0f : 1.0f);
+        outputFaderTarget[i] = t;
+    }
+    if (! faderInitialised)   // snap on first refresh -> no start-up fade
+    {
+        outputFaderCurrent = outputFaderTarget;
+        faderInitialised = true;
+    }
+
+    // Build the new active route list with currentGain carried forward.  Route
+    // gain is now input-side only (inputEffGain x crosspoint); the output
+    // fader is applied post-plugin.
     activeRoutes.clear();
     for (int m = 0; m < nOut; ++m)
     {
-        if (matrix->getOutputMute (m)) continue;
-        const float outG = matrix->getOutputTrim (m);
-        if (outG == 0.0f) continue;
-
         for (int n = 0; n < nIn; ++n)
         {
             const float inG = inputEffGain[(size_t) n];
             if (inG == 0.0f) continue;
             const float xp = matrix->getCrosspoint (m, n);
             if (xp == 0.0f) continue;
-            const float g = outG * inG * xp;
+            const float g = inG * xp;
             if (g == 0.0f) continue;
 
             const uint64_t key = ((uint64_t) (uint32_t) m << 32) | (uint32_t) n;
@@ -384,6 +406,25 @@ bool MatrixProcessor::tryProcessOneBlock()
                 if (s && s->getPlugin() && ! s->isBypassed())
                     s->processBlock (chPtrs.data(), blockSize);
         });
+    }
+
+    // POST-FADER gain stage.  The output trim / mute (and the linked group
+    // fader, which drives the per-channel trims) is applied HERE -- after every
+    // output insert + group insert -- so plugins process the pre-fader signal
+    // (standard DAW gain staging).  Smoothed per block toward the target so a
+    // fader sweep doesn't zipper.
+    for (size_t i = 0; i < outputs.size() && i < outputFaderCurrent.size(); ++i)
+    {
+        const float tgt = outputFaderTarget[i];
+        float&      cur = outputFaderCurrent[i];
+        cur += (tgt - cur) * smoothCoeff;
+        if (cur >= 0.99999f && tgt >= 0.99999f) continue;   // unity: skip
+        if (cur <= 1.0e-7f  && tgt == 0.0f)                  // fully faded: zero it
+        {
+            std::memset (outBuf.data() + i * (size_t) blockSize, 0, sizeof (float) * (size_t) blockSize);
+            continue;
+        }
+        juce::FloatVectorOperations::multiply (outBuf.data() + i * (size_t) blockSize, cur, blockSize);
     }
 
     // Master output fade (engine-restart click suppression).  Ramp toward the
