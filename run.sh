@@ -13,6 +13,8 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 CONFIG="Release"
+# JUCE PRODUCT_NAME — names both the .app bundle and the running process.
+PRODUCT_NAME="D-Router"
 
 CMAKE="$(command -v cmake || echo /opt/homebrew/bin/cmake)"
 NINJA="$(command -v ninja || echo /opt/homebrew/bin/ninja)"
@@ -26,7 +28,7 @@ for arg in "$@"; do
         --clean)    DO_CLEAN=1 ;;
         --debug)    CONFIG="Debug"; BUILD_DIR="$PROJECT_DIR/build-debug" ;;
         --kill)
-            killall dcorerouter 2>/dev/null || true
+            killall "$PRODUCT_NAME" 2>/dev/null || true
             echo "[dcorerouter] killed."
             exit 0
             ;;
@@ -41,10 +43,10 @@ for arg in "$@"; do
     esac
 done
 
-APP_BUNDLE="$BUILD_DIR/dcorerouter_artefacts/$CONFIG/dcorerouter.app"
+APP_BUNDLE="$BUILD_DIR/dcorerouter_artefacts/$CONFIG/$PRODUCT_NAME.app"
 
 # 1. Kill any running instance so we relaunch cleanly.
-killall dcorerouter 2>/dev/null || true
+killall "$PRODUCT_NAME" 2>/dev/null || true
 sleep 0.3
 
 # 2. Optional clean.
