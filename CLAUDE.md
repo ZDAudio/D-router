@@ -17,6 +17,31 @@ and the process is `D-Router` (not `dcorerouter`). `build/` and `dist/` are
 gitignored; never commit them. `package.sh` re-signs because `cp -R` breaks the
 ad-hoc seal and recipients get a "damaged" Gatekeeper error otherwise.
 
+## Tests
+
+```bash
+cmake --build build --target dcorerouter_tests
+ctest --test-dir build --output-on-failure          # ~0.5s, headless, no JUCE
+```
+
+`tests/test_main.cpp` (+ the `dcorerouter_tests` target) is a pure-logic
+regression net: `FloatRingBuffer` SPSC + `RoutingMatrix` (gains, mute/solo,
+self-loop block, snapshot). **Run it before claiming a change is safe, and add
+cases for any new deterministic logic** (e.g. PDC delay-line alignment).
+DSP/JUCE-linked tests (STFT/WOLA reconstruction, gain staging) are a planned
+second target. Verify against reality — most of the audio behavior can only be
+confirmed by the user testing on real devices, so say plainly what is and isn't
+verified.
+
+## Workflow
+
+Public repo (`ZDAudio/D-router`) with outside contributors. For non-trivial
+changes prefer a branch + PR + squash-merge (keeps history linear and
+attributable); small fixes may go straight to `main`. End commit messages with
+the `Co-Authored-By` trailer. Keep changes scoped to the task (no drive-by
+refactors); follow structural renames all the way through (the review caught
+`swapStateWith` forgetting `lastLayout`).
+
 ## Architecture
 
 | Area | Path | Role |
