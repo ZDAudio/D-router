@@ -15,10 +15,10 @@ for any claim, damages, or other liability arising from, out of, or in
 connection with the software or its use.
 
 THIRD-PARTY COMPONENTS
-This project depends on the JUCE framework (https://juce.com), which is fetched
-at build time and is licensed separately under JUCE's own terms. Building and
-distributing binaries that link JUCE is subject to those terms; this license
-does not grant any rights to JUCE. Audio Unit plug-ins hosted by this software
+This project may incorporate or depend on third-party components that are
+fetched at build time and licensed separately under their own terms. This
+license grants no rights to those components, and building or distributing
+binaries may be subject to their terms. Any plug-ins hosted by this software
 remain the property of their respective owners.
 
 For licensing inquiries, contact ZDAudio.
