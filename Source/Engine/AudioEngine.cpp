@@ -1,6 +1,7 @@
 #include "Engine/AudioEngine.h"
 
 #include "DSP/Builtin/InternalPluginFormat.h"
+#include "Engine/PdcPlan.h"
 
 #include <limits>
 
@@ -235,6 +236,12 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
 
     processor.start();
     runningFlag = true;
+
+    // Initial PDC plan now the matrix knows its output count (a no-op when PDC
+    // is off or no plugin reports latency).  The status timer keeps it current
+    // thereafter, and plugin/toggle changes replan on demand.
+    replanPdc();
+
     return true;
 }
 
@@ -411,6 +418,22 @@ std::vector<int> AudioEngine::computePerOutputPluginLatencySamples() const
     // Fold in each output's group-insert latency (attributed to its members).
     groupManager.addGroupInsertLatencySamples (lat);
     return lat;
+}
+
+void AudioEngine::setPdcEnabled (bool enabled)
+{
+    settings.pdcEnabled = enabled;
+    replanPdc();
+}
+
+void AudioEngine::replanPdc()
+{
+    const auto perOut = computePerOutputPluginLatencySamples();
+    const auto plan   = computePdcPlan (perOut, settings.pdcEnabled, kMaxPdcSamples);
+    if (plan.clamped)
+        juce::Logger::writeToLog ("[PDC] an output's plugin latency exceeded the "
+                                  + juce::String (kMaxPdcSamples) + "-sample cap -- clamped");
+    processor.setPdcTargets (plan.compDelay);
 }
 
 size_t AudioEngine::getOutputRingFill (int globalCh) const

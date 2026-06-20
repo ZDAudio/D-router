@@ -236,10 +236,14 @@ void StatusPanel::refresh()
     // Only show the plugin line when something actually reports latency -- keeps
     // the common (no latent plugin) case uncluttered.
     if (rep.pluginMaxLatencyEng > 0)
+    {
+        const bool pdcOn = engine.isPdcEnabled();
         s << "  Plugin lat   = " << juce::String (plugMs, 2) << " ms"
-          << "   (worst output: " << rep.pluginMaxLatencyEng << " spl @ "
-          << (int) eng << " Hz -- other outputs run AHEAD by up to this; "
-          << "no compensation yet)\n";
+          << "   (worst output: " << rep.pluginMaxLatencyEng << " spl @ " << (int) eng << " Hz; "
+          << (pdcOn ? "PDC ON: other outputs aligned to it"
+                    : "PDC OFF: other outputs run ahead by up to this")
+          << ")\n";
+    }
     s << "  Round-trip   = " << juce::String (inMaxMs, 2) << " IN"
       << "  +  " << juce::String (engMs, 2)    << " engine";
     if (rep.pluginMaxLatencyEng > 0)

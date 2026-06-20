@@ -8,8 +8,11 @@
 // see the PR notes.
 
 #include "Engine/RingBuffer.h"
+#include "Engine/PdcDelayLine.h"
+#include "Engine/PdcPlan.h"
 #include "Routing/RoutingMatrix.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -239,6 +242,165 @@ void test_matrix_snapshot()
     CHECK (s.anySoloActive);
 }
 
+// ---------------------------------------------------------------------------
+// PDC plan math (computePdcPlan): align every output to the slowest one.
+// ---------------------------------------------------------------------------
+void test_pdc_plan_disabled()
+{
+    // PDC off -> nothing is delayed, regardless of latencies.
+    std::vector<int> lat { 1024, 0, 512 };
+    auto p = dcr::computePdcPlan (lat, /*enabled*/ false, /*cap*/ 48000);
+    CHECK (p.maxLatency == 0);
+    CHECK (! p.clamped);
+    CHECK (p.compDelay.size() == 3);
+    for (int d : p.compDelay) CHECK (d == 0);
+}
+
+void test_pdc_plan_aligns_to_max()
+{
+    std::vector<int> lat { 1024, 0, 512 };
+    auto p = dcr::computePdcPlan (lat, true, 48000);
+    CHECK (p.maxLatency == 1024);
+    CHECK (! p.clamped);
+    CHECK (p.compDelay[0] == 0);
+    CHECK (p.compDelay[1] == 1024);
+    CHECK (p.compDelay[2] == 512);
+    // The defining invariant: latency + compensation is equal across outputs.
+    for (size_t o = 0; o < lat.size(); ++o)
+        CHECK (lat[o] + p.compDelay[o] == p.maxLatency);
+}
+
+void test_pdc_plan_no_latency()
+{
+    std::vector<int> lat { 0, 0, 0 };
+    auto p = dcr::computePdcPlan (lat, true, 48000);
+    CHECK (p.maxLatency == 0);
+    for (int d : p.compDelay) CHECK (d == 0);
+}
+
+void test_pdc_plan_empty()
+{
+    std::vector<int> lat;
+    auto p = dcr::computePdcPlan (lat, true, 48000);
+    CHECK (p.maxLatency == 0);
+    CHECK (p.compDelay.empty());
+}
+
+void test_pdc_plan_negative_treated_as_zero()
+{
+    std::vector<int> lat { -5, 100 };
+    auto p = dcr::computePdcPlan (lat, true, 48000);
+    CHECK (p.maxLatency == 100);
+    CHECK (p.compDelay[0] == 100);   // negative latency floored to 0
+    CHECK (p.compDelay[1] == 0);
+}
+
+void test_pdc_plan_cap_clamps_and_flags()
+{
+    // An output beyond the cap is clamped and the plan flags it (the engine
+    // logs it -- never a silent mis-alignment).
+    std::vector<int> lat { 60000, 0 };
+    auto p = dcr::computePdcPlan (lat, true, 48000);
+    CHECK (p.clamped);
+    CHECK (p.maxLatency == 48000);
+    CHECK (p.compDelay[0] == 0);
+    CHECK (p.compDelay[1] == 48000);
+}
+
+// ---------------------------------------------------------------------------
+// PDC delay line (PdcDelayLine): exact integer delay + glitchless re-target.
+// ---------------------------------------------------------------------------
+
+// Feed a known ramp signal in[i]=i+1, verify the steady-state delay equals K
+// (out[i] == in[i-K] well past the crossfade).
+void check_settled_delay (int K)
+{
+    dcr::PdcDelayLine dl;
+    dl.prepare (2000, 128, /*ramp*/ 8);
+    dl.setTargetDelay (K);
+
+    const int N = 4000;
+    std::vector<float> in ((size_t) N), out ((size_t) N);
+    for (int i = 0; i < N; ++i) { in[(size_t) i] = (float) (i + 1); out[(size_t) i] = in[(size_t) i]; }
+
+    for (int off = 0; off < N; off += 128)
+        dl.process (out.data() + off, std::min (128, N - off));
+
+    CHECK (dl.getCurrentDelay() == K);
+    for (int i = K + 64; i < N - 8; ++i)
+        CHECK (feq (out[(size_t) i], in[(size_t) (i - K)]));
+}
+
+void test_pdc_delay_static()
+{
+    check_settled_delay (0);       // passthrough
+    check_settled_delay (1);
+    check_settled_delay (100);
+    check_settled_delay (2000);    // == maxDelay (deepest valid tap)
+}
+
+void test_pdc_delay_change_settles()
+{
+    dcr::PdcDelayLine dl;
+    dl.prepare (2000, 128, 8);
+
+    const int N = 8000;
+    std::vector<float> in ((size_t) N), out ((size_t) N);
+    for (int i = 0; i < N; ++i) { in[(size_t) i] = (float) (i + 1); out[(size_t) i] = in[(size_t) i]; }
+
+    auto run = [&] (int from, int to)
+    {
+        for (int i = from; i < to; i += 128)
+            dl.process (out.data() + i, std::min (128, to - i));
+    };
+
+    dl.setTargetDelay (50);
+    run (0, 4000);
+    CHECK (dl.getCurrentDelay() == 50);
+    for (int i = 50 + 64; i < 3900; ++i) CHECK (feq (out[(size_t) i], in[(size_t) (i - 50)]));
+
+    dl.setTargetDelay (300);
+    run (4000, N);
+    CHECK (dl.getCurrentDelay() == 300);
+    for (int i = 4000 + 300 + 64; i < N - 64; ++i) CHECK (feq (out[(size_t) i], in[(size_t) (i - 300)]));
+}
+
+void test_pdc_delay_idle_then_activate()
+{
+    // Run at delay 0 (exercising the idle fast path), then activate a delay and
+    // confirm the steady state is exactly K -- i.e. the fast path kept history
+    // current so the newly-delayed output reads real past samples, not silence.
+    dcr::PdcDelayLine dl;
+    dl.prepare (2000, 128, 8);
+    const int N = 8000;
+    std::vector<float> in ((size_t) N), out ((size_t) N);
+    for (int i = 0; i < N; ++i) { in[(size_t) i] = (float) (i + 1); out[(size_t) i] = in[(size_t) i]; }
+    auto run = [&] (int from, int to)
+    {
+        for (int i = from; i < to; i += 128) dl.process (out.data() + i, std::min (128, to - i));
+    };
+
+    run (0, 4000);                                     // delay 0: passthrough via fast path
+    for (int i = 0; i < 3999; ++i) CHECK (feq (out[(size_t) i], in[(size_t) i]));
+
+    dl.setTargetDelay (120);                           // activate
+    run (4000, N);
+    CHECK (dl.getCurrentDelay() == 120);
+    for (int i = 4000 + 120 + 64; i < N - 64; ++i) CHECK (feq (out[(size_t) i], in[(size_t) (i - 120)]));
+}
+
+void test_pdc_delay_ramp_is_finite()
+{
+    // The crossfade region must never produce NaN/inf.
+    dcr::PdcDelayLine dl;
+    dl.prepare (1000, 128, 256);
+    std::vector<float> buf (2000, 1.0f);
+    dl.setTargetDelay (500);
+    for (int off = 0; off < 2000; off += 128)
+        dl.process (buf.data() + off, std::min (128, 2000 - off));
+    for (float v : buf) CHECK (std::isfinite (v));
+}
+
 } // namespace
 
 int main()
@@ -257,6 +419,18 @@ int main()
     test_matrix_dirty_generation();
     test_matrix_resize_clears_blocks();
     test_matrix_snapshot();
+
+    test_pdc_plan_disabled();
+    test_pdc_plan_aligns_to_max();
+    test_pdc_plan_no_latency();
+    test_pdc_plan_empty();
+    test_pdc_plan_negative_treated_as_zero();
+    test_pdc_plan_cap_clamps_and_flags();
+
+    test_pdc_delay_static();
+    test_pdc_delay_change_settles();
+    test_pdc_delay_idle_then_activate();
+    test_pdc_delay_ramp_is_finite();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

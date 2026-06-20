@@ -34,6 +34,20 @@ public:
     void setSettings (const EngineSettings& s) { settings = s; }
     const EngineSettings& getSettings() const noexcept { return settings; }
 
+    // Plugin delay compensation: realign every output behind the slowest plugin
+    // chain so a latent plugin on one output stays phase-aligned with the rest.
+    // Live toggle -- no engine restart; replans immediately.  Persisted in
+    // EngineSettings (the caller saves settings).
+    void setPdcEnabled (bool enabled);
+    bool isPdcEnabled() const noexcept { return settings.pdcEnabled; }
+
+    // Recompute the PDC plan from current plugin latencies + the enable flag and
+    // publish per-output compensation delays to the matrix processor.  Message-
+    // thread only; cheap and idempotent (republishing an unchanged plan is a
+    // no-op on the audio thread), so the host's status timer calls it as a
+    // backstop to pick up plugin load/bypass/group-membership changes.
+    void replanPdc();
+
     double getEngineSampleRate() const noexcept { return settings.engineSampleRate; }
     int    getEngineBlockSize()  const noexcept { return settings.engineBlockSize;  }
 
@@ -222,8 +236,8 @@ private:
 
     // Per global output channel: that channel's per-output plugin-chain latency
     // plus the insert latency of the group it belongs to (samples, engine rate).
-    // Message-thread only.  Shared by the latency report and (later) the PDC
-    // planner so both agree on each output's total plugin latency.
+    // Message-thread only.  Shared by the latency report and the PDC planner so
+    // both agree on each output's total plugin latency.
     std::vector<int> computePerOutputPluginLatencySamples() const;
 
     std::unique_ptr<juce::AudioIODeviceType> deviceType;

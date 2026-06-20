@@ -1,6 +1,7 @@
 #include "Engine/MatrixProcessor.h"
 
 #include "Engine/DeviceWorker.h"
+#include "Engine/PdcPlan.h"
 #include "DSP/PluginHost.h"
 #include "Routing/OutputGroup.h"
 #include "Routing/OutputGroupManager.h"
@@ -148,8 +149,26 @@ void MatrixProcessor::configure (std::vector<GlobalInput>  ins,
     masterGainTarget.store (1.0f, std::memory_order_relaxed);
     masterGainCurrent = 1.0f;
 
+    // PDC delay lines: one per output, pre-sized to the hard cap so a latency
+    // change never allocates on the audio thread.  Targets start at 0 (no
+    // compensation); AudioEngine::replanPdc() publishes the real plan after
+    // configure and whenever a plugin's latency changes.
+    outputDelays.clear();
+    outputDelays.resize (outputs.size());
+    for (auto& d : outputDelays) d.prepare (kMaxPdcSamples, blockSize);
+    std::vector<std::atomic<int>> ct (outputs.size());
+    for (auto& a : ct) a.store (0, std::memory_order_relaxed);
+    compTargetDelay = std::move (ct);
+
     // First-build routes have currentGain = 0 so they fade IN smoothly when
     // the engine starts.  No special action needed beyond the clear above.
+}
+
+void MatrixProcessor::setPdcTargets (const std::vector<int>& delays) noexcept
+{
+    const size_t n = std::min (delays.size(), compTargetDelay.size());
+    for (size_t o = 0; o < n; ++o)
+        compTargetDelay[o].store (delays[o], std::memory_order_relaxed);
 }
 
 float MatrixProcessor::getInputPeak (int n) const noexcept
@@ -448,6 +467,16 @@ bool MatrixProcessor::tryProcessOneBlock()
         const auto r = juce::FloatVectorOperations::findMinAndMax (src, blockSize);
         const float peak = juce::jmax (std::abs (r.getStart()), std::abs (r.getEnd()));
         outputPeaks[i].store (peak, std::memory_order_relaxed);
+
+        // PDC: realign this output behind the slowest plugin chain.  Applied
+        // LAST -- after the meter tap (the meter reads the pre-delay level; a
+        // delay shifts time, not level) and just before the ring.  A target of
+        // 0 -- PDC off or no latent plugin -- makes this a cheap history copy.
+        if (i < outputDelays.size())
+        {
+            outputDelays[i].setTargetDelay (compTargetDelay[i].load (std::memory_order_relaxed));
+            outputDelays[i].process (src, blockSize);
+        }
 
         auto* ring = outputs[i].device->getOutputRing (outputs[i].channelIndex);
         if (ring != nullptr)

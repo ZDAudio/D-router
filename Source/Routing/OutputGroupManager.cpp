@@ -152,7 +152,13 @@ void OutputGroupManager::setGroupMute (int groupIdx, bool m, RoutingMatrix& matr
 
 void OutputGroupManager::addGroupInsertLatencySamples (std::vector<int>& perCh) const
 {
-    const juce::SpinLock::ScopedLockType lk (lock);
+    // No lock by design.  This runs on the message thread, which is the SOLE
+    // mutator of the group list / member channels / slot hosts, so it can't race
+    // its own writers; the audio thread only ever READS this structure (under its
+    // own try-lock in forEachGroupForAudio).  Taking the manager lock here would
+    // instead risk that try-lock failing and dropping a block of group inserts --
+    // the very starvation moveGroupFader()/setGroupMute() go out of their way to
+    // avoid.  Matches the lock-free message-thread reads in getGroup()/etc.
     for (auto& g : groups)
     {
         if (g == nullptr) continue;

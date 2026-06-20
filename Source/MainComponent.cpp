@@ -367,7 +367,15 @@ MainComponent::MainComponent()
    #endif
 }
 
-void MainComponent::timerCallback() { refreshStatus(); }
+void MainComponent::timerCallback()
+{
+    refreshStatus();
+    // PDC reconcile backstop: plugin load/bypass and group edits don't funnel
+    // through a single engine call, so re-derive the plan here.  Cheap and
+    // idempotent (an unchanged plan is a no-op on the audio thread); skipped
+    // entirely while PDC is off.
+    if (engine.isPdcEnabled()) engine.replanPdc();
+}
 
 MainComponent::~MainComponent()
 {
@@ -468,7 +476,7 @@ namespace
         // File
         miSave = 1000, miLoad, miDevices, miSettings, miGroups, miCloseWindow, miQuit,
         // Edit
-        miPanic = 1100, miReset,
+        miPanic = 1100, miReset, miTogglePdc,
         // View
         miTabMatrix = 1200, miTabGroups, miTabMonitor,
         miExpandAll, miCollapseAll, miFontBigger, miFontSmaller, miFontReset,
@@ -508,6 +516,9 @@ juce::PopupMenu MainComponent::getMenuForIndex (int topLevelMenuIndex, const juc
                        true, inPanic);
             m.addItem (miReset, "Reset Engine (keep routing & FX)",
                        ! currentSpecs.empty(), false);
+            m.addSeparator();
+            m.addItem (miTogglePdc, "Plugin Delay Compensation (PDC)",
+                       true, engine.isPdcEnabled());
             break;
 
         case 2: // View
@@ -564,6 +575,10 @@ void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
         // Edit
         case miPanic: if (inPanic) panicRelease(); else panicActivate(); break;
         case miReset: panicResetRestart(); break;
+        case miTogglePdc:
+            engine.setPdcEnabled (! engine.isPdcEnabled());
+            SettingsStore::save (engine.getSettings());   // persist the choice
+            break;
 
         // View
         case miTabMatrix:   switchTab (RoutingTab); break;

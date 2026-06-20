@@ -65,12 +65,13 @@ public:
     juce::SpinLock& getLock() noexcept { return lock; }
 
     // Add each group's total insert-chain latency (sum over its plugin slots of
-    // the reported plugin latency, in samples) onto every member channel's
-    // entry in `perChannelLatency` (sized to the global output-channel count).
-    // Message/UI thread: briefly holds the group lock to read the member lists
-    // -- the sum is a handful of integer reads, not the heavy cross-matrix work
-    // moveGroupFader deliberately does lock-free.  Feeds the latency report /
-    // PDC planner so a group insert's latency is attributed to its members.
+    // the reported plugin latency, in samples) onto every member channel's entry
+    // in `perChannelLatency` (sized to the global output-channel count).
+    // Message/UI thread, lock-free: it only reads structure the message thread
+    // alone mutates (like getGroup()), so taking the manager lock here would just
+    // risk starving the audio thread's try-lock in forEachGroupForAudio.  Feeds
+    // the latency report / PDC planner so a group insert's latency is attributed
+    // to its members.
     void addGroupInsertLatencySamples (std::vector<int>& perChannelLatency) const;
 
 private:
