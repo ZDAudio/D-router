@@ -42,6 +42,16 @@ us hardened, tested persistence/diagnostics before we restructure the state mode
 
 Near-zero behavioral risk. Establishes the safety net.
 
+> **Reconciliation (2026-06-20):** after rebasing onto current `origin/main`, much
+> of A was already merged upstream — `run.sh` fix, `CLAUDE.md`, and a *pure-C++*
+> (no-JUCE) test harness with RingBuffer + RoutingMatrix tests (PR #3); some Phase
+> B fragiles too (`587b176`). The remaining A gaps — `.clang-format`, `.clang-tidy`,
+> `.editorconfig`, CI, and **persistence tests** — are in the revised plan. Because
+> upstream's test target is deliberately JUCE-free, the JUCE-dependent persistence
+> tests live in a SEPARATE `dcorerouter_tests_juce` target (JUCE `UnitTest`), leaving
+> the fast pure-logic target untouched. See
+> `docs/superpowers/plans/2026-06-20-phase-a-scaffolding.md`.
+
 ### A1. `CLAUDE.md`
 Codify the conventions the source comments already encode, so every session stops
 re-learning (and re-violating) them:
