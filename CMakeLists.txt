@@ -113,3 +113,39 @@ add_executable(dcorerouter_tests
 target_include_directories(dcorerouter_tests PRIVATE Source)
 target_compile_features(dcorerouter_tests PRIVATE cxx_std_20)
 add_test(NAME dcorerouter_tests COMMAND dcorerouter_tests)
+
+# ---- JUCE-linked tests (persistence etc.; need ValueTree/XML/File) ---------
+juce_add_console_app(dcorerouter_tests_juce PRODUCT_NAME "dcorerouter_tests_juce")
+juce_generate_juce_header(dcorerouter_tests_juce)
+
+target_sources(dcorerouter_tests_juce PRIVATE
+    tests/juce/TestMainJuce.cpp
+    tests/juce/SnapshotStoreTests.cpp
+    Source/Persistence/SnapshotStore.cpp
+)
+target_include_directories(dcorerouter_tests_juce PRIVATE Source)
+target_compile_definitions(dcorerouter_tests_juce PRIVATE
+    JUCE_PLUGINHOST_AU=1
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(dcorerouter_tests_juce PRIVATE
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_audio_utils
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_gui_extra
+    juce::juce_opengl
+    "-framework AudioToolbox"
+    "-framework CoreAudio"
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+add_test(NAME dcorerouter_tests_juce COMMAND dcorerouter_tests_juce)
