@@ -47,6 +47,19 @@ public:
     // EMA CPU load 0..1.
     float getCpuLoadAvg() const noexcept { return cpuLoadAvg.load (std::memory_order_relaxed); }
 
+    // Reported plugin latency (samples), or 0 when empty / bypassed / broken --
+    // those are skipped on the audio thread so they add no real delay.
+    // Message-thread only: reads `current` without the lock, same contract as
+    // getPlugin() (the message thread is the sole mutator of `current`).
+    int getChainLatencySamples() const noexcept
+    {
+        if (current != nullptr
+            && ! bypassed.load (std::memory_order_relaxed)
+            && ! broken.load   (std::memory_order_relaxed))
+            return juce::jmax (0, current->getLatencySamples());
+        return 0;
+    }
+
 private:
     juce::SpinLock                              lock;
     std::unique_ptr<juce::AudioPluginInstance>  current;

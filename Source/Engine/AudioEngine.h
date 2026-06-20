@@ -182,12 +182,23 @@ public:
         int    engineBlockSize  = 128;
         int    outputPreFillBlocks = 8;
 
+        // Worst per-output plugin-chain latency (per-output inserts + the group
+        // insert on that output), in ENGINE samples (plugins run in the engine
+        // clock domain).  0 when no output carries a latent plugin.  This is the
+        // latency the slowest output already incurs today; PDC (when enabled, a
+        // later change) raises the OTHER outputs to match it rather than adding
+        // anything beyond it.
+        int    pluginMaxLatencyEng = 0;
+
         // Pipeline-only contribution: 1 engine block (matrix waits) +
         // pre-fill (static cushion).
         double getEngineContributionMs() const;
 
+        // Worst-output plugin latency as milliseconds at the engine rate.
+        double getPluginLatencyMsWorst() const;
+
         // Worst-case round-trip = max(input device latency) + engine path
-        // + max(output device latency).
+        // + worst-output plugin latency + max(output device latency).
         double getRoundTripMsWorst() const;
     };
 
@@ -208,6 +219,12 @@ public:
 
 private:
     void audioDeviceListChanged() override;
+
+    // Per global output channel: that channel's per-output plugin-chain latency
+    // plus the insert latency of the group it belongs to (samples, engine rate).
+    // Message-thread only.  Shared by the latency report and (later) the PDC
+    // planner so both agree on each output's total plugin latency.
+    std::vector<int> computePerOutputPluginLatencySamples() const;
 
     std::unique_ptr<juce::AudioIODeviceType> deviceType;
     EngineSettings settings;

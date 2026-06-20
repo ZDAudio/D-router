@@ -334,6 +334,12 @@ double AudioEngine::LatencyReport::getEngineContributionMs() const
     return 1000.0 * blocks * engineBlockSize / engineSampleRate;
 }
 
+double AudioEngine::LatencyReport::getPluginLatencyMsWorst() const
+{
+    if (engineSampleRate <= 0.0) return 0.0;
+    return 1000.0 * pluginMaxLatencyEng / engineSampleRate;
+}
+
 double AudioEngine::LatencyReport::getRoundTripMsWorst() const
 {
     double inMax = 0.0, outMax = 0.0;
@@ -342,7 +348,9 @@ double AudioEngine::LatencyReport::getRoundTripMsWorst() const
         inMax  = juce::jmax (inMax,  d.getInputLatencyMs  (engineSampleRate));
         outMax = juce::jmax (outMax, d.getOutputLatencyMs (engineSampleRate));
     }
-    return inMax + getEngineContributionMs() + outMax;
+    // Plugin latency sits in the engine domain, upstream of the device output
+    // path, so it adds to the worst output rather than overlapping it.
+    return inMax + getEngineContributionMs() + getPluginLatencyMsWorst() + outMax;
 }
 
 std::vector<AudioEngine::DeviceLiveness> AudioEngine::getDeviceLiveness() const
@@ -382,7 +390,27 @@ AudioEngine::LatencyReport AudioEngine::getLatencyReport() const
         item.srcOutLatencyDev = item.hasOutput ? w->getOutputSrcLatencyDeviceSamples() : 0;
         r.devices.push_back (item);
     }
+
+    // Fold in plugin delay: the worst per-output plugin-chain latency across
+    // all outputs.  The slowest output already incurs this today; surfacing it
+    // is the "minimum viable" half of PDC (alignment of the rest follows).
+    const auto perOut = computePerOutputPluginLatencySamples();
+    int maxPlug = 0;
+    for (int v : perOut) maxPlug = juce::jmax (maxPlug, v);
+    r.pluginMaxLatencyEng = maxPlug;
+
     return r;
+}
+
+std::vector<int> AudioEngine::computePerOutputPluginLatencySamples() const
+{
+    std::vector<int> lat (pluginHosts.size(), 0);
+    for (size_t o = 0; o < pluginHosts.size(); ++o)
+        if (pluginHosts[o] != nullptr)
+            lat[o] = pluginHosts[o]->getChainLatencySamples();
+    // Fold in each output's group-insert latency (attributed to its members).
+    groupManager.addGroupInsertLatencySamples (lat);
+    return lat;
 }
 
 size_t AudioEngine::getOutputRingFill (int globalCh) const
