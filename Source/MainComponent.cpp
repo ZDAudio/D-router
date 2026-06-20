@@ -578,6 +578,12 @@ void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
         case miTogglePdc:
             engine.setPdcEnabled (! engine.isPdcEnabled());
             SettingsStore::save (engine.getSettings());   // persist the choice
+            // Force the native menu bar to rebuild so the PDC item's checkmark
+            // reflects the new state.  Without this the macOS menu keeps the
+            // tick it was last built with -- the user toggles PDC and sees no
+            // change (the reported bug).  Same reason the panic/tab handlers below
+            // call it.
+            menuItemsChanged();
             break;
 
         // View
@@ -960,6 +966,7 @@ void MainComponent::panicActivate()
     inPanic = true;
     matrixView.refreshMuteButtonStates();
     updatePanicButtonAppearance();
+    menuItemsChanged();   // Edit menu's PANIC label + tick follow inPanic
 }
 
 void MainComponent::panicRelease()
@@ -974,6 +981,7 @@ void MainComponent::panicRelease()
     inPanic = false;
     matrixView.refreshMuteButtonStates();
     updatePanicButtonAppearance();
+    menuItemsChanged();   // Edit menu's PANIC label + tick follow inPanic
 }
 
 void MainComponent::updatePanicButtonAppearance()
@@ -1834,6 +1842,7 @@ void MainComponent::switchTab (Tab newTab)
     }
 
     resized();
+    menuItemsChanged();   // View menu's tab tick follows currentTab
 }
 
 } // namespace dcr
