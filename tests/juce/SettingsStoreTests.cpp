@@ -15,6 +15,20 @@ struct SettingsStoreTests : juce::UnitTest
         const bool had = file.existsAsFile();
         const juce::String backup = had ? file.loadFileAsString() : juce::String();
 
+        struct RestoreGuard
+        {
+            juce::File f;
+            bool had;
+            juce::String backup;
+            ~RestoreGuard()
+            {
+                if (had)
+                    f.replaceWithText (backup);
+                else
+                    f.deleteFile();
+            }
+        } guard { file, had, backup };
+
         beginTest ("persisted audio-path fields survive save -> load");
         {
             EngineSettings s;
@@ -36,11 +50,6 @@ struct SettingsStoreTests : juce::UnitTest
         // persisted. Documented here; asserted in Phase B.
         logMessage ("NOTE: stalledWarnRatio/cpuWarnRatio persistence is a known "
                     "Phase B gap; not asserted in Phase A.");
-
-        if (had)
-            file.replaceWithText (backup);
-        else
-            file.deleteFile();
     }
 };
 
