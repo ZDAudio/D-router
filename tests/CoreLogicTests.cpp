@@ -9,6 +9,7 @@
 
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
+#include "Engine/ReconfigurationController.h"
 #include "Engine/RingBuffer.h"
 #include "Routing/GroupGain.h"
 #include "Routing/PanicController.h"
@@ -371,6 +372,64 @@ namespace
         CHECK (m.getOutputMute (0));
         CHECK (m.getOutputMute (1));
         CHECK (p.reset() == false);
+    }
+
+    // ---------------------------------------------------------------------------
+    // ReconfigurationController (Phase C3) -- explicit reconfigure lifecycle
+    // ---------------------------------------------------------------------------
+    void test_reconfig_begin_rejects_reentry()
+    {
+        dcr::ReconfigurationController rc;
+        using P = dcr::ReconfigurationController::Phase;
+        CHECK (!rc.active());
+        CHECK (rc.phase() == P::Idle);
+        CHECK (rc.tryBegin());
+        CHECK (rc.active());
+        CHECK (rc.phase() == P::Draining);
+        CHECK (!rc.tryBegin()); // already in flight -- second claim rejected
+        CHECK (rc.phase() == P::Draining);
+    }
+
+    void test_reconfig_advances_in_order()
+    {
+        dcr::ReconfigurationController rc;
+        using P = dcr::ReconfigurationController::Phase;
+        CHECK (rc.tryBegin());
+        CHECK (rc.advance (P::Rebuilding));
+        CHECK (rc.phase() == P::Rebuilding);
+        CHECK (rc.advance (P::RestoringMatrix));
+        CHECK (rc.advance (P::RestoringPlugins));
+        CHECK (rc.advance (P::Running));
+        CHECK (rc.phase() == P::Running);
+        // Running is terminal -- no further forward step.
+        CHECK (!rc.advance (P::Running));
+    }
+
+    void test_reconfig_rejects_out_of_order()
+    {
+        dcr::ReconfigurationController rc;
+        using P = dcr::ReconfigurationController::Phase;
+        CHECK (rc.tryBegin()); // Draining
+        // Skipping Rebuilding is illegal; phase must not move.
+        CHECK (!rc.advance (P::RestoringMatrix));
+        CHECK (rc.phase() == P::Draining);
+        // advance from Idle is illegal too.
+        dcr::ReconfigurationController idle;
+        CHECK (!idle.advance (P::Draining));
+        CHECK (idle.phase() == P::Idle);
+    }
+
+    void test_reconfig_finish_resets_and_reclaimable()
+    {
+        dcr::ReconfigurationController rc;
+        using P = dcr::ReconfigurationController::Phase;
+        CHECK (rc.tryBegin());
+        CHECK (rc.advance (P::Rebuilding));
+        rc.finish(); // abort/complete from a mid-phase
+        CHECK (!rc.active());
+        CHECK (rc.phase() == P::Idle);
+        CHECK (rc.tryBegin()); // reusable for the next reconfigure
+        CHECK (rc.phase() == P::Draining);
     }
 
     // ---------------------------------------------------------------------------
@@ -788,6 +847,11 @@ int main()
     test_panic_forget_drops_saved_state_without_touching_matrix();
     test_panic_forget_when_inactive_is_noop();
     test_panic_reset_clears_state_and_reports();
+
+    test_reconfig_begin_rejects_reentry();
+    test_reconfig_advances_in_order();
+    test_reconfig_rejects_out_of_order();
+    test_reconfig_finish_resets_and_reclaimable();
 
     test_groupgain_db_roundtrip();
     test_groupgain_clamp();

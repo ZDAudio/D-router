@@ -960,10 +960,10 @@ namespace dcr
         // out from under us (e.g. Music opened the same shared output and flipped
         // its nominal rate), our SRCs are now misconfigured and the audio
         // crackles.  Auto-recover with a preserve-state restart -- the same path
-        // the Reset button uses.  Guarded by isReconfiguring so we don't stack
+        // the Reset button uses.  Guarded by reconfig.active() so we don't stack
         // restarts; the fresh DeviceWorkers come up with formatChanged=false so
         // this fires once per actual change, not in a loop.
-        if (!isReconfiguring.load()
+        if (!reconfig.active()
             && !currentSpecs.empty()
             && engine.anyDeviceFormatChanged())
         {
@@ -1046,7 +1046,7 @@ namespace dcr
 
     void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs)
     {
-        if (isReconfiguring.exchange (true))
+        if (!reconfig.tryBegin())
         {
             // Concurrent call rejected.  If applySnapshot stuffed pendingSnap
             // expecting THIS call to drain it, that data now belongs to the
@@ -1164,6 +1164,7 @@ namespace dcr
                                           + " channel FX chain(s) across restart");
             }
 
+            reconfig.advance (ReconfigurationController::Phase::Rebuilding);
             engine.stop();
             const bool started = specs.empty() ? true : engine.start (specs);
 
@@ -1172,6 +1173,7 @@ namespace dcr
                 [this, alive, specs, preserved, started, preserveChains, chainsToRestore = std::move (harvestedChains)]() mutable {
                     if (!alive->load (std::memory_order_acquire))
                         return;
+                    reconfig.advance (ReconfigurationController::Phase::RestoringMatrix);
                     currentSpecs = specs;
                     if (!specs.empty() && !started)
                     {
@@ -1220,6 +1222,10 @@ namespace dcr
                         pendingSnap = {};
                     }
 
+                    // Async plugin restore has been kicked (or there was none);
+                    // the loads themselves continue past finish() under aliveToken.
+                    reconfig.advance (ReconfigurationController::Phase::RestoringPlugins);
+
                     matrixView.rebuildFromEngine();
                     matrixView.resumeUpdates();
                     groupPanel.rebuild();
@@ -1247,7 +1253,8 @@ namespace dcr
                     saveButton.setEnabled (true);
                     loadButton.setEnabled (true);
                     stopButton.setEnabled (true);
-                    isReconfiguring = false;
+                    reconfig.advance (ReconfigurationController::Phase::Running);
+                    reconfig.finish();
                 });
         });
     }

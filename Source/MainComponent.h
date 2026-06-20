@@ -10,6 +10,7 @@
 
 #include "Diagnostics/PerfMonitor.h"
 #include "Engine/AudioEngine.h"
+#include "Engine/ReconfigurationController.h"
 #include "Persistence/SnapshotStore.h"
 #include "Routing/PanicController.h"
 #include "UI/LoadingOverlay.h"
@@ -187,7 +188,9 @@ namespace dcr
         PerfMonitor perfMonitor { engine };
 
         std::thread reconfigThread;
-        std::atomic<bool> isReconfiguring { false };
+        // Explicit reconfigure lifecycle (Phase C3) -- single owner of "are we
+        // reconfiguring", replacing a bare atomic bool with ordered phases.
+        ReconfigurationController reconfig;
 
         LookAndFeel customLookAndFeel;
 
