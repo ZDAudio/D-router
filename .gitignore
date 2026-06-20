@@ -8,3 +8,12 @@ build/
 cmake-build-*/
 dist/
 *.component/
+
+# Internal planning / design / discussion docs -- kept locally, not published.
+AES67_SUPPORT.md
+ASYNC_SRC_PLAN.md
+BUILTIN_PLUGINS_PLAN.md
+GEMINI_UI_BRIEF.md
+REQUESTS_TRIAGE.md
+WINDOWS_PORT.md
+icon-1.jpg
