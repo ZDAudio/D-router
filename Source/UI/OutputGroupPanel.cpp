@@ -609,10 +609,24 @@ void OutputGroupPanel::installPluginIntoGroup (int cardIdx, int slotIdx, juce::P
             if (slotIdx < 0 || slotIdx >= (int) g->pluginSlots.size()) return;
             auto& host = g->pluginSlots[(size_t) slotIdx];
             if (! host) return;
+
+            // Close any editor already open on this slot BEFORE setPlugin
+            // destroys the instance it was built from.  Loading over an
+            // occupied slot (e.g. two quick async loads while the first's
+            // editor is open) otherwise leaves the PluginEditorWindow holding
+            // a dangling AudioPluginInstance&; tearing it down later -- the
+            // slot's Remove button, or a panel rebuild -- runs the AU editor
+            // dtor's editorBeingDeleted() against freed memory and segfaults.
+            // MatrixView's per-channel install closes the editor before
+            // setPluginAt() for exactly this reason.
+            Card* card = nullptr;
+            for (auto* c : cards)
+                if (c->groupIdx == cardIdx) { card = c; break; }
+            if (card != nullptr) card->closeEditorFor (slotIdx);
+
             host->setPlugin (std::move (instance), g->channelSet);
 
-            for (auto* c : cards)
-                if (c->groupIdx == cardIdx) { c->refreshSlotAppearance (slotIdx); break; }
+            if (card != nullptr) card->refreshSlotAppearance (slotIdx);
         });
 }
 
