@@ -26,9 +26,10 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   format-check:
-    # The whole tree was reformatted to the adopted JUCE config (commit
-    # 7965704), so a full-tree check is valid and simplest. Includes DSP —
-    # everything is formatted.
+    # The whole tree was reformatted to the adopted JUCE config, so a full-tree
+    # check is valid. Includes DSP -- everything is formatted. NOTE: clang-format
+    # is invoked one file at a time on purpose; some clang-format builds mishandle
+    # a large batch of file args, which would falsely fail the check.
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -36,8 +37,11 @@ jobs:
         run: brew install clang-format
       - name: clang-format whole tree (must be idempotent)
         run: |
-          files=$(find Source tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
-          clang-format --dry-run --Werror $files
+          fail=0
+          while IFS= read -r f; do
+            clang-format --dry-run --Werror "$f" || fail=1
+          done < <(find Source tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \))
+          exit $fail
 
   lint:
     runs-on: macos-14
