@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -40,14 +41,31 @@ public:
     // slot.
     void assignChannel (int groupIdx, int slotIdx, int globalOutputCh);
 
-    // ===== Linked-fader semantics =====
-    // Move the group fader to `newFaderDb`.  Computes delta vs the current
-    // stored fader value and updates each member channel's outputTrim by
-    // the same dB amount via the routing matrix.
+    // ===== Fader behaviour =====
+    // Move the group fader to `newFaderDb`.
+    //   VCA:    delta vs the stored value is applied to each member's outputTrim.
+    //   Router: stores the overlay position and refreshes channelRouterGain[].
     void moveGroupFader (int groupIdx, float newFaderDb, RoutingMatrix& matrix);
 
-    // Set group mute state and propagate to every member channel.
+    // Set group mute state.
+    //   VCA:    propagated onto each member channel's mute.
+    //   Router: folded into channelRouterGain[] (0 when muted); member matrix
+    //           mutes are left untouched.
     void setGroupMute (int groupIdx, bool muted, RoutingMatrix& matrix);
+
+    // Switch a group between VCA and Router.  Preserves the audible level and
+    // resets the group fader to 0 dB (Router->VCA bakes the overlay into member
+    // trims; the mute mechanism is re-asserted through the new mode).
+    void setGroupFaderMode (int groupIdx, OutputGroup::FaderMode mode, RoutingMatrix& matrix);
+
+    // Audio thread: per-channel Router overlay gain (1.0 == no contribution).
+    // Lock-free atomic read; folded into the post-fader stage by MatrixProcessor.
+    float getChannelRouterGain (int ch) const noexcept
+    {
+        return (ch >= 0 && ch < (int) channelRouterGain.size())
+            ? channelRouterGain[(size_t) ch].load (std::memory_order_relaxed)
+            : 1.0f;
+    }
 
     // Audio thread: iterate groups for gather/process/scatter.  Reader does
     // not need the lock for fader/mute (atomic) but holds the lock to read
@@ -66,10 +84,12 @@ public:
 
 private:
     void rebuildChannelLookup();   // call under lock
+    void recomputeRouterGains();   // call under lock; rebuilds channelRouterGain from Router groups
 
     mutable juce::SpinLock                       lock;
     std::vector<std::unique_ptr<OutputGroup>>    groups;
     std::vector<int>                             channelToGroupIdx;   // size = numOutputs
+    std::vector<std::atomic<float>>              channelRouterGain;   // size = numOutputs; 1.0 == no overlay
     int                                          numOutputs = 0;
 };
 

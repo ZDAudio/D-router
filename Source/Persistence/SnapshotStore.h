@@ -31,8 +31,9 @@ struct Snapshot
         juce::String       name;
         juce::String       layoutName;       // "Stereo", "5.1", "7.1.4", ...
         std::vector<int>   memberChannels;
-        float              faderDb = 0.0f;
-        bool               muted   = false;
+        float              faderDb  = 0.0f;
+        bool               muted    = false;
+        int                faderMode = 0;    // 0 = VCA (default), 1 = Router
     };
     std::vector<Group> outputGroups;
     std::vector<Group> inputGroups;

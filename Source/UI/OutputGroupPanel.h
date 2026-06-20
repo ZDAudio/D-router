@@ -80,6 +80,7 @@ private:
     void         mgrAssignChannel (int gIdx, int slot, int globalCh);
     void         mgrMoveFader (int gIdx, float db);
     void         mgrSetMute   (int gIdx, bool m);
+    void         mgrSetFaderMode (int gIdx, bool router);   // true = Router, false = VCA
     float        srcPeak (int globalCh) const;
     juce::String resolveChannelName (int globalCh) const;
 
@@ -103,6 +104,7 @@ private:
         juce::Label      name;
         juce::Slider     fader { juce::Slider::LinearVertical, juce::Slider::TextBoxBelow };
         juce::TextButton mute  { "M" };
+        juce::TextButton modeBtn { "VCA" };   // VCA <-> RTR (Router) fader-mode toggle
         juce::TextButton popOut { "Win" };
         LevelMeter       meter { LevelMeter::Orientation::Vertical };
         juce::Label      members;

@@ -8,6 +8,7 @@
 // see the PR notes.
 
 #include "Engine/RingBuffer.h"
+#include "Routing/GroupGain.h"
 #include "Routing/RoutingMatrix.h"
 
 #include <cstdio>
@@ -239,6 +240,76 @@ void test_matrix_snapshot()
     CHECK (s.anySoloActive);
 }
 
+// ---------------------------------------------------------------------------
+// GroupGain (VCA bake math + Router overlay gain)
+// ---------------------------------------------------------------------------
+void test_groupgain_db_roundtrip()
+{
+    using namespace dcr::groupgain;
+    CHECK (feq (dbToLin (0.0f), 1.0f));
+    CHECK (feq (dbToLin (-6.0206f), 0.5f, 1.0e-4f));
+    CHECK (feq (dbToLin (6.0206f), 2.0f, 1.0e-4f));
+    // -60 dB floor collapses to true silence on both directions.
+    CHECK (feq (dbToLin (-60.0f), 0.0f));
+    CHECK (feq (dbToLin (-90.0f), 0.0f));
+    CHECK (feq (linToDb (0.0f), -60.0f));
+    CHECK (feq (linToDb (1.0e-9f), -60.0f));
+    // round-trip an audible level.
+    CHECK (feq (linToDb (dbToLin (-3.0f)), -3.0f, 1.0e-3f));
+}
+
+void test_groupgain_clamp()
+{
+    using namespace dcr::groupgain;
+    CHECK (feq (clampTrimDb (0.0f), 0.0f));
+    CHECK (feq (clampTrimDb (99.0f), 12.0f));      // ceiling
+    CHECK (feq (clampTrimDb (-99.0f), -60.0f));    // floor
+    CHECK (feq (clampTrimDb (12.0f), 12.0f));
+    CHECK (feq (clampTrimDb (-60.0f), -60.0f));
+}
+
+void test_groupgain_router_channel_gain()
+{
+    using namespace dcr::groupgain;
+    // Unity fader, unmuted -> no overlay.
+    CHECK (feq (routerChannelGain (false, 0.0f), 1.0f));
+    // Unmuted tracks the fader.
+    CHECK (feq (routerChannelGain (false, 6.0206f), 2.0f, 1.0e-4f));
+    CHECK (feq (routerChannelGain (false, -6.0206f), 0.5f, 1.0e-4f));
+    // Muted is always silent regardless of fader.
+    CHECK (feq (routerChannelGain (true, 0.0f), 0.0f));
+    CHECK (feq (routerChannelGain (true, 12.0f), 0.0f));
+}
+
+void test_groupgain_bake_vca()
+{
+    using namespace dcr::groupgain;
+    // bake(x, 0) is just the clamped trim.
+    CHECK (feq (bakeVcaTrimDb (-3.0f, 0.0f), -3.0f));
+    // Additive in dB.
+    CHECK (feq (bakeVcaTrimDb (-3.0f, -3.0f), -6.0f));
+    CHECK (feq (bakeVcaTrimDb (-10.0f, 4.0f), -6.0f));
+    // Clamps at the rails.
+    CHECK (feq (bakeVcaTrimDb (10.0f, 10.0f), 12.0f));
+    CHECK (feq (bakeVcaTrimDb (-55.0f, -20.0f), -60.0f));
+}
+
+void test_groupgain_mode_switch_preserves_level()
+{
+    using namespace dcr::groupgain;
+    // The Router->VCA bake must reproduce the same audible level the Router
+    // overlay produced, when no rail clamps:  trim * dbToLin(fader)  ==
+    // dbToLin( bakeVcaTrimDb( linToDb(trim), fader ) ).
+    const float fader = -4.5f;
+    for (float trimDb : { -20.0f, -12.0f, -6.0f, -1.0f, 3.0f })
+    {
+        const float trimLin   = dbToLin (trimDb);
+        const float routerLvl = trimLin * dbToLin (fader);                 // Router-mode level
+        const float bakedLin  = dbToLin (bakeVcaTrimDb (linToDb (trimLin), fader)); // VCA-mode level
+        CHECK (feq (routerLvl, bakedLin, 1.0e-3f));
+    }
+}
+
 } // namespace
 
 int main()
@@ -257,6 +328,12 @@ int main()
     test_matrix_dirty_generation();
     test_matrix_resize_clears_blocks();
     test_matrix_snapshot();
+
+    test_groupgain_db_roundtrip();
+    test_groupgain_clamp();
+    test_groupgain_router_channel_gain();
+    test_groupgain_bake_vca();
+    test_groupgain_mode_switch_preserves_level();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

@@ -67,6 +67,14 @@ void OutputGroupPanel::mgrSetMute (int gIdx, bool m)
     else
         engine.getGroupManager().setGroupMute (gIdx, m, engine.getRoutingMatrix());
 }
+void OutputGroupPanel::mgrSetFaderMode (int gIdx, bool router)
+{
+    const auto mode = router ? OutputGroup::FaderMode::Router : OutputGroup::FaderMode::VCA;
+    if (direction == Direction::Inputs)
+        engine.getInputGroupManager().setGroupFaderMode (gIdx, mode, engine.getRoutingMatrix());
+    else
+        engine.getGroupManager().setGroupFaderMode (gIdx, mode, engine.getRoutingMatrix());
+}
 float OutputGroupPanel::srcPeak (int globalCh) const
 {
     return direction == Direction::Inputs
@@ -212,9 +220,27 @@ void OutputGroupPanel::Card::buildFor (OutputGroupPanel& p, int gIdx)
         panel->mgrSetMute (gIdx, mute.getToggleState());
     };
 
+    // Fader-mode toggle.  VCA = linked faders (group fader rides each member's
+    // own trim); RTR = Router overlay (members independent, group fader is a
+    // separate gain stage).  On switch the manager preserves the audible level
+    // and resets the group fader to 0 dB (the panel timer pulls that back in).
+    const bool isRouter = (g->faderMode.load() == OutputGroup::FaderMode::Router);
+    modeBtn.setName ("mode");
+    modeBtn.setClickingTogglesState (true);
+    modeBtn.setTooltip ("Fader mode: VCA (linked faders) / RTR (router overlay). Click to toggle.");
+    modeBtn.setToggleState (isRouter, juce::dontSendNotification);
+    modeBtn.setButtonText (isRouter ? "RTR" : "VCA");
+    modeBtn.onClick = [this, gIdx]
+    {
+        const bool router = modeBtn.getToggleState();
+        modeBtn.setButtonText (router ? "RTR" : "VCA");
+        panel->mgrSetFaderMode (gIdx, router);
+    };
+
     addAndMakeVisible (name);
     addAndMakeVisible (fader);
     addAndMakeVisible (mute);
+    addAndMakeVisible (modeBtn);
     addAndMakeVisible (meter);
     addAndMakeVisible (members);
 
@@ -394,6 +420,8 @@ void OutputGroupPanel::Card::resized()
     meter.setBounds (leftCol.removeFromLeft (14).withTrimmedTop (4).withTrimmedBottom (4));
     leftCol.removeFromLeft (4);
     mute.setBounds (leftCol.removeFromTop (20));
+    leftCol.removeFromTop (3);
+    modeBtn.setBounds (leftCol.removeFromTop (18));
     r.removeFromLeft (4);
 
     // Right column: 5 slot rows.  Guard against being called before buildFor()
@@ -492,6 +520,14 @@ void OutputGroupPanel::timerCallback()
             && std::abs ((float) cards[i]->fader.getValue() - curDb) > 0.001f)
             cards[i]->fader.setValue (curDb, juce::dontSendNotification);
         cards[i]->mute.setToggleState (g->muted.load(), juce::dontSendNotification);
+
+        // Keep the mode toggle in sync (snapshot restore / external change).
+        const bool isRouter = (g->faderMode.load() == OutputGroup::FaderMode::Router);
+        if (cards[i]->modeBtn.getToggleState() != isRouter)
+        {
+            cards[i]->modeBtn.setToggleState (isRouter, juce::dontSendNotification);
+            cards[i]->modeBtn.setButtonText (isRouter ? "RTR" : "VCA");
+        }
 
         if (hoverIdx < 0 && cards[i]->isMouseOver (true)) hoverIdx = i;
     }

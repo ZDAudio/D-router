@@ -1,30 +1,56 @@
 #include "Routing/OutputGroupManager.h"
 
+#include "Routing/GroupGain.h"
 #include "Routing/RoutingMatrix.h"
-
-#include <cmath>
 
 namespace dcr {
 
-namespace
-{
-    float dbToLin (float db) noexcept
-    {
-        if (db <= -60.0f) return 0.0f;
-        return std::pow (10.0f, db * 0.05f);
-    }
-    float linToDb (float lin) noexcept
-    {
-        if (lin <= 1.0e-6f) return -60.0f;
-        return 20.0f * std::log10 (lin);
-    }
-}
+using namespace dcr::groupgain;   // dbToLin / linToDb / clampTrimDb / routerChannelGain / bakeVcaTrimDb
 
 void OutputGroupManager::setNumOutputChannels (int n)
 {
     juce::SpinLock::ScopedLockType lk (lock);
     numOutputs = juce::jmax (0, n);
     rebuildChannelLookup();
+    recomputeRouterGains();
+}
+
+// Rebuild channelRouterGain from scratch (call under lock).  Sized to numOutputs
+// and reset to unity; then every Router-mode group writes its members' overlay
+// gain.  Cheap and only runs on structural changes / restart, never per audio
+// block.
+//
+// RT-safety of the realloc: the vector's buffer is only replaced when the size
+// changed, which happens ONLY via setNumOutputChannels() during an engine
+// reconfigure -- and that runs before processor.configure()/start(), i.e. while
+// the matrix thread (the sole reader of getChannelRouterGain()) is stopped, the
+// same model the routing matrix's own resize() relies on.  Every other caller
+// (assignChannel, removeGroup) preserves numOutputs, so the size matches and we
+// only re-store into the existing atomics -- no buffer swap, safe to run while
+// the RT thread reads.
+void OutputGroupManager::recomputeRouterGains()
+{
+    if ((int) channelRouterGain.size() != numOutputs)
+    {
+        std::vector<std::atomic<float>> v ((size_t) numOutputs);
+        for (auto& a : v) a.store (1.0f, std::memory_order_relaxed);
+        channelRouterGain = std::move (v);
+    }
+    else
+    {
+        for (auto& a : channelRouterGain) a.store (1.0f, std::memory_order_relaxed);
+    }
+
+    for (auto& gp : groups)
+    {
+        if (! gp || gp->faderMode.load (std::memory_order_relaxed) != OutputGroup::FaderMode::Router)
+            continue;
+        const float gain = routerChannelGain (gp->muted.load (std::memory_order_relaxed),
+                                               gp->faderDb.load (std::memory_order_relaxed));
+        for (int ch : gp->memberChannels)
+            if (ch >= 0 && ch < numOutputs)
+                channelRouterGain[(size_t) ch].store (gain, std::memory_order_relaxed);
+    }
 }
 
 void OutputGroupManager::rebuildChannelLookup()
@@ -56,6 +82,7 @@ void OutputGroupManager::removeGroup (int groupIdx)
     if (groupIdx < 0 || groupIdx >= (int) groups.size()) return;
     groups.erase (groups.begin() + groupIdx);
     rebuildChannelLookup();
+    recomputeRouterGains();   // a removed Router group's members must drop back to unity
 }
 
 OutputGroup* OutputGroupManager::getGroup (int groupIdx) noexcept
@@ -102,32 +129,52 @@ void OutputGroupManager::assignChannel (int groupIdx, int slotIdx, int globalOut
     }
     g.memberChannels[(size_t) slotIdx] = globalOutputCh;
     rebuildChannelLookup();
+    recomputeRouterGains();   // membership change can move a channel in/out of a Router group
 }
 
 void OutputGroupManager::moveGroupFader (int groupIdx, float newFaderDb, RoutingMatrix& matrix)
 {
     if (groupIdx < 0 || groupIdx >= (int) groups.size()) return;
     auto& g = *groups[(size_t) groupIdx];
+
+    // Copy the member list under the lock then RELEASE before touching the
+    // matrix / overlay gains.  The audio thread's forEachGroupForAudio()
+    // try-locks on the same SpinLock; holding it across N writes would make
+    // every audio block during a fader drag fall through without group
+    // processing -> audible dropouts on the group bus during a fader ride.
+    auto copyMembers = [&]
+    {
+        std::vector<int> members;
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+        return members;
+    };
+
+    if (g.faderMode.load (std::memory_order_relaxed) == OutputGroup::FaderMode::Router)
+    {
+        // Router: the fader is an overlay stage; just refresh the per-channel
+        // gain.  Member trims are untouched.
+        g.faderDb.store (newFaderDb, std::memory_order_relaxed);
+        const float gain = routerChannelGain (g.muted.load (std::memory_order_relaxed), newFaderDb);
+        const auto members = copyMembers();
+        for (int ch : members)
+            if (ch >= 0 && ch < (int) channelRouterGain.size())
+                channelRouterGain[(size_t) ch].store (gain, std::memory_order_relaxed);
+        matrix.touch();   // no matrix cell changed -> force the RT gain refresh
+        return;
+    }
+
+    // VCA: apply the dB delta to each member's own trim (linked fader).
     const float oldDb = g.faderDb.load (std::memory_order_relaxed);
     const float delta = newFaderDb - oldDb;
     g.faderDb.store (newFaderDb, std::memory_order_relaxed);
     if (delta == 0.0f) return;
 
-    // Copy the member list under the lock then RELEASE before touching the
-    // matrix.  The audio thread's forEachGroupForAudio() try-locks on the
-    // same SpinLock; while we were holding it across N matrix writes, every
-    // audio block during a fader drag would fall through without group
-    // processing -> audible dropouts on the group bus during a fader ride.
-    std::vector<int> members;
-    {
-        juce::SpinLock::ScopedLockType lk (lock);
-        members.assign (g.memberChannels.begin(), g.memberChannels.end());
-    }
+    const auto members = copyMembers();
     for (int ch : members)
     {
         if (ch < 0 || ch >= matrix.getNumOutputs()) continue;
-        const float currentDb = linToDb (matrix.getOutputTrim (ch));
-        const float newDb     = juce::jlimit (-60.0f, 12.0f, currentDb + delta);
+        const float newDb = bakeVcaTrimDb (linToDb (matrix.getOutputTrim (ch)), delta);
         matrix.setOutputTrim (ch, dbToLin (newDb));
     }
 }
@@ -145,9 +192,73 @@ void OutputGroupManager::setGroupMute (int groupIdx, bool m, RoutingMatrix& matr
         juce::SpinLock::ScopedLockType lk (lock);
         members.assign (g.memberChannels.begin(), g.memberChannels.end());
     }
+
+    if (g.faderMode.load (std::memory_order_relaxed) == OutputGroup::FaderMode::Router)
+    {
+        // Router: mute folds into the overlay gain; member matrix mutes stay
+        // the user's own.
+        const float gain = routerChannelGain (m, g.faderDb.load (std::memory_order_relaxed));
+        for (int ch : members)
+            if (ch >= 0 && ch < (int) channelRouterGain.size())
+                channelRouterGain[(size_t) ch].store (gain, std::memory_order_relaxed);
+        matrix.touch();
+        return;
+    }
+
+    // VCA: propagate onto each member channel's mute.
     for (int ch : members)
         if (ch >= 0 && ch < matrix.getNumOutputs())
             matrix.setOutputMute (ch, m);
+}
+
+void OutputGroupManager::setGroupFaderMode (int groupIdx, OutputGroup::FaderMode mode, RoutingMatrix& matrix)
+{
+    if (groupIdx < 0 || groupIdx >= (int) groups.size()) return;
+    auto& g = *groups[(size_t) groupIdx];
+    if (g.faderMode.load (std::memory_order_relaxed) == mode) return;
+
+    const float faderDb = g.faderDb.load (std::memory_order_relaxed);
+    const bool  muted   = g.muted.load   (std::memory_order_relaxed);
+
+    std::vector<int> members;
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        members.assign (g.memberChannels.begin(), g.memberChannels.end());
+    }
+
+    // Unified rule: preserve the audible level, reset the group fader to 0 dB.
+    g.faderMode.store (mode, std::memory_order_relaxed);
+    g.faderDb.store (0.0f, std::memory_order_relaxed);
+
+    if (mode == OutputGroup::FaderMode::Router)
+    {
+        // Entering Router: member trims stay; the Router stage owns group mute,
+        // so clear member matrix mutes and encode mute in the overlay (0 dB
+        // fader -> unity unless muted).
+        const float gain = routerChannelGain (muted, 0.0f);
+        for (int ch : members)
+        {
+            if (ch < 0 || ch >= matrix.getNumOutputs()) continue;
+            matrix.setOutputMute (ch, false);
+            if (ch < (int) channelRouterGain.size())
+                channelRouterGain[(size_t) ch].store (gain, std::memory_order_relaxed);
+        }
+    }
+    else
+    {
+        // Entering VCA: bake the overlay into member trims (preserve level),
+        // re-assert group mute onto member mutes, drop the overlay stage.
+        for (int ch : members)
+        {
+            if (ch < 0 || ch >= matrix.getNumOutputs()) continue;
+            const float bakedDb = bakeVcaTrimDb (linToDb (matrix.getOutputTrim (ch)), faderDb);
+            matrix.setOutputTrim (ch, dbToLin (bakedDb));
+            matrix.setOutputMute (ch, muted);
+            if (ch < (int) channelRouterGain.size())
+                channelRouterGain[(size_t) ch].store (1.0f, std::memory_order_relaxed);
+        }
+    }
+    matrix.touch();
 }
 
 } // namespace dcr

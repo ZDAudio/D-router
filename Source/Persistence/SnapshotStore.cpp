@@ -36,6 +36,7 @@ namespace ids {
     static const juce::Identifier member         ("member");
     static const juce::Identifier faderDb        ("faderDb");
     static const juce::Identifier mutedProp      ("muted");
+    static const juce::Identifier faderModeProp  ("faderMode");
 
     static const juce::Identifier channelChains  ("channelChains");
     static const juce::Identifier groupChains    ("groupChains");
@@ -147,6 +148,7 @@ juce::ValueTree SnapshotStore::toValueTree (const Snapshot& s)
             gv.setProperty (ids::layout,    g.layoutName, nullptr);
             gv.setProperty (ids::faderDb,   (double) g.faderDb, nullptr);
             gv.setProperty (ids::mutedProp, g.muted,      nullptr);
+            gv.setProperty (ids::faderModeProp, g.faderMode, nullptr);
             juce::ValueTree mv (ids::members);
             for (int m : g.memberChannels)
             {
@@ -305,6 +307,7 @@ Snapshot SnapshotStore::fromValueTree (const juce::ValueTree& root)
             g.layoutName = child.getProperty (ids::layout).toString();
             g.faderDb    = (float) (double) child.getProperty (ids::faderDb, 0.0);
             g.muted      = (bool) child.getProperty (ids::mutedProp);
+            g.faderMode  = (int) child.getProperty (ids::faderModeProp, 0);   // default VCA (old snapshots)
             auto mv = child.getChildWithName (ids::members);
             for (auto e : mv)
                 if (e.hasType (ids::member))

@@ -64,6 +64,12 @@ public:
         return dirtyGen.load (std::memory_order_acquire);
     }
 
+    // Bump the dirty generation WITHOUT writing any cell.  A Router-mode group
+    // fader/mute change affects the RT mix via the group managers'
+    // channelRouterGain[] (not a matrix cell), so it must still force the
+    // matrix processor to recompute its cached gains on the next block.
+    void touch() noexcept { bumpDirty(); }
+
 private:
     void bumpDirty() noexcept
     {

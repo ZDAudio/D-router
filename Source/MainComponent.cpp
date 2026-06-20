@@ -1301,6 +1301,7 @@ Snapshot MainComponent::gatherCurrentSnapshot() const
             gs.memberChannels = g->memberChannels;
             gs.faderDb        = g->faderDb.load();
             gs.muted          = g->muted.load();
+            gs.faderMode      = (int) g->faderMode.load();
             dest.push_back (std::move (gs));
         }
     };
@@ -1402,6 +1403,9 @@ void MainComponent::applySnapshot (const Snapshot& s)
                     g->memberChannels[(size_t) i] = gs.memberChannels[(size_t) i];
                 g->faderDb.store (gs.faderDb);
                 g->muted  .store (gs.muted);
+                g->faderMode.store ((OutputGroup::FaderMode) gs.faderMode);
+                // channelRouterGain is recomputed by the engine restart's
+                // setNum*Channels() that runs right after this restore.
             }
         }
     };

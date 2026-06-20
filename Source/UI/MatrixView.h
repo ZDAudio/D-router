@@ -315,6 +315,14 @@ private:
     // can skip the heavy widget recreation and just refresh values.
     bool samePhysicalLayout() const;
     void softRefreshFromEngine();
+    // Lightweight per-channel trim/mute/solo slider resync, run from the meter
+    // timer whenever the routing matrix's dirty generation changes.  Keeps the
+    // trim sliders tracking engine-side changes the user didn't make directly --
+    // a VCA group fader riding its members, multi-select links, snapshot
+    // restore.  Skips any slider currently under the mouse so it never fights a
+    // live drag.  lastTrimRefreshGen gates it so a static matrix costs nothing.
+    void refreshTrimWidgetsFromEngine();
+    uint64_t lastTrimRefreshGen = 0;
     void clearAllChannelWidgets();
     void buildLabelsFromEngine();
     void buildInputRowWidgets  (int n);

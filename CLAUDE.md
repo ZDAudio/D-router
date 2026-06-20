@@ -47,7 +47,7 @@ refactors); follow structural renames all the way through (the review caught
 | Area | Path | Role |
 |---|---|---|
 | Engine | `Source/Engine/` | `DeviceWorker` (per-device CoreAudio IO + per-channel SRC), `MatrixProcessor` (the RT mix thread), SPSC `RingBuffer`, `EngineSettings`, `AudioEngine` (owns it all). |
-| Routing | `Source/Routing/` | `RoutingMatrix` (atomic grid of gains/mutes), output/input group managers (linked faders). |
+| Routing | `Source/Routing/` | `RoutingMatrix` (atomic grid of gains/mutes), output/input group managers (per-group **VCA** linked-fader or **Router** overlay-gain mode; `GroupGain.h` = shared JUCE-free dB math). |
 | DSP | `Source/DSP/` | `PluginHost` (per-channel, mono), `MultiChannelPluginHost` (group, N-ch), `Builtin/` suite + `InternalPluginFormat`. |
 | UI | `Source/UI/` | `MatrixView`, single-component `CrosspointGrid`, group panels, status/engine monitor, dialogs, `LookAndFeel`. |
 | Persistence | `Source/Persistence/` | ValueTree/XML snapshots, settings, crash guard. |

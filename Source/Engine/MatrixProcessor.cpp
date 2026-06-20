@@ -191,14 +191,17 @@ void MatrixProcessor::refreshSnapshotIfDirty()
     for (int n = 0; n < nIn; ++n)
         if (matrix->getInputSolo (n)) { anySolo = true; break; }
 
-    // Cache per-input effective gain (incorporates mute + solo) so the
-    // inner loop is a single multiply.
+    // Cache per-input effective gain (incorporates mute + solo + any Router-mode
+    // input-group overlay) so the inner loop is a single multiply.  The overlay
+    // is 1.0 for VCA-mode / ungrouped channels; a Router-muted channel reads 0.
     inputEffGain.assign ((size_t) nIn, 0.0f);
     for (int n = 0; n < nIn; ++n)
     {
         if (matrix->getInputMute (n)) continue;
         if (anySolo && ! matrix->getInputSolo (n)) continue;
-        inputEffGain[(size_t) n] = matrix->getInputTrim (n);
+        const float groupG = inputGroupManager != nullptr
+                                 ? inputGroupManager->getChannelRouterGain (n) : 1.0f;
+        inputEffGain[(size_t) n] = matrix->getInputTrim (n) * groupG;
     }
 
     // Snapshot existing currentGains so they survive the rebuild and the
@@ -217,8 +220,11 @@ void MatrixProcessor::refreshSnapshotIfDirty()
     for (size_t i = 0; i < outputFaderTarget.size(); ++i)
     {
         const int m = (int) i;
+        // Fold in any Router-mode output-group overlay (1.0 for VCA / ungrouped;
+        // 0 when the Router group is muted).  Output mute still forces silence.
+        const float groupG = groupManager != nullptr ? groupManager->getChannelRouterGain (m) : 1.0f;
         const float t = (m < nOut && ! matrix->getOutputMute (m))
-                            ? matrix->getOutputTrim (m) : (m < nOut ? 0.0f : 1.0f);
+                            ? matrix->getOutputTrim (m) * groupG : (m < nOut ? 0.0f : 1.0f);
         outputFaderTarget[i] = t;
     }
     if (! faderInitialised)   // snap on first refresh -> no start-up fade
@@ -410,11 +416,12 @@ bool MatrixProcessor::tryProcessOneBlock()
         });
     }
 
-    // POST-FADER gain stage.  The output trim / mute (and the linked group
-    // fader, which drives the per-channel trims) is applied HERE -- after every
-    // output insert + group insert -- so plugins process the pre-fader signal
-    // (standard DAW gain staging).  Smoothed per block toward the target so a
-    // fader sweep doesn't zipper.
+    // POST-FADER gain stage.  The output trim / mute, the VCA group fader (which
+    // drives the per-channel trims) and any Router-mode group overlay (folded
+    // into outputFaderTarget above) are applied HERE -- after every output
+    // insert + group insert -- so plugins process the pre-fader signal (standard
+    // DAW gain staging).  Smoothed per block toward the target so a fader sweep
+    // doesn't zipper.
     for (size_t i = 0; i < outputs.size() && i < outputFaderCurrent.size(); ++i)
     {
         const float tgt = outputFaderTarget[i];

@@ -349,6 +349,41 @@ void MatrixView::softRefreshFromEngine()
     if (grid != nullptr) grid->repaint();
 }
 
+void MatrixView::refreshTrimWidgetsFromEngine()
+{
+    auto& matrix = engine.getRoutingMatrix();
+    const int nIn  = (int) inputTrims .size();
+    const int nOut = (int) outputTrims.size();
+
+    auto syncSlider = [] (juce::Slider* s, float db)
+    {
+        if (s == nullptr) return;
+        if (s->isMouseButtonDown()) return;                 // don't fight a live drag
+        if (std::abs ((float) s->getValue() - db) <= 0.01f) return;
+        s->setValue (db, juce::dontSendNotification);
+    };
+
+    for (int n = 0; n < nIn; ++n)
+    {
+        if (n >= (int) inputLabels.size()) break;
+        const auto& lbl = inputLabels[(size_t) n];
+        if (lbl.isCollapsedRow) continue;
+        const int engCh = lbl.firstChannel;
+        syncSlider (inputTrims[n], linToDb (matrix.getInputTrim (engCh)));
+        if (inputMuteBtns[n] != nullptr) inputMuteBtns[n]->setToggleState (matrix.getInputMute (engCh), juce::dontSendNotification);
+        if (inputSoloBtns[n] != nullptr) inputSoloBtns[n]->setToggleState (matrix.getInputSolo (engCh), juce::dontSendNotification);
+    }
+    for (int m = 0; m < nOut; ++m)
+    {
+        if (m >= (int) outputLabels.size()) break;
+        const auto& lbl = outputLabels[(size_t) m];
+        if (lbl.isCollapsedRow) continue;
+        const int engOut = lbl.firstChannel;
+        syncSlider (outputTrims[m], linToDb (matrix.getOutputTrim (engOut)));
+        if (outputMuteBtns[m] != nullptr) outputMuteBtns[m]->setToggleState (matrix.getOutputMute (engOut), juce::dontSendNotification);
+    }
+}
+
 void MatrixView::clearAllChannelWidgets()
 {
     grid.reset();
@@ -1252,6 +1287,17 @@ void MatrixView::timerCallback()
                                           + ")");
             lastMs = now;
         }
+    }
+
+    // Resync trim/mute/solo sliders to the engine when something changed them
+    // that the user didn't drag directly (VCA group fader riding its members,
+    // multi-select links, snapshot restore).  Gated on the matrix dirty
+    // generation so a static matrix adds nothing to the meter tick.
+    const uint64_t gen = engine.getRoutingMatrix().getDirtyGeneration();
+    if (gen != lastTrimRefreshGen)
+    {
+        lastTrimRefreshGen = gen;
+        refreshTrimWidgetsFromEngine();
     }
 
     const float decay = engine.getSettings().meterDecayFactor;
