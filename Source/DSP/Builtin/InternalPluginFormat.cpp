@@ -9,6 +9,7 @@
 #include "DSP/Builtin/PpmMeterProcessor.h"
 #include "DSP/Builtin/PpmMeterEditor.h"
 #include "DSP/Builtin/SpectralAutoEqProcessor.h"
+#include "DSP/Builtin/SpectralAutoEqEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
 #include "DSP/Builtin/SpectralCurveEditor.h"
 
@@ -24,7 +25,7 @@ juce::AudioProcessorEditor* ChannelStripProcessor::createEditor() { return new C
 juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
 juce::AudioProcessorEditor* LevelerProcessor::createEditor()       { return new LevelRiderEditor (*this); }
 juce::AudioProcessorEditor* PpmMeterProcessor::createEditor()      { return new PpmMeterEditor (*this); }
-juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor()        { return new SpectralCurveEditor<SpectralAutoEqProcessor> (*this); }
+juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor()        { return new SpectralAutoEqEditor (*this); }
 juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor()   { return new SpectralCurveEditor<ResonanceSuppressorProcessor> (*this); }
 
 namespace

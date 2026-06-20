@@ -43,6 +43,8 @@ protected:
     int getFftSize() const noexcept { return fftSize; }
     int getNumBins() const noexcept { return numBins; }
     int getHopSize() const noexcept { return hopSize; }
+    int getOverlapFactor() const noexcept { return overlapFactor; }
+    const char* getWindowName() const noexcept { return "Hann"; }   // fixed Hann@WOLA
 
     // Zero-phase log-frequency smoother shared by the spectral subclasses:
     // a forward+backward one-pole across bins whose window widens with
