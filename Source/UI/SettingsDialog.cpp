@@ -56,12 +56,12 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
     //  sized rings on multi-channel devices; ComboBoxes limit the user to a
     //  curated set the engine is known to allocate without OOM.
     addSection ("Buffer safety",
-                "One slider for all the ring / pre-fill sizes.  Drag RIGHT for safety "
-                "(bigger buffers, more drift tolerance, more latency); LEFT for speed "
-                "(smaller buffers, lowest latency, less margin for CPU spikes).");
-    addBufferSafetyField (
-        "Sets all five buffer sizes together (input/output ring x engineBlock, "
-        "input/output ring x devBuf, output pre-fill).\n\n"
+                "The slider is a quick preset for all five ring / pre-fill sizes: "
+                "drag RIGHT for safety (bigger buffers, more latency), LEFT for speed "
+                "(lowest latency, less margin).  The exact values are below -- tweak any "
+                "one and the slider shows \"Custom\".");
+    addBufferSafetySection (
+        "Quick preset for the five buffer sizes below.\n\n"
         "  Safest      -- biggest buffers; survives clock drift + CPU spikes, highest latency.\n"
         "  Safe        -- the default; robust for most setups.\n"
         "  Balanced    -- moderate latency, still forgiving.\n"
@@ -283,80 +283,177 @@ namespace
     // 5 presets, index 0 = most aggressive (lowest latency) .. 4 = safest.
     // Order of fields: { inputRingMultEng, inputRingMultDev,
     //                    outputRingMultEng, outputRingMultDev, outputPreFillBlocks }.
+    // Every value MUST exist in the matching ComboBox list below.
     struct BufferPreset { const char* name; int inEng, inDev, outEng, outDev, preFill; };
     const BufferPreset kBufferPresets[5] = {
-        { "Aggressive",  2, 2,  3,  3,  1 },
-        { "Low latency", 2, 2,  4,  4,  2 },
+        { "Aggressive",  2, 2,  4,  4,  1 },
+        { "Low latency", 2, 3,  4,  6,  2 },
         { "Balanced",    3, 3,  6,  6,  4 },
-        { "Safe",        3, 4,  8,  8,  8 },   // == engine defaults
+        { "Safe",        3, 4,  6,  8,  8 },   // == engine defaults
         { "Safest",      4, 6, 12, 12, 16 },
     };
-
-    // Pick the preset closest to the current field values (sum of abs diffs).
-    int closestBufferPreset (const EngineSettings& s)
-    {
-        int best = 3, bestErr = std::numeric_limits<int>::max();
-        for (int i = 0; i < 5; ++i)
-        {
-            const auto& p = kBufferPresets[i];
-            const int err = std::abs (s.inputRingMultEng  - p.inEng)
-                          + std::abs (s.inputRingMultDev  - p.inDev)
-                          + std::abs (s.outputRingMultEng - p.outEng)
-                          + std::abs (s.outputRingMultDev - p.outDev)
-                          + std::abs (s.outputPreFillBlocks - p.preFill);
-            if (err < bestErr) { bestErr = err; best = i; }
-        }
-        return best;
-    }
 }
 
-void SettingsDialog::addBufferSafetyField (const juce::String& tooltip)
+void SettingsDialog::addBufferSafetySection (const juce::String& tooltip)
 {
+    // ---- Row 1: the preset slider + a state readout (incl. "Custom") --------
     attachInfoIcon (tooltip);
 
-    auto* lbl = new juce::Label ({}, "Buffer safety");
+    auto* lbl = new juce::Label ({}, "Preset");
     lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
     lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
     lbl->setTooltip (tooltip);
     fieldsHolder.addAndMakeVisible (*lbl);
     labels.add (lbl);
 
-    auto* s = new juce::Slider (juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+    const int sliderX = leftPad + infoW + gap + labelW + gap;
+    auto* s = new juce::Slider (juce::Slider::LinearHorizontal, juce::Slider::NoTextBox);
     s->setRange (0.0, 4.0, 1.0);
-    s->setValue ((double) closestBufferPreset (working), juce::dontSendNotification);
-    s->setTextBoxStyle (juce::Slider::TextBoxRight, true, 100, rowH - 4);
-    s->textFromValueFunction = [] (double v)
-    {
-        const int i = juce::jlimit (0, 4, (int) std::lround (v));
-        return juce::String (kBufferPresets[i].name);
-    };
-    s->valueFromTextFunction = [] (const juce::String& t)
-    {
-        for (int i = 0; i < 5; ++i) if (t == kBufferPresets[i].name) return (double) i;
-        return 3.0;
-    };
-    // Wider than a normal editor so the named stops are easy to hit.
-    const int sliderW = labelW + editorW;
-    s->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, sliderW, rowH - 4);
-
-    auto applyLevel = [this] (int level)
-    {
-        const auto& p = kBufferPresets[juce::jlimit (0, 4, level)];
-        working.inputRingMultEng    = p.inEng;
-        working.inputRingMultDev    = p.inDev;
-        working.outputRingMultEng   = p.outEng;
-        working.outputRingMultDev   = p.outDev;
-        working.outputPreFillBlocks = p.preFill;
-    };
-    s->onValueChange = [s, applyLevel] { applyLevel ((int) std::lround (s->getValue())); };
-
+    s->setBounds (sliderX, nextRowY, 110, rowH - 4);
     fieldsHolder.addAndMakeVisible (*s);
     sliders.add (s);
+    bufferSafetySlider = s;
 
-    // Commit on apply too, in case onValueChange never fired.
-    applyActions.push_back ([s, applyLevel] { applyLevel ((int) std::lround (s->getValue())); });
+    auto* state = new juce::Label ({}, "Safe");
+    state->setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 255, 210));
+    state->setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    state->setBounds (sliderX + 110 + gap, nextRowY, 110, rowH - 4);
+    fieldsHolder.addAndMakeVisible (*state);
+    labels.add (state);
+    bufferSafetyStateLabel = state;
 
     nextRowY += rowH;
+
+    // ---- Rows 2-6: the five precise ComboBoxes ------------------------------
+    struct RingField { const char* name; const char* unit; int* target;
+                       std::vector<int> values; const char* tip; };
+    const RingField fields[5] = {
+        { "Input ring x engineBlock", "", &working.inputRingMultEng,
+          { 2, 3, 4, 6, 8, 12, 16 },
+          "Input ring = max(this x engineBlock, devMult x devBuf x SR_ratio), pow2-rounded.\n\nDefault: 3." },
+        { "Input ring x devBuf*ratio", "", &working.inputRingMultDev,
+          { 2, 3, 4, 6, 8, 12, 16 },
+          "Multiplier for device callback bursts in the input ring.\n\nDefault: 4." },
+        { "Output ring x engineBlock", "", &working.outputRingMultEng,
+          { 4, 6, 8, 12, 16, 24, 32 },
+          "Output rings need more headroom than inputs to absorb clock drift.\n\nDefault: 6." },
+        { "Output ring x devBuf*ratio", "", &working.outputRingMultDev,
+          { 4, 6, 8, 12, 16, 24, 32 },
+          "Multiplier for device callback bursts in the output ring.\n\nDefault: 8." },
+        { "Output pre-fill", "engine blocks", &working.outputPreFillBlocks,
+          { 0, 1, 2, 4, 8, 16, 32 },
+          "Engine blocks of silence pre-filled into the output ring at device open.  Each "
+          "adds (blockSize / engineSR) of static latency.\n\nDefault: 8." },
+    };
+
+    for (int f = 0; f < 5; ++f)
+    {
+        const auto& fld = fields[f];
+        attachInfoIcon (fld.tip);
+
+        auto* fl = new juce::Label ({}, juce::String (fld.name)
+                                        + (juce::String (fld.unit).isEmpty() ? "" : "  (" + juce::String (fld.unit) + ")"));
+        fl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+        fl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+        fl->setTooltip (fld.tip);
+        fieldsHolder.addAndMakeVisible (*fl);
+        labels.add (fl);
+
+        auto* cb = new juce::ComboBox();
+        int snapId = 1, bestDiff = std::numeric_limits<int>::max();
+        for (size_t i = 0; i < fld.values.size(); ++i)
+        {
+            cb->addItem (juce::String (fld.values[i]), (int) i + 1);
+            const int d = std::abs (fld.values[i] - *fld.target);
+            if (d < bestDiff) { bestDiff = d; snapId = (int) i + 1; }
+        }
+        cb->setSelectedId (snapId, juce::dontSendNotification);
+        cb->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, editorW, rowH - 4);
+        fieldsHolder.addAndMakeVisible (*cb);
+        combos.add (cb);
+
+        ringCombos[(size_t) f] = cb;
+        ringValues[(size_t) f] = fld.values;
+
+        int* target = fld.target;
+        auto values = fld.values;
+        applyActions.push_back ([target, cb, values]
+        {
+            const int idx = cb->getSelectedId() - 1;
+            if (idx >= 0 && idx < (int) values.size()) *target = values[(size_t) idx];
+        });
+
+        // Hand-editing any combo flips the slider readout to "Custom".
+        cb->onChange = [this] { if (! syncingBuffers) updateBufferSliderState(); };
+
+        nextRowY += rowH;
+    }
+
+    // ---- Wire the slider now that the combos exist --------------------------
+    s->onValueChange = [this]
+    {
+        if (syncingBuffers) return;
+        applyBufferPreset ((int) std::lround (bufferSafetySlider->getValue()));
+    };
+
+    // Initial state: match the slider + readout to the loaded combo values.
+    updateBufferSliderState();
+}
+
+void SettingsDialog::applyBufferPreset (int level)
+{
+    level = juce::jlimit (0, 4, level);
+    const auto& p = kBufferPresets[level];
+    const int vals[5] = { p.inEng, p.inDev, p.outEng, p.outDev, p.preFill };
+
+    syncingBuffers = true;
+    for (int f = 0; f < 5; ++f)
+    {
+        auto* cb = ringCombos[(size_t) f];
+        const auto& list = ringValues[(size_t) f];
+        for (size_t i = 0; i < list.size(); ++i)
+            if (list[i] == vals[f]) { cb->setSelectedId ((int) i + 1, juce::dontSendNotification); break; }
+    }
+    syncingBuffers = false;
+
+    if (bufferSafetyStateLabel != nullptr)
+        bufferSafetyStateLabel->setText (kBufferPresets[level].name, juce::dontSendNotification);
+}
+
+void SettingsDialog::updateBufferSliderState()
+{
+    // Read the five combos' current values.
+    int cur[5];
+    for (int f = 0; f < 5; ++f)
+    {
+        auto* cb = ringCombos[(size_t) f];
+        const auto& list = ringValues[(size_t) f];
+        const int idx = cb->getSelectedId() - 1;
+        cur[f] = (idx >= 0 && idx < (int) list.size()) ? list[(size_t) idx] : 0;
+    }
+
+    // Does it match a preset exactly?
+    int matched = -1;
+    for (int lvl = 0; lvl < 5; ++lvl)
+    {
+        const auto& p = kBufferPresets[lvl];
+        if (cur[0] == p.inEng && cur[1] == p.inDev && cur[2] == p.outEng
+            && cur[3] == p.outDev && cur[4] == p.preFill) { matched = lvl; break; }
+    }
+
+    syncingBuffers = true;
+    if (matched >= 0)
+    {
+        if (bufferSafetySlider != nullptr)
+            bufferSafetySlider->setValue ((double) matched, juce::dontSendNotification);
+        if (bufferSafetyStateLabel != nullptr)
+            bufferSafetyStateLabel->setText (kBufferPresets[matched].name, juce::dontSendNotification);
+    }
+    else if (bufferSafetyStateLabel != nullptr)
+    {
+        bufferSafetyStateLabel->setText ("Custom", juce::dontSendNotification);
+    }
+    syncingBuffers = false;
 }
 
 void SettingsDialog::addDoubleField (const juce::String& name, double& target,

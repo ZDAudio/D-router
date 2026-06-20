@@ -2,8 +2,10 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
 #include <functional>
 #include <optional>
+#include <vector>
 
 #include "Engine/EngineSettings.h"
 
@@ -70,10 +72,13 @@ private:
                                const juce::String& tooltip);
     void addHexColorField (const juce::String& name, unsigned int& target,
                            const juce::String& tooltip);
-    // One slider that drives all five ring/pre-fill knobs together: rightmost =
-    // safest (biggest buffers, most drift tolerance), leftmost = most aggressive
-    // (smallest buffers, lowest latency).
-    void addBufferSafetyField (const juce::String& tooltip);
+    // A "Buffer safety" preset slider (rightmost = safest, leftmost = most
+    // aggressive) PLUS the five precise ring/pre-fill ComboBoxes it drives.
+    // Two-way linked: dragging the slider sets all five combos; editing any
+    // combo by hand flips the slider's readout to "Custom".
+    void addBufferSafetySection (const juce::String& tooltip);
+    void applyBufferPreset (int level);      // slider -> the five combos
+    void updateBufferSliderState();          // the five combos -> slider readout
     void attachInfoIcon (const juce::String& tooltip);
 
     EngineSettings working;
@@ -84,6 +89,13 @@ private:
     juce::OwnedArray<juce::TextEditor> editors;
     juce::OwnedArray<juce::ComboBox>  combos;
     juce::OwnedArray<juce::Slider>    sliders;
+
+    // Buffer-safety preset wiring (non-owning pointers into the arrays above).
+    juce::Slider*   bufferSafetySlider     = nullptr;
+    juce::Label*    bufferSafetyStateLabel = nullptr;
+    std::array<juce::ComboBox*, 5>  ringCombos {};
+    std::array<std::vector<int>, 5> ringValues {};
+    bool            syncingBuffers = false;   // guards the two-way update
     juce::OwnedArray<juce::Label>     sectionHeads;
     juce::OwnedArray<InfoIcon>        infoIcons;
     juce::TooltipWindow               tooltipWindow { this, 350 };
