@@ -2,6 +2,8 @@
 
 #include <juce_data_structures/juce_data_structures.h>
 
+#include "Persistence/AtomicXmlWrite.h"
+
 namespace dcr
 {
 
@@ -27,6 +29,16 @@ namespace dcr
         const juce::Identifier accentColor ("accentColorRGB");
         const juce::Identifier warningColor ("warningColorRGB");
         const juce::Identifier criticalColor ("criticalColorRGB");
+        const juce::Identifier settingsVersion ("version");
+        const juce::Identifier stalledWarnRatio ("stalledWarnRatio");
+        const juce::Identifier stalledCritRatio ("stalledCritRatio");
+        const juce::Identifier cpuWarnRatio ("cpuWarnRatio");
+        const juce::Identifier cpuCritRatio ("cpuCritRatio");
+
+        // Bumped only on an incompatible settings-schema change.  Written for
+        // forward-compat; the current loader tolerates any value (there is only
+        // v1) and fills missing fields from EngineSettings defaults.
+        constexpr int kSettingsVersion = 1;
     }
 
     juce::File SettingsStore::getFile()
@@ -69,6 +81,10 @@ namespace dcr
         s.accentColorRGB = (unsigned int) (int) t.getProperty (accentColor, (int) s.accentColorRGB);
         s.warningColorRGB = (unsigned int) (int) t.getProperty (warningColor, (int) s.warningColorRGB);
         s.criticalColorRGB = (unsigned int) (int) t.getProperty (criticalColor, (int) s.criticalColorRGB);
+        s.stalledWarnRatio = (float) (double) t.getProperty (stalledWarnRatio, (double) s.stalledWarnRatio);
+        s.stalledCritRatio = (float) (double) t.getProperty (stalledCritRatio, (double) s.stalledCritRatio);
+        s.cpuWarnRatio = (float) (double) t.getProperty (cpuWarnRatio, (double) s.cpuWarnRatio);
+        s.cpuCritRatio = (float) (double) t.getProperty (cpuCritRatio, (double) s.cpuCritRatio);
 
         // Defensive clamp -- a tampered settings file or values left over from a
         // prior version with wider ranges must never produce a ring/pre-fill big
@@ -86,12 +102,17 @@ namespace dcr
         s.meterTimerHz = juce::jlimit (1, 120, s.meterTimerHz);
         s.meterDecayFactor = juce::jlimit (0.0f, 0.999f, s.meterDecayFactor);
         s.statusTimerMs = juce::jlimit (100, 10000, s.statusTimerMs);
+        s.stalledWarnRatio = juce::jlimit (0.0f, 1.0f, s.stalledWarnRatio);
+        s.stalledCritRatio = juce::jlimit (0.0f, 1.0f, s.stalledCritRatio);
+        s.cpuWarnRatio = juce::jlimit (0.0f, 1.0f, s.cpuWarnRatio);
+        s.cpuCritRatio = juce::jlimit (0.0f, 1.0f, s.cpuCritRatio);
         return s;
     }
 
     bool SettingsStore::save (const EngineSettings& s)
     {
         juce::ValueTree t (rootId);
+        t.setProperty (settingsVersion, kSettingsVersion, nullptr);
         t.setProperty (engineSampleRate, s.engineSampleRate, nullptr);
         t.setProperty (engineBlockSize, s.engineBlockSize, nullptr);
         t.setProperty (inputRingMultEng, s.inputRingMultEng, nullptr);
@@ -111,11 +132,15 @@ namespace dcr
         t.setProperty (accentColor, (int) s.accentColorRGB, nullptr);
         t.setProperty (warningColor, (int) s.warningColorRGB, nullptr);
         t.setProperty (criticalColor, (int) s.criticalColorRGB, nullptr);
+        t.setProperty (stalledWarnRatio, (double) s.stalledWarnRatio, nullptr);
+        t.setProperty (stalledCritRatio, (double) s.stalledCritRatio, nullptr);
+        t.setProperty (cpuWarnRatio, (double) s.cpuWarnRatio, nullptr);
+        t.setProperty (cpuCritRatio, (double) s.cpuCritRatio, nullptr);
 
         auto xml = t.createXml();
         if (xml == nullptr)
             return false;
-        return xml->writeTo (getFile());
+        return writeXmlAtomically (*xml, getFile());
     }
 
 } // namespace dcr
