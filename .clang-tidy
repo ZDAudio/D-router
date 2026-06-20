@@ -1,0 +1,18 @@
+---
+# Curated, high-signal checks only. Warnings, not errors, in Phase A.
+# DSP is out of scope; CI runs tidy on non-DSP Source files only.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  performance-*,
+  misc-misplaced-const,
+  misc-redundant-expression,
+  modernize-use-override,
+  modernize-use-nullptr,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing
+WarningsAsErrors: ''
+HeaderFilterRegex: 'Source/(Engine|Routing|UI|Persistence|Diagnostics)/.*'
+FormatStyle: file
