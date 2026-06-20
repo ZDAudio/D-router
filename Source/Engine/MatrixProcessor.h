@@ -9,6 +9,7 @@
 #include <atomic>
 #include <memory>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace dcr {
@@ -122,6 +123,10 @@ private:
     struct ActiveRoute { int outIdx; int inIdx; float targetGain; float currentGain; };
     std::vector<ActiveRoute> activeRoutes;
     std::vector<float>       inputEffGain;   // per-input mute/solo-aware trim
+    // Reused across refreshes (carry currentGain forward) -- declared as a
+    // member so clear() reuses its buckets instead of allocating on the RT
+    // thread each time the routing snapshot is rebuilt.
+    std::unordered_map<uint64_t, float> oldGains;
     uint64_t lastSnapGen = 0;
     float    smoothCoeff = 1.0f;             // 1.0 = no smoothing (instant)
 

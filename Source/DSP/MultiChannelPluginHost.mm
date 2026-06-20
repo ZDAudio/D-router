@@ -164,6 +164,11 @@ void MultiChannelPluginHost::swapStateWith (MultiChannelPluginHost& other)
     const juce::SpinLock::ScopedLockType hlk (hi->lock);
 
     std::swap (current, other.current);
+    // The saved bus layout must travel WITH the plugin -- otherwise after a
+    // drag-swap each host's lastLayout describes the other plugin, and the
+    // next engine restart re-applies the wrong layout in prepare() (a
+    // multichannel AU then falls back to a default layout -> inert).
+    std::swap (lastLayout, other.lastLayout);
 
     const bool byp = bypassed.load (std::memory_order_relaxed);
     bypassed.store (other.bypassed.load (std::memory_order_relaxed), std::memory_order_relaxed);

@@ -63,27 +63,9 @@ protected:
         redDb.assign ((size_t) numChannels, std::vector<float> ((size_t) numBins, 0.0f));
         baseWork.assign ((size_t) numBins, 0.0f);
         magDbWork.assign ((size_t) numBins, -100.0f);
-        frameSec = (double) getFftSize() / 4.0 / sr;     // hop/sr
+        frameSec = (double) getHopSize() / sr;     // seconds per STFT hop
         for (auto& v : dispMag)  v = -100.0f;
         for (auto& v : dispGain) v = 0.0f;
-    }
-
-    void logSmooth (const float* src, float* dst, int n, float strength)
-    {
-        float run = src[0];
-        for (int k = 0; k < n; ++k)
-        {
-            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
-            run += a * (src[k] - run);
-            dst[k] = run;
-        }
-        run = dst[n - 1];
-        for (int k = n - 1; k >= 0; --k)
-        {
-            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
-            run += a * (dst[k] - run);
-            dst[k] = run;
-        }
     }
 
     void computeBinGains (const float* mags, float* gains, int numBins, double sr, int channel) override

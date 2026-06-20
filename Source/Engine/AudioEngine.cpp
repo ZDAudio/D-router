@@ -225,8 +225,11 @@ bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
 
     // Wire each device's input callback to wake the matrix thread directly
     // (event-driven) instead of leaving it to sleep-poll.  The event lives in
-    // `processor`, which outlives every worker (workers are cleared first in
-    // stop()), so the raw pointer is always valid while a callback can fire.
+    // `processor`, a member that outlives the workers: stop() halts the matrix
+    // thread then clears `workers` while `processor` is still alive, and
+    // ~AudioEngine calls stop() before any member is destroyed.  A callback
+    // that fires during teardown therefore signals a still-valid event (and
+    // signalling an auto-reset event with no waiter is a harmless no-op).
     for (auto& w : workers)
         w->setInputReadyEvent (&processor.getInputReadyEvent());
 

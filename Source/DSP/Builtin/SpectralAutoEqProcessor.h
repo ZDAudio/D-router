@@ -64,30 +64,9 @@ protected:
         envWork.assign ((size_t) numBins, 0.0f);
         refWork.assign ((size_t) numBins, 0.0f);
         magDbWork.assign ((size_t) numBins, -100.0f);
-        const double frameSec = (double) (1 << 10) / 4.0 / sr;   // hop/sr
-        smoothBaseSec = frameSec;
+        smoothBaseSec = (double) getHopSize() / sr;   // seconds per STFT hop
         for (auto& v : dispMag)  v = -100.0f;
         for (auto& v : dispGain) v = 0.0f;
-    }
-
-    // Forward+backward one-pole across bins with a per-bin coefficient that
-    // widens the window with frequency (constant-Q-ish log smoothing).
-    void logSmooth (const float* src, float* dst, int n, float strength)
-    {
-        float run = src[0];
-        for (int k = 0; k < n; ++k)
-        {
-            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
-            run += a * (src[k] - run);
-            dst[k] = run;
-        }
-        run = dst[n - 1];
-        for (int k = n - 1; k >= 0; --k)
-        {
-            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
-            run += a * (dst[k] - run);
-            dst[k] = run;
-        }
     }
 
     void computeBinGains (const float* mags, float* gains, int numBins, double sr, int channel) override

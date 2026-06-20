@@ -42,6 +42,28 @@ protected:
 
     int getFftSize() const noexcept { return fftSize; }
     int getNumBins() const noexcept { return numBins; }
+    int getHopSize() const noexcept { return hopSize; }
+
+    // Zero-phase log-frequency smoother shared by the spectral subclasses:
+    // a forward+backward one-pole across bins whose window widens with
+    // frequency (constant-Q-ish).  `strength` ~ how tight (larger = narrower).
+    static void logSmooth (const float* src, float* dst, int n, float strength)
+    {
+        float run = src[0];
+        for (int k = 0; k < n; ++k)
+        {
+            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
+            run += a * (src[k] - run);
+            dst[k] = run;
+        }
+        run = dst[n - 1];
+        for (int k = n - 1; k >= 0; --k)
+        {
+            const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
+            run += a * (dst[k] - run);
+            dst[k] = run;
+        }
+    }
 
     // ---- BuiltinProcessor plumbing ----------------------------------------
     void prepareDsp (double sr, int /*blockSize*/, int numChannels) override

@@ -896,6 +896,7 @@ protected:
         dspSampleRate = sr;
         meanSq        = 1.0e-8f;   // ~ -80 dB; avoids log(0) on the first block
         currentGainDb = 0.0f;
+        gateOpen      = false;
         gainReadout.store (0.0f, std::memory_order_relaxed);
     }
 
@@ -931,13 +932,21 @@ protected:
             meanSq = winCoeff * meanSq + (1.0f - winCoeff) * sq;
             const float measuredDb = 10.0f * std::log10 (juce::jmax (1.0e-12f, meanSq));
 
+            // Gate with hysteresis: open above gateDb, close 6 dB below it.
+            // A single threshold would chatter when the program dwells right
+            // at the gate (quiet dialog, fade tails), oscillating the rider
+            // between ride-to-target and relax-to-0 once per window -> audible
+            // gain breathing on exactly the quiet passages the gate protects.
+            if (measuredDb > gateDb)               gateOpen = true;
+            else if (measuredDb < gateDb - 6.0f)   gateOpen = false;
+
             // Feed-forward target gain, bounded by +/- range.  Below the gate
             // (silence / pause / noise floor) RELAX toward 0 dB instead of
             // holding the last gain -- so a pause doesn't leave a boost frozen
             // in, and when signal returns the rider starts riding up from
             // unity ("from 0") rather than slamming in a stale boost.
             float desiredGainDb = 0.0f;
-            if (measuredDb > gateDb)
+            if (gateOpen)
                 desiredGainDb = juce::jlimit (-rangeDb, rangeDb, targetDb - measuredDb);
 
             // Smooth the applied gain toward the target, then re-clamp in case
@@ -956,6 +965,7 @@ protected:
 private:
     float meanSq        = 1.0e-8f;
     float currentGainDb = 0.0f;
+    bool  gateOpen      = false;   // hysteretic gate state
     std::atomic<float> gainReadout { 0.0f };
 };
 

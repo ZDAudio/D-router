@@ -202,9 +202,11 @@ void MatrixProcessor::refreshSnapshotIfDirty()
     }
 
     // Snapshot existing currentGains so they survive the rebuild and the
-    // matrix processor never jumps a gain value abruptly.
-    std::unordered_map<uint64_t, float> oldGains;
-    oldGains.reserve (activeRoutes.size());
+    // matrix processor never jumps a gain value abruptly.  oldGains is a
+    // reused member: clear() keeps the bucket array allocated, so after the
+    // first refresh this does no heap allocation on the matrix (RT) thread --
+    // important because a fader drag dirties the snapshot many times a second.
+    oldGains.clear();
     for (auto& r : activeRoutes)
         oldGains[((uint64_t) (uint32_t) r.outIdx << 32) | (uint32_t) r.inIdx] = r.currentGain;
 
