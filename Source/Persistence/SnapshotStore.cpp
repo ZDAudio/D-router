@@ -1,4 +1,5 @@
 #include "Persistence/SnapshotStore.h"
+#include "Persistence/AtomicXmlWrite.h"
 
 namespace dcr
 {
@@ -404,8 +405,9 @@ namespace dcr
         auto xml = tree.createXml();
         if (xml == nullptr)
             return false;
-        file.getParentDirectory().createDirectory();
-        return xml->writeTo (file);
+        // Atomic: a crash mid-write must not shred last.xml -- the file
+        // crash-recovery reads on the next launch.
+        return writeXmlAtomically (*xml, file);
     }
 
     SnapshotStore::LoadResult SnapshotStore::load (const juce::File& file, Snapshot& outSnap)

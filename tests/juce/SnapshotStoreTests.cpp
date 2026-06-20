@@ -119,6 +119,29 @@ struct SnapshotStoreTests : juce::UnitTest
             Snapshot out;
             expect (SnapshotStore::load (file, out) == SnapshotStore::LoadResult::UnsupportedVersion);
         }
+
+        beginTest ("save then overwrite leaves a loadable, current file (atomic)");
+        {
+            juce::TemporaryFile scratch;
+            const juce::File file = scratch.getFile();
+
+            Snapshot a;
+            a.engineBlockSize = 128;
+            expect (SnapshotStore::save (file, a));
+
+            Snapshot b;
+            b.engineBlockSize = 512;
+            expect (SnapshotStore::save (file, b)); // overwrite
+
+            Snapshot r;
+            expect (SnapshotStore::load (file, r) == SnapshotStore::LoadResult::Ok);
+            expectEquals (r.engineBlockSize, 512);
+
+            auto leftovers = file.getParentDirectory()
+                                 .findChildFiles (juce::File::findFiles, false, "*.temp");
+            for (auto& f : leftovers)
+                expect (!f.getFileName().startsWith (file.getFileName()));
+        }
     }
 };
 
