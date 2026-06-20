@@ -23,6 +23,11 @@ namespace
 // the default to avoid infinite recursion.
 std::atomic<int> reentry{0};
 
+// The log file descriptor, opened ONCE on the message thread at install()
+// time.  The signal handler must never call open()/Logger/JUCE (none are
+// async-signal-safe); it only write(2)s + backtrace_symbols_fd's to this fd.
+std::atomic<int> gLogFd{-1};
+
 void writeAsyncSafe(int fd, const char* s, size_t n)
 {
     // write() is async-signal-safe; we ignore the return value because
@@ -43,14 +48,10 @@ void writeBacktraceToLog(const char* sigName)
     if (reentry.fetch_add(1, std::memory_order_acq_rel) != 0)
         return;
 
-    // We snapshot the path on init since calling JUCE::File from a
-    // signal handler is unsafe.  Logger::getCurrentLogFile() reads a
-    // unique_ptr -- racy but in practice OK for this best-effort path.
-    auto path = Logger::getCurrentLogFile().getFullPathName();
-    if (path.isEmpty())
-        return;
-
-    int fd = ::open(path.toRawUTF8(), O_WRONLY | O_APPEND);
+    // Strict async-signal-safe path: the fd was opened at install() time, so
+    // here we only write(2) + backtrace_symbols_fd (both async-signal-safe).
+    // No Logger/JUCE/File, no open(), no allocation.
+    const int fd = gLogFd.load(std::memory_order_acquire);
     if (fd < 0)
         return;
 
@@ -67,7 +68,8 @@ void writeBacktraceToLog(const char* sigName)
 
     writeAsyncSafe(fd, "================================================================\n");
     ::fsync(fd);
-    ::close(fd);
+    // Do NOT close: we're about to restore SIG_DFL and re-raise, so the process
+    // is dying anyway and the fd needs no teardown.
 }
 
 void signalHandler(int sig)
@@ -109,11 +111,8 @@ void uncaughtNSExceptionHandler(NSException* ex)
 {
     // NSException uncaught-handler runs BEFORE abort() -- safe to use
     // higher-level APIs here, not just async-signal-safe ones.
-    auto path = Logger::getCurrentLogFile().getFullPathName();
-    if (path.isEmpty())
-        return;
-
-    int fd = ::open(path.toRawUTF8(), O_WRONLY | O_APPEND);
+    // Reuse the install()-time fd for consistency with the signal path.
+    const int fd = gLogFd.load(std::memory_order_acquire);
     if (fd < 0)
         return;
 
@@ -131,7 +130,7 @@ void uncaughtNSExceptionHandler(NSException* ex)
     }
     writeAsyncSafe(fd, "================================================================\n");
     ::fsync(fd);
-    ::close(fd);
+    // fd is the shared pre-opened log handle -- leave it open.
 }
 #endif
 } // namespace
@@ -155,6 +154,17 @@ void CrashHandler::install()
     // Quit -- that's SIGKILL which can't be caught).  We log + re-raise
     // so a graceful shutdown by external request still leaves a trail.
     ::sigaction(SIGTERM, &sa, nullptr);
+
+    // Pre-open the log fd on the message thread so the signal handler never has
+    // to.  Logger::init() runs before install() (see header), so the file exists.
+    {
+        const auto path = Logger::getCurrentLogFile().getFullPathName();
+        if (path.isNotEmpty())
+        {
+            const int fd = ::open(path.toRawUTF8(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+            gLogFd.store(fd, std::memory_order_release);
+        }
+    }
 
 #if JUCE_MAC
     NSSetUncaughtExceptionHandler(uncaughtNSExceptionHandler);

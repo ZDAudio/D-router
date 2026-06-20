@@ -124,9 +124,12 @@ target_sources(dcorerouter_tests_juce PRIVATE
     tests/juce/SnapshotStoreTests.cpp
     tests/juce/SettingsStoreTests.cpp
     tests/juce/AtomicXmlWriteTests.cpp
+    tests/juce/CrashHandlerTests.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp
     Source/Persistence/AtomicXmlWrite.cpp
+    Source/Diagnostics/CrashHandler.mm
+    Source/Diagnostics/Logger.cpp
 )
 target_include_directories(dcorerouter_tests_juce PRIVATE Source)
 target_compile_definitions(dcorerouter_tests_juce PRIVATE
@@ -150,6 +153,7 @@ target_link_libraries(dcorerouter_tests_juce PRIVATE
     juce::juce_opengl
     "-framework AudioToolbox"
     "-framework CoreAudio"
+    "-framework Foundation"
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
