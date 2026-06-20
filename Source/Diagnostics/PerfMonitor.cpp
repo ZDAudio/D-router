@@ -122,6 +122,19 @@ PerfMonitor::PerfMonitor (AudioEngine& e) : engine (e)
 
 PerfMonitor::~PerfMonitor() { stopTimer(); }
 
+void PerfMonitor::pause() { stopTimer(); }
+
+void PerfMonitor::resume()
+{
+    // Reset the gap baseline so the first tick after the (expected) reconfigure
+    // pause doesn't log a bogus "PERF SPIKE: message thread blocked" line for a
+    // gap the pause itself created.  Engine counters (blocks/xruns) reset on
+    // restart too, but emitSnapshot's delta logic already clamps a backwards
+    // counter to 0, so only the time baseline needs refreshing here.
+    lastTickMs = juce::Time::currentTimeMillis();
+    startTimer (kPeriodMs);
+}
+
 void PerfMonitor::timerCallback() { emitSnapshot(); }
 
 void PerfMonitor::emitSnapshot()

@@ -1096,6 +1096,13 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     groupPanel.pauseUpdates();
     inputGroupPanel.pauseUpdates();
     stopTimer();
+    // The 5 s PERF probe is a message-thread reader of engine state too -- it
+    // walks the worker / plugin-host vectors via engine.getDeviceLiveness(),
+    // getMinOutputRingHeadroomMs(), collectTopPluginCpu() etc.  Left running it
+    // races the worker thread's engine.stop()/start() below and dereferences a
+    // moved-from DeviceWorker* (observed SIGSEGV in PerfMonitor::emitSnapshot,
+    // KERN_INVALID_ADDRESS at 0x20).  Freeze it for the reconfigure window too.
+    perfMonitor.pause();
 
     // Show the loading splash so the user knows the app is busy and
     // hasn't crashed.  Hidden when matrixView's chunked rebuild finishes.
@@ -1209,6 +1216,12 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             statusPanel.resumeUpdates();
             groupPanel.resumeUpdates();
             inputGroupPanel.resumeUpdates();
+            // Re-arm the PERF probe frozen before the worker thread launched.
+            // This continuation runs on the message thread AFTER engine.start()
+            // returned, so the worker / plugin-host vectors are stable again --
+            // and it runs even when start() failed (workers then empty -> the
+            // probe's loops are no-ops), so the probe always comes back.
+            perfMonitor.resume();
             // Input was blocked via the loadingOverlay's interceptsMouseClicks,
             // which the overlay drops on its own when it hides.  No setEnabled
             // toggle needed any more (and it was triggering hundreds of

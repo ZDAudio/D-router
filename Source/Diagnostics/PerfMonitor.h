@@ -42,6 +42,17 @@ public:
     explicit PerfMonitor (AudioEngine& engine);
     ~PerfMonitor() override;
 
+    // Suspend / resume the periodic probe.  The host freezes EVERY message-
+    // thread reader of engine state for the duration of an engine reconfigure:
+    // devices open/close on a worker thread (see MainComponent::
+    // applyDeviceSelection), which mutates AudioEngine's worker / plugin-host
+    // vectors.  A timer fire mid-reconfigure walks those vectors via
+    // engine.getDeviceLiveness() etc. and dereferences a moved-from (null)
+    // DeviceWorker* -> SIGSEGV.  Must be called on the message thread (juce::
+    // Timer start/stop requirement); pairs with applyDeviceSelection's freeze.
+    void pause();
+    void resume();
+
 private:
     void timerCallback() override;
     void emitSnapshot();
