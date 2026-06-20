@@ -146,6 +146,11 @@ GroupManagerDialog::GroupManagerDialog (AudioEngine& e, Direction dir)
         auto opts = getLayoutOptions();
         const int sel = layoutCombo.getSelectedId() - 1;
         if (sel < 0 || sel >= (int) opts.size()) return;
+        // Re-laying-out reconfigures each slot's plugin in place
+        // (releaseResources + setBusesLayout + prepareToPlay).  Close any panel
+        // editor open on those plugins first -- same lifetime guard as delete
+        // (see onStructuralChange).
+        if (onStructuralChange) onStructuralChange();
         g->channelSet = opts[(size_t) sel].channelSet;
         g->memberChannels.assign ((size_t) g->channelSet.size(), -1);
         for (auto& slot : g->pluginSlots)
@@ -352,6 +357,10 @@ void GroupManagerDialog::onCreateClicked()
 void GroupManagerDialog::onDeleteClicked()
 {
     if (selectedGroup < 0) return;
+    // Removing the group destroys its MultiChannelPluginHosts (and the AU
+    // instances inside).  Close any open panel editors FIRST so their windows
+    // don't outlive the plugin they reference (see onStructuralChange).
+    if (onStructuralChange) onStructuralChange();
     dRemoveGroup (selectedGroup);
     if (selectedGroup >= dGetNumGroups())
         selectedGroup = dGetNumGroups() - 1;
@@ -376,11 +385,14 @@ void GroupManagerDialog::ListModel::paintListBoxItem (int row, juce::Graphics& g
                 8, 0, w - 16, h, juce::Justification::centredLeft, true);
 }
 
-void GroupManagerDialog::launch (AudioEngine& engine, std::function<void()> onClose,
+void GroupManagerDialog::launch (AudioEngine& engine,
+                                 std::function<void()> onClose,
+                                 std::function<void()> onStructuralChange,
                                  Direction dir)
 {
     auto* content = new GroupManagerDialog (engine, dir);
-    content->onClose = std::move (onClose);
+    content->onClose            = std::move (onClose);
+    content->onStructuralChange = std::move (onStructuralChange);
 
     juce::DialogWindow::LaunchOptions o;
     o.dialogTitle                  = "Groups";

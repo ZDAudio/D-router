@@ -29,10 +29,22 @@ public:
     // (user may have edited either side during the session).
     std::function<void()> onClose;
 
+    // Fired immediately BEFORE any action that frees or reconfigures a group's
+    // plugin instances (delete group, change layout).  The dialog is NON-MODAL,
+    // so the group panels stay interactive behind it: the user can re-open a
+    // plugin editor after launch, then delete/relayout that group.  The host
+    // wires this to close the panels' editor windows first -- each holds a raw
+    // AudioPluginInstance&, so it must be torn down while the plugin is still
+    // alive (otherwise ~PluginEditorWindow runs the AU's editorBeingDeleted()
+    // on freed memory and segfaults).
+    std::function<void()> onStructuralChange;
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static void launch (AudioEngine& engine, std::function<void()> onClose,
+    static void launch (AudioEngine& engine,
+                        std::function<void()> onClose,
+                        std::function<void()> onStructuralChange,
                         Direction dir = Direction::Outputs);
 
 private:

@@ -110,21 +110,32 @@ MainComponent::MainComponent()
     updatePanicButtonAppearance();
     groupsButton.onClick = [this]
     {
-        // The dialog lets the user remove groups, which immediately destroys
-        // their MultiChannelPluginHosts (and the AudioPluginInstances inside).
-        // Close any open group plugin editors BEFORE the dialog can do that
-        // -- otherwise the Card dtor later runs editor.reset() against a
-        // dead AudioProcessor and segfaults.
+        // The dialog lets the user remove groups or change a group's layout,
+        // which destroys / reconfigures their MultiChannelPluginHosts (and the
+        // AudioPluginInstances inside).  Close any editors open RIGHT NOW up
+        // front...
         groupPanel     .closeAllPluginEditors();
         inputGroupPanel.closeAllPluginEditors();
 
-        // Single dialog with an internal Inputs / Outputs toggle.  After
-        // closing we rebuild BOTH panels since either side may have changed.
+        // ...but the dialog is NON-MODAL, so the panels stay interactive behind
+        // it: the user can re-open an editor after launch, then delete/relayout
+        // that group.  The launch-time close above can't cover that.  Wire
+        // onStructuralChange so the dialog re-closes panel editors from inside,
+        // immediately before each such destructive action -- otherwise
+        // ~PluginEditorWindow runs editorBeingDeleted() on a freed
+        // AudioProcessor and segfaults (the PR #10 mechanism, re-opened by the
+        // non-modal panels).  After close we rebuild BOTH panels since either
+        // side may have changed.
         GroupManagerDialog::launch (engine,
             [this]
             {
                 groupPanel     .rebuild();
                 inputGroupPanel.rebuild();
+            },
+            [this]
+            {
+                groupPanel     .closeAllPluginEditors();
+                inputGroupPanel.closeAllPluginEditors();
             },
             GroupManagerDialog::Direction::Outputs);
     };
