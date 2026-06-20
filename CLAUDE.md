@@ -24,7 +24,7 @@ cmake --build build --target dcorerouter_tests
 ctest --test-dir build --output-on-failure          # ~0.5s, headless, no JUCE
 ```
 
-`tests/test_main.cpp` (+ the `dcorerouter_tests` target) is a pure-logic
+`tests/CoreLogicTests.cpp` (+ the `dcorerouter_tests` target) is a pure-logic
 regression net: `FloatRingBuffer` SPSC + `RoutingMatrix` (gains, mute/solo,
 self-loop block, snapshot). **Run it before claiming a change is safe, and add
 cases for any new deterministic logic** (e.g. PDC delay-line alignment).

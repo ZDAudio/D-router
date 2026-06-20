@@ -108,7 +108,7 @@ target_link_libraries(dcorerouter PRIVATE
 # ===========================================================================
 enable_testing()
 add_executable(dcorerouter_tests
-    tests/test_main.cpp
+    tests/CoreLogicTests.cpp
     Source/Routing/RoutingMatrix.cpp
 )
 target_include_directories(dcorerouter_tests PRIVATE Source)
