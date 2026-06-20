@@ -45,6 +45,9 @@ namespace ids
     static constexpr const char* strip      = "builtin:strip";
     static constexpr const char* mbcomp     = "builtin:mbcomp";
     static constexpr const char* leveler    = "builtin:leveler";
+    static constexpr const char* ppm        = "builtin:ppm";
+    static constexpr const char* autoeq     = "builtin:autoeq";
+    static constexpr const char* resonance  = "builtin:resonance";
 }
 
 // ---------------------------------------------------------------------------

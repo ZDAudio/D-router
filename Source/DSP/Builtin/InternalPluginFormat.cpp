@@ -6,6 +6,11 @@
 #include "DSP/Builtin/ChannelStripEditor.h"
 #include "DSP/Builtin/MultibandCompEditor.h"
 #include "DSP/Builtin/LevelRiderEditor.h"
+#include "DSP/Builtin/PpmMeterProcessor.h"
+#include "DSP/Builtin/PpmMeterEditor.h"
+#include "DSP/Builtin/SpectralAutoEqProcessor.h"
+#include "DSP/Builtin/ResonanceSuppressorProcessor.h"
+#include "DSP/Builtin/SpectralCurveEditor.h"
 
 namespace dcr::builtin
 {
@@ -18,6 +23,9 @@ juce::AudioProcessorEditor* DeEsserProcessor::createEditor()    { return new DeE
 juce::AudioProcessorEditor* ChannelStripProcessor::createEditor() { return new ChannelStripEditor (*this); }
 juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
 juce::AudioProcessorEditor* LevelerProcessor::createEditor()       { return new LevelRiderEditor (*this); }
+juce::AudioProcessorEditor* PpmMeterProcessor::createEditor()      { return new PpmMeterEditor (*this); }
+juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor()        { return new SpectralCurveEditor<SpectralAutoEqProcessor> (*this); }
+juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor()   { return new SpectralCurveEditor<ResonanceSuppressorProcessor> (*this); }
 
 namespace
 {
@@ -38,6 +46,9 @@ namespace
         if (id == ids::strip)      return std::make_unique<ChannelStripProcessor>();
         if (id == ids::mbcomp)     return std::make_unique<MultibandCompProcessor>();
         if (id == ids::leveler)    return std::make_unique<LevelerProcessor>();
+        if (id == ids::ppm)        return std::make_unique<PpmMeterProcessor>();
+        if (id == ids::autoeq)     return std::make_unique<SpectralAutoEqProcessor>();
+        if (id == ids::resonance)  return std::make_unique<ResonanceSuppressorProcessor>();
         return nullptr;
     }
 }
@@ -49,7 +60,7 @@ juce::Array<juce::PluginDescription> InternalPluginFormat::getBuiltinDescription
         ids::gain, ids::filter, ids::eq, ids::compressor,
         ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone,
         ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp,
-        ids::leveler
+        ids::leveler, ids::ppm, ids::autoeq, ids::resonance
     };
     for (auto* id : allIds)
         if (auto p = makeById (id))
