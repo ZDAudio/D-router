@@ -55,34 +55,19 @@ SettingsDialog::SettingsDialog (const EngineSettings& initial) : working (initia
     //  Free-form integers here used to allow values that produced gigabyte-
     //  sized rings on multi-channel devices; ComboBoxes limit the user to a
     //  curated set the engine is known to allocate without OOM.
-    addSection ("Ring buffers (per channel)",
-                "Bigger = more safety against CPU spikes, more latency.  Smaller = "
-                "tighter timing, less margin for error.  Pre-fill seeds the output "
-                "ring with silence at startup.");
-    addIntChoiceField ("Input ring x engineBlock", working.inputRingMultEng,
-        { 2, 3, 4, 6, 8, 12, 16 }, {},
-        "Input ring buffer = max(this x engineBlock, devMult x devBuf x SR_ratio), "
-        "rounded to next power of 2.\n\n"
-        "Recommended: 3.  Increase if you hear input overruns (xrun in counter).");
-    addIntChoiceField ("Input ring x devBuf*ratio", working.inputRingMultDev,
-        { 2, 3, 4, 6, 8, 12, 16 }, {},
-        "Multiplier for device callback bursts in the input ring.\n\n"
-        "Recommended: 4.  Increase for very large device buffer sizes.");
-    addIntChoiceField ("Output ring x engineBlock", working.outputRingMultEng,
-        { 4, 6, 8, 12, 16, 24, 32 }, {},
-        "Output ring engineBlock multiplier.  Output rings need more headroom than "
-        "inputs to absorb clock drift between IO devices.\n\n"
-        "Recommended: 6.  Bump to 8-12 if you hear occasional output dropouts.");
-    addIntChoiceField ("Output ring x devBuf*ratio", working.outputRingMultDev,
-        { 4, 6, 8, 12, 16, 24, 32 }, {},
-        "Multiplier for device callback bursts in the output ring.\n\n"
-        "Recommended: 8.");
-    addIntChoiceField ("Output pre-fill", working.outputPreFillBlocks,
-        { 0, 1, 2, 4, 8, 16, 32 }, "engine blocks",
-        "How many engine blocks of silence to pre-fill the output ring with at device "
-        "open.  Each block adds (blockSize / engineSR) seconds of static latency.\n\n"
-        "Recommended: 8 (default).  Lower for less latency; higher for more stability "
-        "during clock drift.");
+    addSection ("Buffer safety",
+                "One slider for all the ring / pre-fill sizes.  Drag RIGHT for safety "
+                "(bigger buffers, more drift tolerance, more latency); LEFT for speed "
+                "(smaller buffers, lowest latency, less margin for CPU spikes).");
+    addBufferSafetyField (
+        "Sets all five buffer sizes together (input/output ring x engineBlock, "
+        "input/output ring x devBuf, output pre-fill).\n\n"
+        "  Safest      -- biggest buffers; survives clock drift + CPU spikes, highest latency.\n"
+        "  Safe        -- the default; robust for most setups.\n"
+        "  Balanced    -- moderate latency, still forgiving.\n"
+        "  Low latency -- tight timing; needs a healthy CPU and matched clocks.\n"
+        "  Aggressive  -- smallest buffers, lowest latency; any hiccup = a dropout.\n\n"
+        "If you hear pops / dropouts (xrun in Engine Monitor), drag toward Safe.");
 
     // ====== SRC ======
     addSection ("Sample rate converter",
@@ -289,6 +274,87 @@ void SettingsDialog::addIntField (const juce::String& name, int& target,
     {
         target = juce::jlimit (minVal, maxVal, ed->getText().getIntValue());
     });
+
+    nextRowY += rowH;
+}
+
+namespace
+{
+    // 5 presets, index 0 = most aggressive (lowest latency) .. 4 = safest.
+    // Order of fields: { inputRingMultEng, inputRingMultDev,
+    //                    outputRingMultEng, outputRingMultDev, outputPreFillBlocks }.
+    struct BufferPreset { const char* name; int inEng, inDev, outEng, outDev, preFill; };
+    const BufferPreset kBufferPresets[5] = {
+        { "Aggressive",  2, 2,  3,  3,  1 },
+        { "Low latency", 2, 2,  4,  4,  2 },
+        { "Balanced",    3, 3,  6,  6,  4 },
+        { "Safe",        3, 4,  8,  8,  8 },   // == engine defaults
+        { "Safest",      4, 6, 12, 12, 16 },
+    };
+
+    // Pick the preset closest to the current field values (sum of abs diffs).
+    int closestBufferPreset (const EngineSettings& s)
+    {
+        int best = 3, bestErr = std::numeric_limits<int>::max();
+        for (int i = 0; i < 5; ++i)
+        {
+            const auto& p = kBufferPresets[i];
+            const int err = std::abs (s.inputRingMultEng  - p.inEng)
+                          + std::abs (s.inputRingMultDev  - p.inDev)
+                          + std::abs (s.outputRingMultEng - p.outEng)
+                          + std::abs (s.outputRingMultDev - p.outDev)
+                          + std::abs (s.outputPreFillBlocks - p.preFill);
+            if (err < bestErr) { bestErr = err; best = i; }
+        }
+        return best;
+    }
+}
+
+void SettingsDialog::addBufferSafetyField (const juce::String& tooltip)
+{
+    attachInfoIcon (tooltip);
+
+    auto* lbl = new juce::Label ({}, "Buffer safety");
+    lbl->setColour (juce::Label::textColourId, juce::Colours::lightgrey);
+    lbl->setBounds (leftPad + infoW + gap, nextRowY, labelW, rowH - 4);
+    lbl->setTooltip (tooltip);
+    fieldsHolder.addAndMakeVisible (*lbl);
+    labels.add (lbl);
+
+    auto* s = new juce::Slider (juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+    s->setRange (0.0, 4.0, 1.0);
+    s->setValue ((double) closestBufferPreset (working), juce::dontSendNotification);
+    s->setTextBoxStyle (juce::Slider::TextBoxRight, true, 100, rowH - 4);
+    s->textFromValueFunction = [] (double v)
+    {
+        const int i = juce::jlimit (0, 4, (int) std::lround (v));
+        return juce::String (kBufferPresets[i].name);
+    };
+    s->valueFromTextFunction = [] (const juce::String& t)
+    {
+        for (int i = 0; i < 5; ++i) if (t == kBufferPresets[i].name) return (double) i;
+        return 3.0;
+    };
+    // Wider than a normal editor so the named stops are easy to hit.
+    const int sliderW = labelW + editorW;
+    s->setBounds (leftPad + infoW + gap + labelW + gap, nextRowY, sliderW, rowH - 4);
+
+    auto applyLevel = [this] (int level)
+    {
+        const auto& p = kBufferPresets[juce::jlimit (0, 4, level)];
+        working.inputRingMultEng    = p.inEng;
+        working.inputRingMultDev    = p.inDev;
+        working.outputRingMultEng   = p.outEng;
+        working.outputRingMultDev   = p.outDev;
+        working.outputPreFillBlocks = p.preFill;
+    };
+    s->onValueChange = [s, applyLevel] { applyLevel ((int) std::lround (s->getValue())); };
+
+    fieldsHolder.addAndMakeVisible (*s);
+    sliders.add (s);
+
+    // Commit on apply too, in case onValueChange never fired.
+    applyActions.push_back ([s, applyLevel] { applyLevel ((int) std::lround (s->getValue())); });
 
     nextRowY += rowH;
 }

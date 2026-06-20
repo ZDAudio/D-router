@@ -70,6 +70,10 @@ private:
                                const juce::String& tooltip);
     void addHexColorField (const juce::String& name, unsigned int& target,
                            const juce::String& tooltip);
+    // One slider that drives all five ring/pre-fill knobs together: rightmost =
+    // safest (biggest buffers, most drift tolerance), leftmost = most aggressive
+    // (smallest buffers, lowest latency).
+    void addBufferSafetyField (const juce::String& tooltip);
     void attachInfoIcon (const juce::String& tooltip);
 
     EngineSettings working;
@@ -79,6 +83,7 @@ private:
     juce::OwnedArray<juce::Label>     labels;
     juce::OwnedArray<juce::TextEditor> editors;
     juce::OwnedArray<juce::ComboBox>  combos;
+    juce::OwnedArray<juce::Slider>    sliders;
     juce::OwnedArray<juce::Label>     sectionHeads;
     juce::OwnedArray<InfoIcon>        infoIcons;
     juce::TooltipWindow               tooltipWindow { this, 350 };
