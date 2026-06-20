@@ -94,3 +94,20 @@ target_link_libraries(dcorerouter PRIVATE
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
 )
+
+# ===========================================================================
+# Tests -- pure-logic regression suite (no JUCE, no audio device).  Runs
+# headless in milliseconds; guards the SPSC ring buffer + the routing matrix
+# (gains, mute/solo, the virtual-device self-loop block).
+#   cmake --build build --target dcorerouter_tests
+#   ctest --test-dir build --output-on-failure
+# DSP tests that need JUCE (STFT/WOLA, gain staging) are a separate follow-up.
+# ===========================================================================
+enable_testing()
+add_executable(dcorerouter_tests
+    tests/test_main.cpp
+    Source/Routing/RoutingMatrix.cpp
+)
+target_include_directories(dcorerouter_tests PRIVATE Source)
+target_compile_features(dcorerouter_tests PRIVATE cxx_std_20)
+add_test(NAME dcorerouter_tests COMMAND dcorerouter_tests)
