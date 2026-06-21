@@ -88,10 +88,13 @@ per device · a `WorkerPool` for parallel plugin processing.
 ## Public-repo hygiene
 
 Keep **third-party brand / product names out of public-facing text** (README,
-repo description, releases, LICENSE, code comments, commit messages). The
-virtual-device match list in `AudioEngine.cpp` (`"blackhole"`, `"dante"`, …) is
-the one exception — it's functional matching data, not prose. LICENSE is
-proprietary (© ZDAudio, all rights reserved).
+repo description, releases, LICENSE, code comments, commit messages). Two
+sanctioned exceptions: (1) the virtual-device match list in `AudioEngine.cpp`
+(`"blackhole"`, `"dante"`, …) — functional matching data, not prose; (2) the
+README's **"Recommended setup"** section may name **BlackHole** (the free virtual
+audio driver) with install + routing instructions — pairing with it is the
+documented way to feed macOS audio into D-Router (owner-approved 2026-06-21).
+Otherwise keep brands out. LICENSE is proprietary (© ZDAudio, all rights reserved).
 
 ## Known limitation
 
