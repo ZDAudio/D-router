@@ -329,6 +329,10 @@ private:
 
     void updateDisplay()
     {
+        // Editor display snapshot.  Called ONLY for channel 0 (see computeBinGains) and it
+        // depends on that: cumSum still holds channel 0's magnitudes (rebuilt per channel at
+        // the top of computeBinGains, ch0 first) and gainDb[0] is channel 0's correction.  If
+        // the channel loop is ever reordered or this runs off ch0, snapshot the source here.
         const int n = dispCount.load();
         for (int i = 0; i < n; ++i)
         {

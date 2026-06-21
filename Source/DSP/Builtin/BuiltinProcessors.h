@@ -838,7 +838,11 @@ protected:
     void processDsp (juce::AudioBuffer<float>& buffer) override
     {
         const int ns  = buffer.getNumSamples();
-        const int nch = buffer.getNumChannels();
+        // Clamp to the channel count the line was prepared for: DelayLine::pop/pushSample
+        // have no runtime bounds check (assert only, stripped in Release).  Identical under
+        // the current host (buffer channels <= preparedChannels); defensive if a future
+        // caller ever feeds a wider buffer.  Matches the jmin guard ReverbProcessor uses.
+        const int nch = juce::jmin (buffer.getNumChannels(), preparedChannels);
 
         const float timeSamps = juce::jlimit (1.0f, (float) (maxDelaySamps - 1),
                                               param ("time") * 0.001f * (float) dspSampleRate);
@@ -1685,7 +1689,7 @@ private:
     juce::dsp::LinkwitzRileyFilter<float> lr1, lr2, lr3;
     std::array<std::vector<float>, kBands> bandScratch;
     std::array<float, kBands> bandEnv { { 0.0f, 0.0f, 0.0f, 0.0f } };
-    std::array<std::atomic<float>, kBands> bandGr;
+    std::array<std::atomic<float>, kBands> bandGr { { {0.0f}, {0.0f}, {0.0f}, {0.0f} } };
     juce::SmoothedValue<float> outSmoothed;
     int chans = 2;
 };
