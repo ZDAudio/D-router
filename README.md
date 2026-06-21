@@ -12,6 +12,8 @@
 ![language](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![status](https://img.shields.io/badge/status-private%20beta-yellow)
 
+**English** | [简体中文](README.zh-CN.md)
+
 </div>
 
 ---
