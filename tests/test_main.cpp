@@ -13,6 +13,7 @@
 #include "Routing/GroupGain.h"
 #include "Routing/RoutingMatrix.h"
 #include "DSP/Builtin/ResonanceMath.h"
+#include "DSP/Builtin/SpectralNodeMath.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -552,6 +553,42 @@ void test_resonance_base_strength()
     CHECK (feq (baseStrengthForRes (99), 4.0f));   // default = finest/tightest
 }
 
+// Spectral node-curve preset restore is an untrusted surface: a hand-edited or
+// corrupt blob can carry NaN/Inf or a wild value, which would latch into the
+// per-bin smoother and poison the FFT output with NaN forever.  sanitizeNodeDb
+// is the guard on the way in.
+void test_spectral_sanitize_node_db()
+{
+    using dcr::spectral::sanitizeNodeDb;
+    using dcr::spectral::kNodeLimitDb;
+
+    // In-range values pass through unchanged.
+    CHECK (feq (sanitizeNodeDb (0.0),    0.0f));
+    CHECK (feq (sanitizeNodeDb (6.0),    6.0f));
+    CHECK (feq (sanitizeNodeDb (-12.5), -12.5f));
+    // Exactly at the limits.
+    CHECK (feq (sanitizeNodeDb ( (double) kNodeLimitDb),  kNodeLimitDb));
+    CHECK (feq (sanitizeNodeDb (-(double) kNodeLimitDb), -kNodeLimitDb));
+    // Out of range clamps to the limit (values an untrusted preset might carry).
+    CHECK (feq (sanitizeNodeDb (1.0e308),  kNodeLimitDb));
+    CHECK (feq (sanitizeNodeDb (-500.0),  -kNodeLimitDb));
+    CHECK (feq (sanitizeNodeDb (18.001),   kNodeLimitDb));
+    // Non-finite -> neutral 0 (the bug: NaN/Inf otherwise reached the FFT path,
+    // and juce::jlimit does NOT reject NaN).
+    CHECK (feq (sanitizeNodeDb ((double) NAN),       0.0f));
+    CHECK (feq (sanitizeNodeDb ((double) INFINITY),  0.0f));
+    CHECK (feq (sanitizeNodeDb (-(double) INFINITY), 0.0f));
+    // Whatever comes in, the result is always finite and within the node range.
+    const double probes[] = { (double) NAN, (double) INFINITY, -(double) INFINITY,
+                              1.0e308, -1.0e308, 50.0, -50.0, 3.3 };
+    for (double v : probes)
+    {
+        const float r = sanitizeNodeDb (v);
+        CHECK (std::isfinite (r));
+        CHECK (r >= -kNodeLimitDb && r <= kNodeLimitDb);
+    }
+}
+
 } // namespace
 
 int main()
@@ -593,6 +630,8 @@ int main()
     test_resonance_node_interp();
     test_resonance_target_reduction();
     test_resonance_base_strength();
+
+    test_spectral_sanitize_node_db();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

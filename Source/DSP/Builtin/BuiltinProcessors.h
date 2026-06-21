@@ -229,6 +229,15 @@ protected:
         return 0.0f;
     }
 
+    // Read a parameter via a pointer cached at construction.  String-keyed
+    // param() lookups (and the juce::String id construction they need) are fine
+    // on the message thread but must never run per-block on the matrix thread;
+    // classes with per-band ids cache the std::atomic<float>* once and read here.
+    static float readParam (const std::atomic<float>* a) noexcept
+    {
+        return a != nullptr ? a->load() : 0.0f;
+    }
+
     juce::String id, dispName;
     APVTS apvts;
     int   preparedChannels = 2;
@@ -369,7 +378,18 @@ class ParametricEQ : public BuiltinProcessor
 public:
     static constexpr int kNumBands = 5;
 
-    ParametricEQ() : BuiltinProcessor (ids::eq, "Parametric EQ", createLayout()) {}
+    ParametricEQ() : BuiltinProcessor (ids::eq, "Parametric EQ", createLayout())
+    {
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            auto& p = ptrs[(size_t) b];
+            p.on   = apvts.getRawParameterValue (paramId (b, "on"));
+            p.type = apvts.getRawParameterValue (paramId (b, "type"));
+            p.freq = apvts.getRawParameterValue (paramId (b, "freq"));
+            p.gain = apvts.getRawParameterValue (paramId (b, "gain"));
+            p.q    = apvts.getRawParameterValue (paramId (b, "q"));
+        }
+    }
 
     // Custom editor with a draggable frequency-response curve (defined in
     // ParametricEqEditor.h; createEditor is implemented in
@@ -424,7 +444,7 @@ protected:
         const int ns = buffer.getNumSamples();
         for (int b = 0; b < kNumBands; ++b)
         {
-            if (param (pid (b, "on")) < 0.5f) continue;
+            if (readParam (ptrs[(size_t) b].on) < 0.5f) continue;
             updateBandIfNeeded (b);
             if (bands[(size_t) b].hasCoefficients())
                 bands[(size_t) b].process (buffer, ns);
@@ -432,16 +452,15 @@ protected:
     }
 
 private:
-    juce::String pid (int b, const char* suffix) const { return paramId (b, suffix); }
-
     struct BandCache { int type = -1; float freq = -1, gain = -999, q = -1; };
 
     void updateBandIfNeeded (int b)
     {
-        const int   type = (int) param (pid (b, "type").toRawUTF8());
-        const float freq = juce::jlimit (20.0f, 20000.0f, param (pid (b, "freq").toRawUTF8()));
-        const float gain = param (pid (b, "gain").toRawUTF8());
-        const float q    = juce::jlimit (0.1f, 10.0f, param (pid (b, "q").toRawUTF8()));
+        const auto& p    = ptrs[(size_t) b];
+        const int   type = (int) readParam (p.type);
+        const float freq = juce::jlimit (20.0f, 20000.0f, readParam (p.freq));
+        const float gain = readParam (p.gain);
+        const float q    = juce::jlimit (0.1f, 10.0f, readParam (p.q));
 
         auto& c = cache[(size_t) b];
         if (type == c.type && std::abs (freq - c.freq) < 0.5f
@@ -462,6 +481,11 @@ private:
         bands[(size_t) b].setCoefficients (co);
     }
 
+    // Parameter pointers cached at construction -- no per-block id building.
+    struct BandPtrs { std::atomic<float>* on = nullptr; std::atomic<float>* type = nullptr;
+                      std::atomic<float>* freq = nullptr; std::atomic<float>* gain = nullptr;
+                      std::atomic<float>* q = nullptr; };
+    std::array<BandPtrs,    kNumBands> ptrs;
     std::array<MultiBiquad, kNumBands> bands;
     std::array<BandCache,   kNumBands> cache;
 };
@@ -1268,7 +1292,18 @@ class ChannelStripProcessor : public BuiltinProcessor
 public:
     static constexpr int kEqBands = 4;
 
-    ChannelStripProcessor() : BuiltinProcessor (ids::strip, "Channel Strip", createLayout()) {}
+    ChannelStripProcessor() : BuiltinProcessor (ids::strip, "Channel Strip", createLayout())
+    {
+        for (int b = 0; b < kEqBands; ++b)
+        {
+            auto& p = eqPtrs[(size_t) b];
+            p.on   = apvts.getRawParameterValue (eqId (b, "on"));
+            p.type = apvts.getRawParameterValue (eqId (b, "type"));
+            p.freq = apvts.getRawParameterValue (eqId (b, "freq"));
+            p.gain = apvts.getRawParameterValue (eqId (b, "gain"));
+            p.q    = apvts.getRawParameterValue (eqId (b, "q"));
+        }
+    }
 
     juce::AudioProcessorEditor* createEditor() override;   // ChannelStripEditor.h
 
@@ -1392,11 +1427,12 @@ protected:
         // --- 3. EQ ----------------------------------------------------------
         for (int b = 0; b < kEqBands; ++b)
         {
-            if (param (eqId (b, "on").toRawUTF8()) < 0.5f) continue;
-            const int   type = (int) param (eqId (b, "type").toRawUTF8());
-            const float freq = juce::jlimit (20.0f, 20000.0f, param (eqId (b, "freq").toRawUTF8()));
-            const float gain = param (eqId (b, "gain").toRawUTF8());
-            const float q    = juce::jlimit (0.1f, 10.0f, param (eqId (b, "q").toRawUTF8()));
+            const auto& p = eqPtrs[(size_t) b];
+            if (readParam (p.on) < 0.5f) continue;
+            const int   type = (int) readParam (p.type);
+            const float freq = juce::jlimit (20.0f, 20000.0f, readParam (p.freq));
+            const float gain = readParam (p.gain);
+            const float q    = juce::jlimit (0.1f, 10.0f, readParam (p.q));
             auto& c = eqCache[(size_t) b];
             if (type != c.type || std::abs (freq - c.freq) > 0.5f
                 || std::abs (gain - c.gain) > 0.01f || std::abs (q - c.q) > 0.001f)
@@ -1443,8 +1479,12 @@ protected:
 
 private:
     struct BandCache { int type = -1; float freq = -1, gain = -999, q = -1; };
+    struct EqPtrs { std::atomic<float>* on = nullptr; std::atomic<float>* type = nullptr;
+                    std::atomic<float>* freq = nullptr; std::atomic<float>* gain = nullptr;
+                    std::atomic<float>* q = nullptr; };
 
     MultiBiquad hpf;
+    std::array<EqPtrs,      kEqBands> eqPtrs;   // cached at construction, read per-block
     std::array<MultiBiquad, kEqBands> eqBands;
     std::array<BandCache,   kEqBands> eqCache;
     float gateEnv = 0.0f, gateGain = 0.0f, compEnv = 0.0f, lastHpFreq = -1.0f;
@@ -1461,7 +1501,19 @@ class MultibandCompProcessor : public BuiltinProcessor
 public:
     static constexpr int kBands = 4;
 
-    MultibandCompProcessor() : BuiltinProcessor (ids::mbcomp, "Multiband Compressor", createLayout()) {}
+    MultibandCompProcessor() : BuiltinProcessor (ids::mbcomp, "Multiband Compressor", createLayout())
+    {
+        for (int b = 0; b < kBands; ++b)
+        {
+            auto& p = bandPtrs[(size_t) b];
+            p.on     = apvts.getRawParameterValue (bandId (b, "on"));
+            p.thresh = apvts.getRawParameterValue (bandId (b, "thresh"));
+            p.ratio  = apvts.getRawParameterValue (bandId (b, "ratio"));
+            p.makeup = apvts.getRawParameterValue (bandId (b, "makeup"));
+            p.attack = apvts.getRawParameterValue (bandId (b, "attack"));
+            p.rel    = apvts.getRawParameterValue (bandId (b, "rel"));
+        }
+    }
 
     juce::AudioProcessorEditor* createEditor() override;   // MultibandCompEditor.h
 
@@ -1556,12 +1608,13 @@ protected:
         BP bp[kBands];
         for (int b = 0; b < kBands; ++b)
         {
-            bp[b].on     = paramOf (bandId (b, "on").toRawUTF8()) > 0.5f;
-            bp[b].thr    = paramOf (bandId (b, "thresh").toRawUTF8());
-            bp[b].ratio  = juce::jmax (1.0f, paramOf (bandId (b, "ratio").toRawUTF8()));
-            bp[b].makeup = std::pow (10.0f, paramOf (bandId (b, "makeup").toRawUTF8()) * 0.05f);
-            bp[b].attCoeff = std::exp (-1.0f / (float) (juce::jmax (0.1f, paramOf (bandId (b, "attack").toRawUTF8())) * 0.001 * dspSampleRate));
-            bp[b].relCoeff = std::exp (-1.0f / (float) (juce::jmax (1.0f, paramOf (bandId (b, "rel").toRawUTF8()))    * 0.001 * dspSampleRate));
+            const auto& p = bandPtrs[(size_t) b];
+            bp[b].on     = readParam (p.on) > 0.5f;
+            bp[b].thr    = readParam (p.thresh);
+            bp[b].ratio  = juce::jmax (1.0f, readParam (p.ratio));
+            bp[b].makeup = std::pow (10.0f, readParam (p.makeup) * 0.05f);
+            bp[b].attCoeff = std::exp (-1.0f / (float) (juce::jmax (0.1f, readParam (p.attack)) * 0.001 * dspSampleRate));
+            bp[b].relCoeff = std::exp (-1.0f / (float) (juce::jmax (1.0f, readParam (p.rel))    * 0.001 * dspSampleRate));
         }
 
         float blockMinGr[kBands] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1623,6 +1676,11 @@ protected:
 
 private:
     float paramOf (juce::StringRef id) const { return param (id); }
+
+    struct BandPtrs { std::atomic<float>* on = nullptr; std::atomic<float>* thresh = nullptr;
+                      std::atomic<float>* ratio = nullptr; std::atomic<float>* makeup = nullptr;
+                      std::atomic<float>* attack = nullptr; std::atomic<float>* rel = nullptr; };
+    std::array<BandPtrs, kBands> bandPtrs;   // cached at construction, read per-block
 
     juce::dsp::LinkwitzRileyFilter<float> lr1, lr2, lr3;
     std::array<std::vector<float>, kBands> bandScratch;

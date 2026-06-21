@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DSP/Builtin/SpectralProcessor.h"
+#include "DSP/Builtin/SpectralNodeMath.h"
 
 #include <array>
 #include <atomic>
@@ -99,7 +100,7 @@ public:
     void setNodeDb (int i, float db) noexcept
     {
         if (i < 0 || i >= kNumNodes) return;
-        nodes[(size_t) i].store (juce::jlimit (-18.0f, 18.0f, db), std::memory_order_relaxed);
+        nodes[(size_t) i].store (dcr::spectral::sanitizeNodeDb (db), std::memory_order_relaxed);
         targetGen.fetch_add (1, std::memory_order_release);   // publish to the audio thread
     }
     void resetNode (int i) noexcept { setNodeDb (i, 0.0f); }
@@ -127,7 +128,8 @@ public:
         if (xml == nullptr) return;
         if (auto* t = xml->getChildByName ("TARGET"))
             for (int i = 0; i < kNumNodes; ++i)
-                nodes[(size_t) i].store ((float) t->getDoubleAttribute ("n" + juce::String (i), 0.0),
+                // Untrusted blob: clamp + reject NaN/Inf before it reaches the audio thread.
+                nodes[(size_t) i].store (dcr::spectral::sanitizeNodeDb (t->getDoubleAttribute ("n" + juce::String (i), 0.0)),
                                          std::memory_order_relaxed);
         targetGen.fetch_add (1, std::memory_order_release);
         // The <TARGET> child is ours, not a parameter -- strip it before the
