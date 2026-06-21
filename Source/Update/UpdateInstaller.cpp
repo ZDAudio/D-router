@@ -198,7 +198,10 @@ namespace dcr::update
            << "/bin/rm -rf \"$STAGING\" \"$ZIP\" \"$PLIST\"\n"
            << "/bin/launchctl bootout gui/$USERID/$LABEL 2>/dev/null\n";
 
-        script.replaceWithText (sh);
+        // MUST write LF, not the juce default CRLF: bash cannot parse a CRLF
+        // script -- `then\r` / `fi\r` / `done\r` aren't keywords and `2>&1\r` is
+        // an ambiguous redirect, so the whole swap aborts (this was THE bug).
+        script.replaceWithText (sh, false, false, "\n");
         script.setExecutePermission (true);
 
         // LaunchAgent that runs the script once, the moment launchd loads it.
@@ -216,7 +219,7 @@ namespace dcr::update
            << "  </array>\n"
            << "  <key>RunAtLoad</key><true/>\n"
            << "</dict></plist>\n";
-        plist.replaceWithText (pl);
+        plist.replaceWithText (pl, false, false, "\n");
 
         // Clear any stale job from a previous attempt (ignore failure), then load
         // ours -- launchd runs it immediately (RunAtLoad).
