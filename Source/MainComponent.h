@@ -16,6 +16,7 @@
 #include "UI/OutputGroupPanel.h"
 #include "UI/StatusPanel.h"
 #include "UI/LookAndFeel.h"
+#include "Update/UpdateChecker.h"
 
 namespace dcr {
 
@@ -50,6 +51,12 @@ private:
 
     // Modeless About dialog: app name, PRIVATE BETA mark, version, contact.
     void showAboutDialog();
+
+    // Opt-in GitHub auto-update.  Runs once ~3 s after launch (silent: only a
+    // newer version pops a prompt) and from the "Check for Updates..." menu item
+    // (userInitiated: also reports "up to date" / "couldn't check").
+    void checkForUpdates (bool userInitiated);
+    void showUpdatePrompt (std::unique_ptr<dcr::update::ReleaseInfo> info);
 
     void openDeviceDialog();
     void applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs);
@@ -150,6 +157,9 @@ private:
     AudioEngine engine;
     std::vector<AudioEngine::DeviceSpec> currentSpecs;
     std::unique_ptr<juce::FileChooser> activeChooser;
+
+    // GitHub auto-updater (opt-in); background-threaded, message-thread callback.
+    dcr::update::UpdateChecker updateChecker;
 
     // Periodic perf snapshot into the Logger -- 5 sec interval, free of
     // engine state during reconfigure (atomic reads only).

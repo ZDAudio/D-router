@@ -13,13 +13,15 @@
 #include "UI/GroupManagerDialog.h"
 #include "UI/LogViewerDialog.h"
 #include "UI/SettingsDialog.h"
+#include "Update/UpdatePrompt.h"
 
 namespace dcr {
 
-// Apple (app-name) menu "About" command id.  Defined at file scope so both
-// the constructor (which builds the Apple menu) and menuItemSelected (far
-// below, where the rest of the menu ids live) can see it.
-static constexpr int kMenuAboutId = 1500;
+// Apple (app-name) menu command ids.  Defined at file scope so both the
+// constructor (which builds the Apple menu) and menuItemSelected (far below,
+// where the rest of the menu ids live) can see them.
+static constexpr int kMenuAboutId        = 1500;
+static constexpr int kMenuCheckUpdatesId = 1501;
 
 MainComponent::MainComponent()
 {
@@ -374,8 +376,17 @@ MainComponent::MainComponent()
     // expect it.  setMacMainMenu copies the extra menu, so the local is fine.
     juce::PopupMenu appleMenu;
     appleMenu.addItem (kMenuAboutId, "About D-Router");
+    appleMenu.addItem (kMenuCheckUpdatesId, "Check for Updates...");
     juce::MenuBarModel::setMacMainMenu (this, &appleMenu);
    #endif
+
+    // Opt-in auto-update: one silent check a few seconds after launch (only a
+    // newer version surfaces a prompt; ignoring it leaves this version running).
+    juce::Component::SafePointer<MainComponent> safe (this);
+    juce::Timer::callAfterDelay (3000, [safe]
+    {
+        if (safe != nullptr) safe->checkForUpdates (false);
+    });
 }
 
 void MainComponent::timerCallback()
@@ -627,6 +638,7 @@ void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
 
         // Apple menu
         case kMenuAboutId: showAboutDialog(); break;
+        case kMenuCheckUpdatesId: checkForUpdates (true); break;
 
         default: break;
     }
@@ -713,6 +725,45 @@ void MainComponent::showAboutDialog()
     juce::DialogWindow::LaunchOptions o;
     o.content.setOwned (new AboutContent());
     o.dialogTitle                  = "About D-Router";
+    o.dialogBackgroundColour       = juce::Colour::fromRGB (18, 18, 22);
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar            = true;
+    o.resizable                    = false;
+    o.launchAsync();
+}
+
+void MainComponent::checkForUpdates (bool userInitiated)
+{
+    const juce::String current = juce::JUCEApplication::getInstance()->getApplicationVersion();
+    juce::Component::SafePointer<MainComponent> safe (this);
+
+    updateChecker.check (current,
+        [safe, userInitiated] (std::unique_ptr<dcr::update::ReleaseInfo> info, bool ok)
+        {
+            if (safe == nullptr) return;                     // component gone (callback is on the msg thread)
+
+            if (info != nullptr) { safe->showUpdatePrompt (std::move (info)); return; }
+
+            if (! userInitiated) return;                     // silent launch check: stay quiet
+
+            const juce::String cur = juce::JUCEApplication::getInstance()->getApplicationVersion();
+            if (ok)
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
+                    "You're up to date", "D-Router " + cur + " is the latest version.");
+            else
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                    "Couldn't check for updates",
+                    "Couldn't reach GitHub. Check your connection and try again.");
+        });
+}
+
+void MainComponent::showUpdatePrompt (std::unique_ptr<dcr::update::ReleaseInfo> info)
+{
+    const juce::String current = juce::JUCEApplication::getInstance()->getApplicationVersion();
+
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (new dcr::update::UpdatePrompt (*info, current));
+    o.dialogTitle                  = "Software Update";
     o.dialogBackgroundColour       = juce::Colour::fromRGB (18, 18, 22);
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar            = true;
