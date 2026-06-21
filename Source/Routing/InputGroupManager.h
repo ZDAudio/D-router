@@ -7,68 +7,72 @@
 #include <memory>
 #include <vector>
 
-#include "Routing/OutputGroup.h"   // reuses the OutputGroup struct (same shape)
+#include "Routing/OutputGroup.h" // reuses the OutputGroup struct (same shape)
 
-namespace dcr {
-
-class RoutingMatrix;
-
-// Mirror of OutputGroupManager for INPUT-side groups.  Member channels are
-// global INPUT channel indices.  moveGroupFader / setGroupMute touch the
-// matrix's INPUT trim / mute fields.  Multi-channel plugin chains run on the
-// gathered input buffer BEFORE the matrix mix.
-class InputGroupManager
+namespace dcr
 {
-public:
-    void setNumInputChannels (int n);
 
-    int  getNumInputChannels() const noexcept { return numInputs; }
-    int  getNumGroups()        const noexcept { return (int) groups.size(); }
+    class RoutingMatrix;
 
-    int          createGroup (juce::String name, juce::AudioChannelSet cs);
-    void         removeGroup (int groupIdx);
-    OutputGroup*       getGroup (int groupIdx)       noexcept;
-    const OutputGroup* getGroup (int groupIdx) const noexcept;
-    int          getGroupIndexForChannel (int globalInputCh) const noexcept;
-    OutputGroup* getGroupForChannel       (int globalInputCh) noexcept;
-
-    void assignChannel (int groupIdx, int slotIdx, int globalInputCh);
-
-    void moveGroupFader (int groupIdx, float newFaderDb, RoutingMatrix& matrix);
-    void setGroupMute   (int groupIdx, bool muted,       RoutingMatrix& matrix);
-
-    // Switch a group between VCA and Router (see OutputGroupManager for the
-    // semantics; this mirrors it on the input trims).
-    void setGroupFaderMode (int groupIdx, OutputGroup::FaderMode mode, RoutingMatrix& matrix);
-
-    // Audio thread: per-channel Router overlay gain (1.0 == no contribution).
-    // Lock-free atomic read; folded into inputEffGain by MatrixProcessor.
-    float getChannelRouterGain (int ch) const noexcept
+    // Mirror of OutputGroupManager for INPUT-side groups.  Member channels are
+    // global INPUT channel indices.  moveGroupFader / setGroupMute touch the
+    // matrix's INPUT trim / mute fields.  Multi-channel plugin chains run on the
+    // gathered input buffer BEFORE the matrix mix.
+    class InputGroupManager
     {
-        return (ch >= 0 && ch < (int) channelRouterGain.size())
-            ? channelRouterGain[(size_t) ch].load (std::memory_order_relaxed)
-            : 1.0f;
-    }
+    public:
+        void setNumInputChannels (int n);
 
-    template <typename Fn>
-    void forEachGroupForAudio (Fn&& fn) const
-    {
-        const juce::SpinLock::ScopedTryLockType lk (lock);
-        if (! lk.isLocked()) return;
-        for (auto& g : groups) if (g != nullptr) fn (*g);
-    }
+        int getNumInputChannels() const noexcept { return numInputs; }
+        int getNumGroups() const noexcept { return (int) groups.size(); }
 
-    juce::SpinLock& getLock() noexcept { return lock; }
+        int createGroup (juce::String name, juce::AudioChannelSet cs);
+        void removeGroup (int groupIdx);
+        OutputGroup* getGroup (int groupIdx) noexcept;
+        const OutputGroup* getGroup (int groupIdx) const noexcept;
+        int getGroupIndexForChannel (int globalInputCh) const noexcept;
+        OutputGroup* getGroupForChannel (int globalInputCh) noexcept;
 
-private:
-    void rebuildChannelLookup();
-    void recomputeRouterGains();   // call under lock; rebuilds channelRouterGain from Router groups
+        void assignChannel (int groupIdx, int slotIdx, int globalInputCh);
 
-    mutable juce::SpinLock                       lock;
-    std::vector<std::unique_ptr<OutputGroup>>    groups;
-    std::vector<int>                             channelToGroupIdx;
-    std::vector<std::atomic<float>>              channelRouterGain;   // size = numInputs; 1.0 == no overlay
-    int                                          numInputs = 0;
-};
+        void moveGroupFader (int groupIdx, float newFaderDb, RoutingMatrix& matrix);
+        void setGroupMute (int groupIdx, bool muted, RoutingMatrix& matrix);
+
+        // Switch a group between VCA and Router (see OutputGroupManager for the
+        // semantics; this mirrors it on the input trims).
+        void setGroupFaderMode (int groupIdx, OutputGroup::FaderMode mode, RoutingMatrix& matrix);
+
+        // Audio thread: per-channel Router overlay gain (1.0 == no contribution).
+        // Lock-free atomic read; folded into inputEffGain by MatrixProcessor.
+        float getChannelRouterGain (int ch) const noexcept
+        {
+            return (ch >= 0 && ch < (int) channelRouterGain.size())
+                       ? channelRouterGain[(size_t) ch].load (std::memory_order_relaxed)
+                       : 1.0f;
+        }
+
+        template <typename Fn>
+        void forEachGroupForAudio (Fn&& fn) const
+        {
+            const juce::SpinLock::ScopedTryLockType lk (lock);
+            if (!lk.isLocked())
+                return;
+            for (auto& g : groups)
+                if (g != nullptr)
+                    fn (*g);
+        }
+
+        juce::SpinLock& getLock() noexcept { return lock; }
+
+    private:
+        void rebuildChannelLookup();
+        void recomputeRouterGains(); // call under lock; rebuilds channelRouterGain from Router groups
+
+        mutable juce::SpinLock lock;
+        std::vector<std::unique_ptr<OutputGroup>> groups;
+        std::vector<int> channelToGroupIdx;
+        std::vector<std::atomic<float>> channelRouterGain; // size = numInputs; 1.0 == no overlay
+        int numInputs = 0;
+    };
 
 } // namespace dcr
