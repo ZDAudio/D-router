@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dcorerouter VERSION 0.2.0 LANGUAGES C CXX OBJC OBJCXX)
+project(dcorerouter VERSION 0.2.1 LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,7 @@ target_sources(dcorerouter PRIVATE
     Source/Engine/MatrixProcessor.cpp
     Source/Engine/WorkerPool.cpp
     Source/Engine/AudioEngine.cpp
+    Source/Engine/DeviceVolume.cpp
     Source/Routing/RoutingMatrix.cpp
     Source/Routing/OutputGroupManager.cpp
     Source/Routing/InputGroupManager.cpp
@@ -48,6 +49,7 @@ target_sources(dcorerouter PRIVATE
     Source/UI/GroupManagerDialog.cpp
     Source/UI/OutputGroupPanel.cpp
     Source/UI/StatusPanel.cpp
+    Source/UI/DeviceVolumePanel.cpp
     Source/UI/LevelMeter.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp

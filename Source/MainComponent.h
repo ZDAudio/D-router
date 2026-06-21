@@ -15,6 +15,7 @@
 #include "UI/MatrixView.h"
 #include "UI/OutputGroupPanel.h"
 #include "UI/StatusPanel.h"
+#include "UI/DeviceVolumePanel.h"
 #include "UI/LookAndFeel.h"
 #include "Update/UpdateChecker.h"
 
@@ -189,12 +190,13 @@ private:
     juce::TextButton resetButton    { "RESET" };
 
     // Top Navigation Tabs
-    enum Tab { RoutingTab, GroupsTab, StatusTab };
+    enum Tab { RoutingTab, GroupsTab, AudioSetupTab, StatusTab };
     Tab currentTab = RoutingTab;
 
-    juce::TextButton matrixTabBtn { "MATRIX ROUTING" };
-    juce::TextButton groupsTabBtn { "IN / OUT GROUPS" };
-    juce::TextButton statusTabBtn { "ENGINE MONITOR" };
+    juce::TextButton matrixTabBtn    { "MATRIX ROUTING" };
+    juce::TextButton groupsTabBtn    { "IN / OUT GROUPS" };
+    juce::TextButton audioSetupTabBtn { "AUDIO SETUP" };
+    juce::TextButton statusTabBtn    { "ENGINE MONITOR" };
 
     juce::Label groupsPlaceholder;
     juce::Label inputGroupsPlaceholder;
@@ -204,6 +206,11 @@ private:
     OutputGroupPanel groupPanel       { engine, OutputGroupPanel::Direction::Outputs };
     OutputGroupPanel inputGroupPanel  { engine, OutputGroupPanel::Direction::Inputs  };
     StatusPanel      statusPanel { engine };
+
+    // AUDIO SETUP tab: per-device hardware volume/mute, inputs on top, outputs
+    // on bottom (mirrors the IN / OUT GROUPS split).
+    DeviceVolumePanel inputDeviceVolPanel  { engine, DeviceVolumePanel::Direction::Inputs  };
+    DeviceVolumePanel outputDeviceVolPanel { engine, DeviceVolumePanel::Direction::Outputs };
 
     // Full-window overlay shown during startup splash + matrix rebuilds.
     LoadingOverlay   loadingOverlay;
