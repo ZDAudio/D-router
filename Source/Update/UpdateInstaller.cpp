@@ -1,9 +1,6 @@
 #include "Update/UpdateInstaller.h"
 
-#include <crt_externs.h> // _NSGetEnviron
-#include <fcntl.h> // O_RDONLY / O_WRONLY
-#include <spawn.h> // posix_spawn, POSIX_SPAWN_SETSID
-#include <unistd.h> // getpid, STDIN_FILENO ...
+#include <unistd.h> // getpid, getuid
 
 namespace dcr::update
 {
@@ -148,76 +145,98 @@ namespace dcr::update
             return;
         }
 
-        // --- 3. write + launch the detached swap script --------------------------
+        // --- 3. hand the swap to LAUNCHD ----------------------------------------
+        // A child WE spawn is killed by macOS the instant we quit -- verified to
+        // happen even with POSIX_SPAWN_SETSID (own session) AND responsibility-
+        // disclaim.  A launchd job is not our child and not our "responsibility",
+        // so it is the reliable way to run code that outlives us.  Write a swap
+        // script + a LaunchAgent that runs it, load it with `launchctl bootstrap`,
+        // then quit; launchd performs the swap + relaunch.
         const auto oldApp = appBundle();
         const int pid = (int) ::getpid();
+        const int uid = (int) ::getuid();
+        const juce::String label = "com.zdaudio.drouter.updateswap";
         const auto script = dir.getChildFile ("swap.sh");
+        const auto plist = dir.getChildFile ("updateswap.plist");
 
+        // launchd gives the job a MINIMAL PATH, so call tools by absolute path.
+        // $HOME *is* set by launchd (verified), so the log path resolves.  The
+        // /tmp marker is a belt-and-suspenders liveness check.
         juce::String sh;
         sh << "#!/bin/bash\n"
            << "PID=" << pid << "\n"
+           << "USERID=" << uid << "\n"
+           << "LABEL=" << label << "\n"
            << "OLD=" << shQuote (oldApp.getFullPathName()) << "\n"
            << "NEW=" << shQuote (newApp.getFullPathName()) << "\n"
            << "STAGING=" << shQuote (staging.getFullPathName()) << "\n"
            << "ZIP=" << shQuote (zip.getFullPathName()) << "\n"
-           << "SELF=\"$0\"\n"
-           // Log every step so a half-applied update is diagnosable.  pgid here
-           // should equal the helper's own pid -- if it doesn't, we're still in
-           // the app's process group (the old bug that got the helper killed).
-           << "LOG=\"$HOME/Library/Logs/D-Router/update-swap.log\"\n"
-           << "mkdir -p \"$(dirname \"$LOG\")\"\n"
+           << "PLIST=" << shQuote (plist.getFullPathName()) << "\n"
+           << "echo \"[$(/bin/date)] launchd swap helper alive pid=$$\" > /tmp/drouter-swap.marker 2>&1\n"
+           // NOTE: /bin/bash is Apple's bash 3.2, which mis-parses nested double
+           // quotes inside $(...)  -- e.g. "$(dirname "$LOG")" aborts the whole
+           // script (exit 2).  Keep the dir literal; no command substitution.
+           << "LOGDIR=\"$HOME/Library/Logs/D-Router\"\n"
+           << "/bin/mkdir -p \"$LOGDIR\"\n"
+           << "LOG=\"$LOGDIR/update-swap.log\"\n"
            << "exec >>\"$LOG\" 2>&1\n"
-           << "echo \"===== [$(date)] swap start pid=$$ watch=$PID pgid=$(ps -o pgid= -p $$ | tr -d ' ') =====\"\n"
-           << "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done\n"
-           << "echo \"[$(date)] target app exited; swapping $OLD\"\n"
-           << "sleep 0.3\n"
-           << "xattr -cr \"$NEW\" 2>/dev/null\n"
-           // Copy the new bundle beside the old one first and only delete the old one
-           // after that copy succeeds, so a failure can never leave us with no app.
-           << "if ditto \"$NEW\" \"$OLD.new\"; then\n"
-           << "  rm -rf \"$OLD\" && mv \"$OLD.new\" \"$OLD\" && xattr -cr \"$OLD\" 2>/dev/null && echo \"[$(date)] swap OK\"\n"
+           << "echo \"===== [$(/bin/date)] launchd swap start pid=$$ watch=$PID =====\"\n"
+           << "while /bin/kill -0 \"$PID\" 2>/dev/null; do /bin/sleep 0.2; done\n"
+           << "echo \"[$(/bin/date)] app exited; swapping $OLD\"\n"
+           << "/bin/sleep 0.3\n"
+           << "/usr/bin/xattr -cr \"$NEW\" 2>/dev/null\n"
+           // Copy the new bundle beside the old one first and only delete the old
+           // one after that copy succeeds, so a failure can't leave us with no app.
+           << "if /usr/bin/ditto \"$NEW\" \"$OLD.new\"; then\n"
+           << "  /bin/rm -rf \"$OLD\" && /bin/mv \"$OLD.new\" \"$OLD\" && /usr/bin/xattr -cr \"$OLD\" 2>/dev/null && echo \"[$(/bin/date)] swap OK\"\n"
            << "else\n"
-           << "  echo \"[$(date)] ditto FAILED -- left old app in place\"\n"
+           << "  echo \"[$(/bin/date)] ditto FAILED -- left old app in place\"\n"
            << "fi\n"
-           << "open \"$OLD\" && echo \"[$(date)] relaunched\" || echo \"[$(date)] open FAILED\"\n"
-           << "rm -rf \"$STAGING\" \"$ZIP\" \"$SELF\"\n";
+           << "/usr/bin/open \"$OLD\" && echo \"[$(/bin/date)] relaunched\" || echo \"[$(/bin/date)] open FAILED\"\n"
+           // Tidy up the big bits + the plist (NOT swap.sh -- we're running it),
+           // then unload this launchd job (that terminates us last; done by then).
+           << "/bin/rm -rf \"$STAGING\" \"$ZIP\" \"$PLIST\"\n"
+           << "/bin/launchctl bootout gui/$USERID/$LABEL 2>/dev/null\n";
 
         script.replaceWithText (sh);
         script.setExecutePermission (true);
 
-        // Launch the swap helper in its OWN session (POSIX_SPAWN_SETSID) so it
-        // outlives our exit.  A plain `nohup ... &` leaves it in our session /
-        // process group, where macOS kills it the instant we terminate -- before
-        // it can swap the bundle or relaunch (the bug: app quit, no swap, no
-        // relaunch).  setsid detaches it; stdio goes to /dev/null so it holds
-        // none of our descriptors.
-        const auto scriptPath = script.getFullPathName();
-        const char* argv[] = { "/bin/bash", scriptPath.toRawUTF8(), nullptr };
+        // LaunchAgent that runs the script once, the moment launchd loads it.
+        auto xmlEsc = [] (const juce::String& s) {
+            return s.replace ("&", "&amp;").replace ("<", "&lt;").replace (">", "&gt;");
+        };
+        juce::String pl;
+        pl << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           << "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+              "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+           << "<plist version=\"1.0\"><dict>\n"
+           << "  <key>Label</key><string>" << label << "</string>\n"
+           << "  <key>ProgramArguments</key><array>\n"
+           << "    <string>/bin/bash</string><string>" << xmlEsc (script.getFullPathName()) << "</string>\n"
+           << "  </array>\n"
+           << "  <key>RunAtLoad</key><true/>\n"
+           << "</dict></plist>\n";
+        plist.replaceWithText (pl);
 
-        posix_spawnattr_t attr;
-        posix_spawnattr_init (&attr);
-        posix_spawnattr_setflags (&attr, POSIX_SPAWN_SETSID);
+        // Clear any stale job from a previous attempt (ignore failure), then load
+        // ours -- launchd runs it immediately (RunAtLoad).
+        const juce::String domain = "gui/" + juce::String (uid);
 
-        posix_spawn_file_actions_t fa;
-        posix_spawn_file_actions_init (&fa);
-        posix_spawn_file_actions_addopen (&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-        posix_spawn_file_actions_addopen (&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-        posix_spawn_file_actions_addopen (&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+        juce::ChildProcess clear;
+        clear.start (juce::StringArray { "/bin/launchctl", "bootout", domain + "/" + label });
+        clear.waitForProcessToFinish (5000);
 
-        pid_t child = 0;
-        const int rc = posix_spawn (&child, "/bin/bash", &fa, &attr, const_cast<char* const*> (argv), *_NSGetEnviron());
-
-        posix_spawn_file_actions_destroy (&fa);
-        posix_spawnattr_destroy (&attr);
-
-        if (rc != 0)
+        juce::ChildProcess load;
+        load.start (juce::StringArray { "/bin/launchctl", "bootstrap", domain, plist.getFullPathName() });
+        load.waitForProcessToFinish (10000);
+        if (load.getExitCode() != 0)
         {
-            finish (false, "Couldn't start the update helper.");
+            finish (false, "Couldn't schedule the update helper.");
             return;
         }
 
-        // Helper is detached and waiting on our PID -- now really quit (clean
-        // shutdown releases the audio devices) so it can perform the swap.
+        // launchd owns the swap now -- quit (clean shutdown releases the audio
+        // devices) so the job can replace us and relaunch.
         juce::MessageManager::callAsync ([] {
             if (auto* app = juce::JUCEApplicationBase::getInstance())
                 app->systemRequestedQuit();
