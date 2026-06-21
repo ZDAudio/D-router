@@ -170,20 +170,24 @@ MainComponent::MainComponent()
     // Group buttons for radio toggling
     matrixTabBtn.setRadioGroupId (100);
     groupsTabBtn.setRadioGroupId (100);
+    audioSetupTabBtn.setRadioGroupId (100);
     statusTabBtn.setRadioGroupId (100);
 
     matrixTabBtn.setClickingTogglesState (true);
     groupsTabBtn.setClickingTogglesState (true);
+    audioSetupTabBtn.setClickingTogglesState (true);
     statusTabBtn.setClickingTogglesState (true);
 
     matrixTabBtn.setToggleState (true, juce::dontSendNotification);
 
     matrixTabBtn.onClick = [this] { switchTab (RoutingTab); };
     groupsTabBtn.onClick = [this] { switchTab (GroupsTab); };
+    audioSetupTabBtn.onClick = [this] { switchTab (AudioSetupTab); };
     statusTabBtn.onClick = [this] { switchTab (StatusTab); };
 
     addAndMakeVisible (matrixTabBtn);
     addAndMakeVisible (groupsTabBtn);
+    addAndMakeVisible (audioSetupTabBtn);
     addAndMakeVisible (statusTabBtn);
 
     groupsPlaceholder.setText ("OUTPUT GROUPS DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
@@ -269,6 +273,10 @@ MainComponent::MainComponent()
     // Status Panel setup
     addChildComponent (statusPanel);
     statusPanel.onPopOutRequested = [this] { toggleStatusPanelDetach(); };
+
+    // AUDIO SETUP tab panels (hidden until that tab is selected).
+    addChildComponent (inputDeviceVolPanel);
+    addChildComponent (outputDeviceVolPanel);
 
     // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
     engine.setSettings (SettingsStore::load());
@@ -500,7 +508,7 @@ namespace
         // Edit
         miPanic = 1100, miReset, miTogglePdc,
         // View
-        miTabMatrix = 1200, miTabGroups, miTabMonitor,
+        miTabMatrix = 1200, miTabGroups, miTabMonitor, miTabAudioSetup,
         miExpandAll, miCollapseAll, miFontBigger, miFontSmaller, miFontReset,
         // Window
         miMinimize = 1300, miBringToFront,
@@ -544,9 +552,10 @@ juce::PopupMenu MainComponent::getMenuForIndex (int topLevelMenuIndex, const juc
             break;
 
         case 2: // View
-            m.addItem (miTabMatrix,  "Matrix Routing", true, currentTab == RoutingTab);
-            m.addItem (miTabGroups,  "In / Out Groups", true, currentTab == GroupsTab);
-            m.addItem (miTabMonitor, "Engine Monitor",  true, currentTab == StatusTab);
+            m.addItem (miTabMatrix,     "Matrix Routing",  true, currentTab == RoutingTab);
+            m.addItem (miTabGroups,     "In / Out Groups", true, currentTab == GroupsTab);
+            m.addItem (miTabAudioSetup, "Audio Setup",     true, currentTab == AudioSetupTab);
+            m.addItem (miTabMonitor,    "Engine Monitor",  true, currentTab == StatusTab);
             m.addSeparator();
             m.addItem (miExpandAll,   "Expand All Devices",   true, false);
             m.addItem (miCollapseAll, "Collapse All Devices", true, false);
@@ -609,9 +618,10 @@ void MainComponent::menuItemSelected (int menuItemID, int /*topLevelMenuIndex*/)
             break;
 
         // View
-        case miTabMatrix:   switchTab (RoutingTab); break;
-        case miTabGroups:   switchTab (GroupsTab);  break;
-        case miTabMonitor:  switchTab (StatusTab);  break;
+        case miTabMatrix:     switchTab (RoutingTab);    break;
+        case miTabGroups:     switchTab (GroupsTab);     break;
+        case miTabAudioSetup: switchTab (AudioSetupTab); break;
+        case miTabMonitor:    switchTab (StatusTab);     break;
         case miExpandAll:   matrixView.collapseAllDevices (true, false);
                             matrixView.collapseAllDevices (false, false); break;
         case miCollapseAll: matrixView.collapseAllDevices (true, true);
@@ -826,6 +836,8 @@ void MainComponent::resized()
                                                     .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 0)));
         fb.items.add (juce::FlexItem (groupsTabBtn).withFlex (1.0f).withMinWidth (90.0f)
                                                     .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 2)));
+        fb.items.add (juce::FlexItem (audioSetupTabBtn).withFlex (1.0f).withMinWidth (90.0f)
+                                                    .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 2)));
         fb.items.add (juce::FlexItem (statusTabBtn).withFlex (1.0f).withMinWidth (90.0f)
                                                     .withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 0, 0, 2)));
         fb.performLayout (tabRect);
@@ -850,6 +862,14 @@ void MainComponent::resized()
 
         if (groupPanelDetached) groupsPlaceholder.setBounds (bottomHalf);
         else                    groupPanel.setBounds (bottomHalf);
+    }
+    else if (currentTab == AudioSetupTab)
+    {
+        // Top half: INPUT DEVICES  /  Bottom half: OUTPUT DEVICES
+        auto topHalf = r.removeFromTop (r.getHeight() / 2);
+        r.removeFromTop (6);
+        inputDeviceVolPanel .setBounds (topHalf);
+        outputDeviceVolPanel.setBounds (r);
     }
     else if (currentTab == StatusTab)
     {
@@ -1157,6 +1177,8 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
     statusPanel.pauseUpdates();
     groupPanel.pauseUpdates();
     inputGroupPanel.pauseUpdates();
+    inputDeviceVolPanel.pauseUpdates();
+    outputDeviceVolPanel.pauseUpdates();
     stopTimer();
     // The 5 s PERF probe is a message-thread reader of engine state too -- it
     // walks the worker / plugin-host vectors via engine.getDeviceLiveness(),
@@ -1274,10 +1296,16 @@ void MainComponent::applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> n
             matrixView.resumeUpdates();
             groupPanel.rebuild();
             inputGroupPanel.rebuild();
+            // The AUDIO SETUP device list follows the same restart -- rebuild
+            // strips for the new device set.
+            inputDeviceVolPanel.rebuild();
+            outputDeviceVolPanel.rebuild();
             // Resume the panels that were paused at the top of this call.
             statusPanel.resumeUpdates();
             groupPanel.resumeUpdates();
             inputGroupPanel.resumeUpdates();
+            inputDeviceVolPanel.resumeUpdates();
+            outputDeviceVolPanel.resumeUpdates();
             // Re-arm the PERF probe frozen before the worker thread launched.
             // This continuation runs on the message thread AFTER engine.start()
             // returned, so the worker / plugin-host vectors are stable again --
@@ -1873,9 +1901,22 @@ void MainComponent::switchTab (Tab newTab)
 
     matrixTabBtn.setToggleState (currentTab == RoutingTab, juce::dontSendNotification);
     groupsTabBtn.setToggleState (currentTab == GroupsTab, juce::dontSendNotification);
+    audioSetupTabBtn.setToggleState (currentTab == AudioSetupTab, juce::dontSendNotification);
     statusTabBtn.setToggleState (currentTab == StatusTab, juce::dontSendNotification);
 
     matrixView.setVisible (currentTab == RoutingTab);
+
+    const bool audioSetup = (currentTab == AudioSetupTab);
+    inputDeviceVolPanel .setVisible (audioSetup);
+    outputDeviceVolPanel.setVisible (audioSetup);
+    if (audioSetup)
+    {
+        // Refresh strips from the current device list every time the tab opens,
+        // so device add/remove is always reflected even if it happened while
+        // another tab was showing.
+        inputDeviceVolPanel .rebuild();
+        outputDeviceVolPanel.rebuild();
+    }
 
     // Keep floating/detached panels visible so they display in their windows
     if (groupPanelDetached)
@@ -1905,6 +1946,15 @@ void MainComponent::switchTab (Tab newTab)
         if (! inputGroupPanelDetached) inputGroupPanel.setVisible (false);
         groupsPlaceholder     .setVisible (false);
         inputGroupsPlaceholder.setVisible (false);
+    }
+    else if (currentTab == AudioSetupTab)
+    {
+        if (! groupPanelDetached)      groupPanel     .setVisible (false);
+        if (! inputGroupPanelDetached) inputGroupPanel.setVisible (false);
+        if (! statusPanelDetached)     statusPanel    .setVisible (false);
+        groupsPlaceholder     .setVisible (false);
+        inputGroupsPlaceholder.setVisible (false);
+        statusPlaceholder     .setVisible (false);
     }
     else // RoutingTab
     {
