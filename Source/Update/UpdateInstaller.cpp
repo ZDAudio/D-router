@@ -1,7 +1,9 @@
 #include "Update/UpdateInstaller.h"
 
-#include <cstdlib> // std::system
-#include <unistd.h> // getpid
+#include <crt_externs.h> // _NSGetEnviron
+#include <fcntl.h> // O_RDONLY / O_WRONLY
+#include <spawn.h> // posix_spawn, POSIX_SPAWN_SETSID
+#include <unistd.h> // getpid, STDIN_FILENO ...
 
 namespace dcr::update
 {
@@ -159,26 +161,63 @@ namespace dcr::update
            << "STAGING=" << shQuote (staging.getFullPathName()) << "\n"
            << "ZIP=" << shQuote (zip.getFullPathName()) << "\n"
            << "SELF=\"$0\"\n"
+           // Log every step so a half-applied update is diagnosable.  pgid here
+           // should equal the helper's own pid -- if it doesn't, we're still in
+           // the app's process group (the old bug that got the helper killed).
+           << "LOG=\"$HOME/Library/Logs/D-Router/update-swap.log\"\n"
+           << "mkdir -p \"$(dirname \"$LOG\")\"\n"
+           << "exec >>\"$LOG\" 2>&1\n"
+           << "echo \"===== [$(date)] swap start pid=$$ watch=$PID pgid=$(ps -o pgid= -p $$ | tr -d ' ') =====\"\n"
            << "while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done\n"
+           << "echo \"[$(date)] target app exited; swapping $OLD\"\n"
            << "sleep 0.3\n"
            << "xattr -cr \"$NEW\" 2>/dev/null\n"
            // Copy the new bundle beside the old one first and only delete the old one
            // after that copy succeeds, so a failure can never leave us with no app.
            << "if ditto \"$NEW\" \"$OLD.new\"; then\n"
-           << "  rm -rf \"$OLD\" && mv \"$OLD.new\" \"$OLD\" && xattr -cr \"$OLD\" 2>/dev/null\n"
+           << "  rm -rf \"$OLD\" && mv \"$OLD.new\" \"$OLD\" && xattr -cr \"$OLD\" 2>/dev/null && echo \"[$(date)] swap OK\"\n"
+           << "else\n"
+           << "  echo \"[$(date)] ditto FAILED -- left old app in place\"\n"
            << "fi\n"
-           << "open \"$OLD\"\n"
+           << "open \"$OLD\" && echo \"[$(date)] relaunched\" || echo \"[$(date)] open FAILED\"\n"
            << "rm -rf \"$STAGING\" \"$ZIP\" \"$SELF\"\n";
 
         script.replaceWithText (sh);
         script.setExecutePermission (true);
 
-        // Detach so it outlives our exit; then quit (real quit -> shutdown releases
-        // the audio devices, and the script waits for the PID before swapping).
-        const juce::String cmd = "nohup /bin/bash " + shQuote (script.getFullPathName())
-                                 + " >/dev/null 2>&1 &";
-        std::system (cmd.toRawUTF8());
+        // Launch the swap helper in its OWN session (POSIX_SPAWN_SETSID) so it
+        // outlives our exit.  A plain `nohup ... &` leaves it in our session /
+        // process group, where macOS kills it the instant we terminate -- before
+        // it can swap the bundle or relaunch (the bug: app quit, no swap, no
+        // relaunch).  setsid detaches it; stdio goes to /dev/null so it holds
+        // none of our descriptors.
+        const auto scriptPath = script.getFullPathName();
+        const char* argv[] = { "/bin/bash", scriptPath.toRawUTF8(), nullptr };
 
+        posix_spawnattr_t attr;
+        posix_spawnattr_init (&attr);
+        posix_spawnattr_setflags (&attr, POSIX_SPAWN_SETSID);
+
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init (&fa);
+        posix_spawn_file_actions_addopen (&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        posix_spawn_file_actions_addopen (&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+        posix_spawn_file_actions_addopen (&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+
+        pid_t child = 0;
+        const int rc = posix_spawn (&child, "/bin/bash", &fa, &attr, const_cast<char* const*> (argv), *_NSGetEnviron());
+
+        posix_spawn_file_actions_destroy (&fa);
+        posix_spawnattr_destroy (&attr);
+
+        if (rc != 0)
+        {
+            finish (false, "Couldn't start the update helper.");
+            return;
+        }
+
+        // Helper is detached and waiting on our PID -- now really quit (clean
+        // shutdown releases the audio devices) so it can perform the swap.
         juce::MessageManager::callAsync ([] {
             if (auto* app = juce::JUCEApplicationBase::getInstance())
                 app->systemRequestedQuit();
