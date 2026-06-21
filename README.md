@@ -64,6 +64,42 @@ meter, level-rider gain history, spectral curve, PPM ballistics). The two
 spectral plug-ins (Auto-EQ, Resonance Suppressor) share an STFT/WOLA engine and
 add one FFT frame of latency.
 
+## Recommended setup — capturing your Mac's audio (BlackHole)
+
+macOS has no built-in way to feed system and app audio into a router. The
+smoothest way to get the most out of D-Router is to pair it with
+**[BlackHole](https://existential.audio/blackhole/)** — a free, open-source
+virtual audio driver for macOS. You point macOS's output at BlackHole, and
+D-Router reads it back and routes it anywhere, with processing, multi-device
+output, and group control.
+
+**Install** — via Homebrew, or the installer from
+[existential.audio](https://existential.audio/blackhole/):
+
+```bash
+brew install blackhole-2ch      # stereo / normal use
+brew install blackhole-16ch     # multichannel / spatial audio
+```
+
+**Pick the channel count:**
+
+- **Normal (stereo)** → **BlackHole 2ch**.
+- **Spatial audio / Dolby Atmos** (multichannel) → **BlackHole 16ch**, so every
+  channel passes through.
+
+**Wire it up:**
+
+1. **System Settings → Sound → Output** → choose **BlackHole** (2ch or 16ch).
+   System and app audio now flows into BlackHole.
+2. In **D-Router**, add **BlackHole** as an *input* device and your real
+   interface / speakers as the *output*, then route the channels across the
+   matrix — with any inserts, groups, and per-crosspoint gain you like.
+
+> You'll keep hearing audio because D-Router itself routes BlackHole → your
+> speakers. (While first setting things up, a macOS *Multi-Output Device* in
+> Audio MIDI Setup that includes both BlackHole and your speakers is a handy
+> safety net.)
+
 ## Building
 
 Requirements: **macOS 12+**, **CMake 3.22+**, and the Xcode command-line tools.
