@@ -62,6 +62,8 @@ target_sources(dcorerouter PRIVATE
     Source/DSP/SafePluginOps.mm
     Source/DSP/Builtin/InternalPluginFormat.cpp
     Source/UI/PluginEditorWindow.mm
+    Source/Update/UpdateChecker.cpp
+    Source/Update/UpdateInstaller.cpp
 )
 
 target_include_directories(dcorerouter PRIVATE Source)
