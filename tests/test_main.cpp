@@ -14,6 +14,7 @@
 #include "Routing/RoutingMatrix.h"
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
+#include "Update/Version.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -589,6 +590,33 @@ void test_spectral_sanitize_node_db()
     }
 }
 
+// GitHub auto-updater version comparison.  Must be numeric (not lexical), treat a
+// prerelease as older than the same stable, and refuse to call a malformed tag
+// "newer" (so a garbage release name can never trigger a spurious update prompt).
+void test_update_version_compare()
+{
+    using namespace dcr::update;
+
+    CHECK (isNewer ("0.2.0", "0.1.0"));
+    CHECK (isNewer ("v0.2.0", "0.1.0"));            // leading 'v' tolerated
+    CHECK (isNewer ("0.1.1", "0.1.0"));
+    CHECK (isNewer ("1.10.0", "1.9.0"));            // numeric, not lexical ("10" > "9")
+    CHECK (! isNewer ("1.9.0", "1.10.0"));
+    CHECK (isNewer ("0.2.0", "0.2.0-beta"));        // stable > prerelease
+    CHECK (! isNewer ("0.2.0-beta", "0.2.0"));      // prerelease < stable
+    CHECK (isNewer ("0.2.0-beta.2", "0.2.0-beta.1"));
+    CHECK (! isNewer ("0.1.0", "0.1.0"));           // equal -> not newer
+    CHECK (! isNewer ("0.1.0-beta", "0.1.0-beta"));
+    CHECK (! isNewer ("garbage", "0.1.0"));         // malformed candidate -> never newer
+    CHECK (! isNewer ("0.2.0", "garbage"));         // malformed current  -> never newer
+    CHECK (! isNewer ("", "0.1.0"));
+
+    const Version v = parseVersion ("v0.2.0-beta");
+    CHECK (v.valid && v.major == 0 && v.minor == 2 && v.patch == 0 && v.prerelease == "beta");
+    const Version w = parseVersion ("garbage");
+    CHECK (! w.valid);
+}
+
 } // namespace
 
 int main()
@@ -632,6 +660,8 @@ int main()
     test_resonance_base_strength();
 
     test_spectral_sanitize_node_db();
+
+    test_update_version_compare();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;
