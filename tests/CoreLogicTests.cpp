@@ -9,6 +9,7 @@
 
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
+#include "DSP/Builtin/StereoMeterMath.h"
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
 #include "Engine/RingBuffer.h"
@@ -699,6 +700,45 @@ namespace
         CHECK (feq (baseStrengthForRes (99), 4.0f)); // default = finest/tightest
     }
 
+    // ---------------------------------------------------------------------------
+    // StereoMeterMath (HF-tilt visualization: freq-to-norm axis + high-lift gain)
+    // ---------------------------------------------------------------------------
+    void test_stereometer_freq_to_norm()
+    {
+        using dcr::builtin::freqToNorm;
+        const float lo = 20.0f, nyq = 24000.0f;
+        CHECK (std::abs (freqToNorm (lo, lo, nyq) - 0.0f) < 1e-5f); // bottom -> 0
+        CHECK (std::abs (freqToNorm (nyq, lo, nyq) - 1.0f) < 1e-5f); // top -> 1
+        CHECK (freqToNorm (10.0f, lo, nyq) == 0.0f); // below clamps
+        CHECK (freqToNorm (48000.0f, lo, nyq) == 1.0f); // above clamps
+        CHECK (freqToNorm (100.0f, lo, nyq) < freqToNorm (1000.0f, lo, nyq)); // monotonic
+        CHECK (freqToNorm (1000.0f, lo, nyq) < freqToNorm (10000.0f, lo, nyq));
+        const float n1k = freqToNorm (1000.0f, lo, nyq); // ln(50)/ln(1200) ~= 0.55
+        CHECK (n1k > 0.4f && n1k < 0.7f);
+    }
+
+    void test_stereometer_high_lift_gain()
+    {
+        using dcr::builtin::highLiftGain;
+        const float nyq = 24000.0f, pivot = 2000.0f;
+        // The bug-fix regression: at/below the pivot the gain is ~1 (bass/mids untouched).
+        CHECK (std::abs (highLiftGain (100.0f, pivot, nyq, 0.5f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (500.0f, pivot, nyq, 0.5f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (2000.0f, pivot, nyq, 0.5f) - 1.0f) < 1e-5f);
+        // Above the pivot: > 1 and strictly increasing with frequency.
+        const float g5k = highLiftGain (5000.0f, pivot, nyq, 0.5f);
+        const float g10k = highLiftGain (10000.0f, pivot, nyq, 0.5f);
+        const float g20k = highLiftGain (20000.0f, pivot, nyq, 0.5f);
+        CHECK (g5k > 1.0f);
+        CHECK (g5k < g10k);
+        CHECK (g10k < g20k);
+        // strength 0 -> no lift anywhere; full strength lifts more than half.
+        CHECK (std::abs (highLiftGain (20000.0f, pivot, nyq, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (highLiftGain (20000.0f, pivot, nyq, 1.0f) > g20k);
+        // bounded by 1 + strength*kHighLiftMax.
+        CHECK (g20k <= 1.0f + 0.5f * dcr::builtin::kHighLiftMax + 1e-4f);
+    }
+
     // Spectral node-curve preset restore is an untrusted surface: a hand-edited or
     // corrupt blob can carry NaN/Inf or a wild value, which would latch into the
     // per-bin smoother and poison the FFT output with NaN forever.  sanitizeNodeDb
@@ -810,6 +850,9 @@ int main()
     test_resonance_node_interp();
     test_resonance_target_reduction();
     test_resonance_base_strength();
+
+    test_stereometer_freq_to_norm();
+    test_stereometer_high_lift_gain();
 
     test_spectral_sanitize_node_db();
 
