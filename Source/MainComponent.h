@@ -170,10 +170,21 @@ namespace dcr
             std::function<void()> onReveal;
             void mouseDown (const juce::MouseEvent&) override
             {
-                if (++clickCount >= 5) { clickCount = 0; stopTimer(); if (onReveal) onReveal(); }
-                else startTimer (600);
+                if (++clickCount >= 5)
+                {
+                    clickCount = 0;
+                    stopTimer();
+                    if (onReveal)
+                        onReveal();
+                }
+                else
+                    startTimer (600);
             }
-            void timerCallback() override { clickCount = 0; stopTimer(); }
+            void timerCallback() override
+            {
+                clickCount = 0;
+                stopTimer();
+            }
             int clickCount = 0;
         };
         SecretTitle title { {}, "ZDAudio D-Router" };

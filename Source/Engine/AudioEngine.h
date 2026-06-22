@@ -63,7 +63,6 @@ namespace dcr
         std::atomic<bool> stereoMeterUnlocked { false };
 
     public:
-
         juce::StringArray getAvailableInputDevices() const;
         juce::StringArray getAvailableOutputDevices() const;
 

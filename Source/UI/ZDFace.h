@@ -32,17 +32,14 @@ namespace dcr
             // as eyes set too far apart. A single string keeps natural (close)
             // letter spacing; the full-width box guarantees no "…" truncation.
             g.drawText ("ZD",
-                        juce::Rectangle<float> (area.getX(), area.getY() + d * 0.16f, d, d * 0.44f),
-                        juce::Justification::centred);
+                juce::Rectangle<float> (area.getX(), area.getY() + d * 0.16f, d, d * 0.44f),
+                juce::Justification::centred);
 
             // Mouth: upward smile arc (quadratic, control pulled down).
             juce::Path smile;
             smile.startNewSubPath (area.getX() + d * 0.34f, area.getY() + d * 0.72f);
-            smile.quadraticTo (area.getX() + d * 0.50f, area.getY() + d * 0.88f,
-                               area.getX() + d * 0.66f, area.getY() + d * 0.72f);
-            g.strokePath (smile, juce::PathStrokeType (juce::jmax (1.2f, d * 0.10f),
-                                                       juce::PathStrokeType::curved,
-                                                       juce::PathStrokeType::rounded));
+            smile.quadraticTo (area.getX() + d * 0.50f, area.getY() + d * 0.88f, area.getX() + d * 0.66f, area.getY() + d * 0.72f);
+            g.strokePath (smile, juce::PathStrokeType (juce::jmax (1.2f, d * 0.10f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         }
     };
 

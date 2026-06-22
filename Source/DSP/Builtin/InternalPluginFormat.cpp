@@ -8,12 +8,12 @@
 #include "DSP/Builtin/ParametricEqEditor.h"
 #include "DSP/Builtin/PpmMeterEditor.h"
 #include "DSP/Builtin/PpmMeterProcessor.h"
-#include "DSP/Builtin/StereoMeterEditor.h"
-#include "DSP/Builtin/StereoMeterProcessor.h"
 #include "DSP/Builtin/ResonanceSuppressorEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
 #include "DSP/Builtin/SpectralAutoEqEditor.h"
 #include "DSP/Builtin/SpectralAutoEqProcessor.h"
+#include "DSP/Builtin/StereoMeterEditor.h"
+#include "DSP/Builtin/StereoMeterProcessor.h"
 
 namespace dcr::builtin
 {

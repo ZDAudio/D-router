@@ -29,9 +29,9 @@ namespace dcr::builtin
         };
 
         StereoFreqAnalyzer (double sampleRate,
-                            int fftSizeIn = 2048,
-                            int maxPoints = 256,
-                            float lowestHz = 20.0f)
+            int fftSizeIn = 2048,
+            int maxPoints = 256,
+            float lowestHz = 20.0f)
             : sr (sampleRate),
               fftSize (fftSizeIn),
               fft ((int) std::log2 ((double) fftSizeIn))
