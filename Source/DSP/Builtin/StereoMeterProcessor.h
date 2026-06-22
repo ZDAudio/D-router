@@ -2,6 +2,7 @@
 
 #include "DSP/Builtin/BuiltinProcessors.h"
 #include "Engine/RingBuffer.h" // dcr::FloatRingBuffer
+#include "Persistence/AtomicXmlWrite.h"
 
 namespace dcr::builtin
 {
@@ -16,7 +17,13 @@ namespace dcr::builtin
     class StereoMeterProcessor : public BuiltinProcessor
     {
     public:
-        StereoMeterProcessor() : BuiltinProcessor (ids::stereo_meter, "Stereo Meter", createLayout()) {}
+        StereoMeterProcessor() : BuiltinProcessor (ids::stereo_meter, "Stereo Meter", createLayout())
+        {
+            // Capture pristine defaults BEFORE any user-default is applied, so Reset
+            // can always restore them.
+            factoryState = apvts.copyState();
+            loadUserDefault();
+        }
 
         static APVTS::ParameterLayout createLayout()
         {
@@ -46,6 +53,29 @@ namespace dcr::builtin
             return l;
         }
 
+        // ----- user default (Save / Reset) -------------------------------------
+        // The user-default is applied in the CONSTRUCTOR only, so a project
+        // snapshot's setStateInformation() still overrides it on restore, while a
+        // freshly added meter opens with the saved settings.
+        static juce::File defaultsFile()
+        {
+            auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                           .getChildFile ("dcorerouter");
+            dir.createDirectory();
+            return dir.getChildFile ("StereoMeterDefaults.xml");
+        }
+
+        void saveUserDefault()
+        {
+            if (auto xml = apvts.copyState().createXml())
+                dcr::writeXmlAtomically (*xml, defaultsFile());
+        }
+
+        void resetToFactory()
+        {
+            apvts.replaceState (factoryState.createCopy());
+        }
+
         juce::AudioProcessorEditor* createEditor() override; // StereoMeterEditor.h
 
         // Drained by the editor on the UI thread (SPSC: audio writes, UI reads).
@@ -72,10 +102,20 @@ namespace dcr::builtin
         }
 
     private:
+        void loadUserDefault()
+        {
+            auto f = defaultsFile();
+            if (!f.existsAsFile())
+                return;
+            if (auto xml = juce::parseXML (f))
+                apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        }
+
         // Power-of-two; ~0.68 s at 48k. The editor drains everything available
         // each tick and keeps only the most recent window, so this is just slack.
         dcr::FloatRingBuffer meterL { 32768 };
         dcr::FloatRingBuffer meterR { 32768 };
+        juce::ValueTree factoryState;
     };
 
 } // namespace dcr::builtin

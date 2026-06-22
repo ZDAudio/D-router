@@ -558,8 +558,9 @@ namespace dcr::builtin
 class StereoControls : public juce::Component
 {
    public:
-    explicit StereoControls(juce::AudioProcessorValueTreeState& s)
+    explicit StereoControls(StereoMeterProcessor& p) : proc(p)
     {
+        auto& s = p.getValueTreeState();
         struct Def
         {
             const char* id;
@@ -596,6 +597,14 @@ class StereoControls : public juce::Component
         legend.setFont(juce::FontOptions(10.0f));
         legend.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.5f));
         addAndMakeVisible(legend);
+        saveBtn.setButtonText("Save");
+        resetBtn.setButtonText("Reset");
+        addAndMakeVisible(saveBtn);
+        addAndMakeVisible(resetBtn);
+        saveBtn.onClick = [this]
+        { proc.saveUserDefault(); };
+        resetBtn.onClick = [this]
+        { proc.resetToFactory(); };
     }
 
     void paint(juce::Graphics& g) override
@@ -607,7 +616,12 @@ class StereoControls : public juce::Component
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced(8);
+        auto full = getLocalBounds().reduced(8);
+        auto top = full.removeFromTop(24);
+        saveBtn.setBounds(top.removeFromLeft(top.getWidth() / 2).reduced(2, 0));
+        resetBtn.setBounds(top.reduced(2, 0));
+        full.removeFromTop(6);
+        auto r = full;
         legend.setBounds(r.removeFromBottom(84));
         const int rh = juce::jmax(30, r.getHeight() / kN);
         for (int i = 0; i < kN; ++i)
@@ -621,6 +635,8 @@ class StereoControls : public juce::Component
    private:
     static constexpr int kN = 13;
     using Attach = juce::AudioProcessorValueTreeState::SliderAttachment;
+    StereoMeterProcessor& proc;
+    juce::TextButton saveBtn, resetBtn;
     juce::Slider sliders[kN];
     juce::Label labels[kN];
     juce::Label legend;
@@ -664,7 +680,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         [renderer buildFreqAxisWithNyquist:(double)nyquistHz];
 
         nsView.setView((__bridge void*)view);
-        controls = std::make_unique<StereoControls>(p.getValueTreeState());
+        controls = std::make_unique<StereoControls>(p);
         startTimerHz(60);
     }
 
