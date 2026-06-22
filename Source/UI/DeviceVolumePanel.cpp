@@ -59,6 +59,18 @@ namespace dcr
         naLabel.setTooltip ("macOS exposes no volume control for this device");
         addChildComponent (naLabel);
 
+        // Gold ★ in the top-left corner marking the current system default device on
+        // this direction.  Hidden until the panel calls setIsDefault(true); purely
+        // indicative, so it never intercepts clicks.
+        starLabel.setText (juce::String::fromUTF8 ("\xe2\x98\x85"), juce::dontSendNotification);
+        starLabel.setJustificationType (juce::Justification::centred);
+        starLabel.setColour (juce::Label::textColourId, juce::Colour::fromRGB (240, 200, 90));
+        starLabel.setFont (juce::Font (juce::FontOptions (14.0f)));
+        starLabel.setInterceptsMouseClicks (false, false);
+        starLabel.setTooltip (scope == DeviceVolume::Scope::Output ? "System default output device"
+                                                                   : "System default input device");
+        addChildComponent (starLabel); // hidden until setIsDefault(true)
+
         applyEnabledLook();
         pull();
     }
@@ -77,6 +89,11 @@ namespace dcr
         mute.setAlpha (m ? 1.0f : 0.35f);
         naLabel.setVisible (!v);
         dbLabel.setVisible (v && vol.hasDb());
+    }
+
+    void DeviceVolumePanel::Strip::setIsDefault (bool isDefault)
+    {
+        starLabel.setVisible (isDefault);
     }
 
     void DeviceVolumePanel::Strip::pull()
@@ -108,6 +125,7 @@ namespace dcr
     void DeviceVolumePanel::Strip::resized()
     {
         auto r = getLocalBounds().reduced (4);
+        starLabel.setBounds (r.getX(), r.getY(), 16, 16); // top-left corner badge
         nameLabel.setBounds (r.removeFromTop (30));
         mute.setBounds (r.removeFromBottom (22).reduced (10, 0));
         r.removeFromBottom (2);
@@ -131,6 +149,24 @@ namespace dcr
         title.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         addAndMakeVisible (title);
 
+        // System-default device picker for this direction: lists ALL devices on this
+        // direction (not just the routed strips below) and sets the macOS default
+        // when changed -- a stand-in for System Settings > Sound.  Independent of
+        // D-Router's own routing.
+        defaultLabel.setText (dir == Direction::Inputs ? "System Input" : "System Output",
+            juce::dontSendNotification);
+        defaultLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
+        defaultLabel.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+        addAndMakeVisible (defaultLabel);
+
+        defaultCombo.setTextWhenNothingSelected (juce::String::fromUTF8 ("\xe2\x80\x94")); // em dash
+        defaultCombo.setTextWhenNoChoicesAvailable ("No devices");
+        defaultCombo.setTooltip (dir == Direction::Inputs
+                                     ? "Set the macOS default input device (System Settings > Sound > Input)"
+                                     : "Set the macOS default output device (System Settings > Sound > Output)");
+        defaultCombo.onChange = [this] { applyDefaultSelection(); };
+        addAndMakeVisible (defaultCombo);
+
         viewport.setViewedComponent (&stripsHolder, false);
         viewport.setScrollBarsShown (false, true);
         addAndMakeVisible (viewport);
@@ -144,6 +180,12 @@ namespace dcr
 
         rebuild();
         startTimerHz (kPollHz);
+    }
+
+    SystemAudioDevices::Scope DeviceVolumePanel::defaultScope() const noexcept
+    {
+        return direction == Direction::Inputs ? SystemAudioDevices::Scope::Input
+                                              : SystemAudioDevices::Scope::Output;
     }
 
     void DeviceVolumePanel::rebuild()
@@ -165,7 +207,57 @@ namespace dcr
         }
 
         emptyLabel.setVisible (strips.isEmpty());
+
+        // (Re)populate the system-default picker with ALL devices on this direction.
+        // Done only here (tab open / device change) -- the timer never rebuilds the
+        // list, only the selection + ★.
+        defaultDevices = SystemAudioDevices::list (defaultScope());
+        defaultCombo.clear (juce::dontSendNotification);
+        for (int i = 0; i < defaultDevices.size(); ++i)
+            defaultCombo.addItem (defaultDevices.getReference (i).name, i + 1); // item-id 0 is reserved
+        syncDefaultToOS();
+
         resized();
+    }
+
+    void DeviceVolumePanel::syncDefaultToOS()
+    {
+        const auto def = SystemAudioDevices::getDefault (defaultScope());
+
+        // Reflect the OS default in the combo (matched by AudioDeviceID, not name, so
+        // same-named devices don't collide).  Don't fight an open popup.
+        if (!defaultCombo.isPopupActive())
+        {
+            int wantId = 0; // 0 == nothing selected
+            if (def.deviceID != 0)
+                for (int i = 0; i < defaultDevices.size(); ++i)
+                    if (defaultDevices.getReference (i).deviceID == def.deviceID)
+                    {
+                        wantId = i + 1;
+                        break;
+                    }
+            if (defaultCombo.getSelectedId() != wantId)
+                defaultCombo.setSelectedId (wantId, juce::dontSendNotification);
+        }
+
+        // Light the ★ on whichever routed strip is the default device (by name --
+        // consistent with D-Router's name-based device model; if the default isn't a
+        // routed device, no strip lights and the combo alone shows it).
+        for (auto* s : strips)
+            s->setIsDefault (def.deviceID != 0 && s->vol.getDeviceName() == def.name);
+    }
+
+    void DeviceVolumePanel::applyDefaultSelection()
+    {
+        const int id = defaultCombo.getSelectedId();
+        if (id <= 0 || id > defaultDevices.size())
+            return; // programmatic clear / nothing selected
+
+        const auto& dev = defaultDevices.getReference (id - 1);
+        // setDefault failing (device just vanished?) leaves syncDefaultToOS to snap
+        // the selection + ★ back to the OS's actual default on the next pass.
+        SystemAudioDevices::setDefault (defaultScope(), dev.deviceID);
+        syncDefaultToOS();
     }
 
     void DeviceVolumePanel::resumeUpdates() { startTimerHz (kPollHz); }
@@ -174,6 +266,7 @@ namespace dcr
     {
         for (auto* s : strips)
             s->pull();
+        syncDefaultToOS(); // track external default-device changes + keep ★ correct
     }
 
     void DeviceVolumePanel::paint (juce::Graphics& g)
@@ -187,6 +280,13 @@ namespace dcr
         auto r = getLocalBounds().reduced (8);
         title.setBounds (r.removeFromTop (20));
         r.removeFromTop (4);
+
+        // System-default device picker row: label on the left, combo filling the rest.
+        auto comboRow = r.removeFromTop (24);
+        defaultLabel.setBounds (comboRow.removeFromLeft (90));
+        comboRow.removeFromLeft (4);
+        defaultCombo.setBounds (comboRow.removeFromLeft (juce::jmin (260, comboRow.getWidth())));
+        r.removeFromTop (6);
 
         emptyLabel.setBounds (r);
         viewport.setBounds (r);
