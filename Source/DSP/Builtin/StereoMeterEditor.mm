@@ -1,6 +1,7 @@
 #include "DSP/Builtin/StereoMeterEditor.h"
 
 #include "DSP/Builtin/StereoFreqAnalyzer.h"
+#include "DSP/Builtin/StereoMeterMath.h"
 #include "DSP/Builtin/StereoMeterProcessor.h"
 
 #include <juce_gui_extra/juce_gui_extra.h> // juce::NSViewComponent
@@ -371,7 +372,19 @@ class StereoControls : public juce::Component
             const char* name;
         };
         static const Def defs[kN] = {
-            {"floorDb", "Floor (dB)"}, {"ceilDb", "Ceiling (dB)"}, {"highLift", "High lift"}, {"pointMin", "Min size"}, {"pointMax", "Max size"}, {"heightScale", "Height"}, {"smooth", "Smooth"}, {"colorSat", "Colour"}, {"trailDepth", "Trail"}, {"trailDecay", "Trail fade"}, {"stemAmount", "Stems"}};
+            {"floorDb", "Floor (dB)"},
+            {"ceilDb", "Ceiling (dB)"},
+            {"highLift", "High lift"},
+            {"liftPivot", "Lift pivot"},
+            {"pointMin", "Min size"},
+            {"pointMax", "Max size"},
+            {"heightScale", "Height"},
+            {"smooth", "Smooth"},
+            {"colorSat", "Colour"},
+            {"axisOpacity", "Axis opacity"},
+            {"trailDepth", "Trail"},
+            {"trailDecay", "Trail fade"},
+            {"stemAmount", "Stems"}};
         for (int i = 0; i < kN; ++i)
         {
             sliders[i].setSliderStyle(juce::Slider::LinearHorizontal);
@@ -383,7 +396,7 @@ class StereoControls : public juce::Component
             addAndMakeVisible(labels[i]);
             atts[i] = std::make_unique<Attach>(s, defs[i].id, sliders[i]);
         }
-        legend.setText("X = Pan (L <-> R)\nY = Frequency (20 Hz -> 20 kHz)\nZ = Level   colour = phase\n(red anti / green in)\nDrag = orbit   Scroll = zoom",
+        legend.setText("X = Pan (L <-> R)   Y = Frequency\nZ = Level   colour = phase (red anti / green in)\nDrag = orbit   Scroll = zoom",
                        juce::dontSendNotification);
         legend.setJustificationType(juce::Justification::topLeft);
         legend.setFont(juce::FontOptions(10.0f));
@@ -412,7 +425,7 @@ class StereoControls : public juce::Component
     }
 
    private:
-    static constexpr int kN = 11;
+    static constexpr int kN = 13;
     using Attach = juce::AudioProcessorValueTreeState::SliderAttachment;
     juce::Slider sliders[kN];
     juce::Label labels[kN];
@@ -428,6 +441,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
     std::vector<float> winL, winR, tmp;
     std::vector<PointVertex> pts;
     std::vector<LineVertex> stems;
+    float nyquistHz = 24000.0f;
 
     id<MTLDevice> device = nil;
     DCRScatterMTKView* view = nil;
@@ -439,6 +453,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         : proc(p),
           analyzer(juce::jmax(8000.0, p.meterSampleRate()), 2048, 256, 20.0f)
     {
+        nyquistHz = (float)(juce::jmax(8000.0, p.meterSampleRate()) * 0.5);
         const int M = analyzer.windowSize();
         winL.assign((size_t)M, 0.0f);
         winR.assign((size_t)M, 0.0f);
@@ -513,6 +528,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         const float pFloor = s.getRawParameterValue("floorDb")->load();
         const float pCeil = s.getRawParameterValue("ceilDb")->load();
         const float pHighLift = s.getRawParameterValue("highLift")->load();
+        const float pLiftPivot = s.getRawParameterValue("liftPivot")->load();
         const float pPointMin = s.getRawParameterValue("pointMin")->load();
         const float pPointMax = s.getRawParameterValue("pointMax")->load();
         const float pHeight = s.getRawParameterValue("heightScale")->load();
@@ -535,8 +551,10 @@ struct StereoMeterEditor::Impl : private juce::Timer
         for (int i = 0; i < N; ++i)
         {
             const float intensity = frame.ints[(size_t)i];
-            const float freqNorm = N > 1 ? (float)i / (float)(N - 1) : 0.0f; // 0 low → 1 high
-            const float it = std::min(1.0f, intensity * (1.0f + pHighLift * freqNorm * 3.0f));
+            const float freqNorm = N > 1 ? (float)i / (float)(N - 1) : 0.0f; // 0 low → 1 high (Y axis)
+            // HF tilt: lift only true highs (flat below the pivot) so bass/mids stay put.
+            const float gain = dcr::builtin::highLiftGain(frame.freqs[(size_t)i], pLiftPivot, nyquistHz, pHighLift);
+            const float it = std::min(1.0f, intensity * gain);
             if (it <= 0.01f)
                 continue; // gate silence
 
