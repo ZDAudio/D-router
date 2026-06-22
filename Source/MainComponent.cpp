@@ -53,7 +53,14 @@ namespace dcr
         // reads cleanly against any accent colour the user picks.
         title.setColour (juce::Label::textColourId, juce::Colours::white);
         title.setJustificationType (juce::Justification::centredLeft);
+        title.setInterceptsMouseClicks (true, false);
+        title.onReveal = [this] {
+            engine.setStereoMeterUnlocked (true);
+            zdFace.setVisible (true);
+            resized();
+        };
         addAndMakeVisible (title);
+        addChildComponent (zdFace); // hidden until unlocked
 
         devicesButton.onClick = [this] { openDeviceDialog(); };
         settingsButton.onClick = [this] {
@@ -894,6 +901,7 @@ namespace dcr
 
         // Left Configuration Section
         title.setBounds (top.removeFromLeft (240)); // wide enough for "ZDAudio D-Router" @ 22pt bold
+        zdFace.setBounds (top.removeFromLeft (26).withSizeKeepingCentre (20, 20)); // easter-egg; only visible once unlocked
         top.removeFromLeft (10);
         devicesButton.setBounds (top.removeFromLeft (90));
         top.removeFromLeft (4);

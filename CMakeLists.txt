@@ -68,11 +68,18 @@ target_sources(dcorerouter PRIVATE
     Source/DSP/SafePluginOps.mm
     Source/DSP/Builtin/InternalPluginFormat.cpp
     Source/UI/PluginEditorWindow.mm
+    Source/DSP/Builtin/StereoMeterEditor.mm
     Source/Update/UpdateChecker.cpp
     Source/Update/UpdateInstaller.cpp
 )
 
 target_include_directories(dcorerouter PRIVATE Source)
+
+# The Metal meter view is new Objective-C++; compile it with ARC so the
+# Metal / MTKView object graph is managed automatically. (The project's other
+# .mm files predate it and use manual retain/release, so ARC is scoped per-file.)
+set_source_files_properties(Source/DSP/Builtin/StereoMeterEditor.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_compile_definitions(dcorerouter PRIVATE
     JUCE_PLUGINHOST_AU=1
@@ -98,6 +105,8 @@ target_link_libraries(dcorerouter PRIVATE
     juce::juce_opengl
     "-framework AudioToolbox"
     "-framework CoreAudio"
+    "-framework Metal"
+    "-framework MetalKit"
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags

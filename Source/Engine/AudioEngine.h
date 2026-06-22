@@ -10,6 +10,7 @@
 #include "Routing/OutputGroupManager.h"
 #include "Routing/RoutingMatrix.h"
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -51,6 +52,17 @@ namespace dcr
 
         double getEngineSampleRate() const noexcept { return settings.engineSampleRate; }
         int getEngineBlockSize() const noexcept { return settings.engineBlockSize; }
+
+        // Hidden-feature unlock (set by the 5-click brand title). Read by the
+        // output-group plugin menu to reveal the Stereo Meter item. Atomic so the
+        // read site doesn't care which thread sets it.
+        void setStereoMeterUnlocked (bool b) noexcept { stereoMeterUnlocked.store (b, std::memory_order_relaxed); }
+        bool isStereoMeterUnlocked() const noexcept { return stereoMeterUnlocked.load (std::memory_order_relaxed); }
+
+    private:
+        std::atomic<bool> stereoMeterUnlocked { false };
+
+    public:
 
         juce::StringArray getAvailableInputDevices() const;
         juce::StringArray getAvailableOutputDevices() const;
