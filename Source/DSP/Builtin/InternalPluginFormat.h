@@ -17,6 +17,10 @@ namespace dcr::builtin
         // Descriptions for the "Built-in" section of the FX load menu.
         static juce::Array<juce::PluginDescription> getBuiltinDescriptions();
 
+        // Description for a single built-in id that is NOT in the public list
+        // above (e.g. the unlock-gated Stereo Meter). Empty name if unknown.
+        static juce::PluginDescription builtinDescriptionForId (const juce::String& id);
+
         // ----- AudioPluginFormat ------------------------------------------------
         juce::String getName() const override { return "Internal"; }
 

@@ -48,6 +48,7 @@ namespace dcr::builtin
         static constexpr const char* ppm = "builtin:ppm";
         static constexpr const char* autoeq = "builtin:autoeq";
         static constexpr const char* resonance = "builtin:resonance";
+        static constexpr const char* stereo_meter = "builtin:stereo_meter";
     }
 
     // ---------------------------------------------------------------------------

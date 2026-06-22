@@ -8,6 +8,8 @@
 #include "DSP/Builtin/ParametricEqEditor.h"
 #include "DSP/Builtin/PpmMeterEditor.h"
 #include "DSP/Builtin/PpmMeterProcessor.h"
+#include "DSP/Builtin/StereoMeterEditor.h"
+#include "DSP/Builtin/StereoMeterProcessor.h"
 #include "DSP/Builtin/ResonanceSuppressorEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
 #include "DSP/Builtin/SpectralAutoEqEditor.h"
@@ -25,6 +27,7 @@ namespace dcr::builtin
     juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
     juce::AudioProcessorEditor* LevelerProcessor::createEditor() { return new LevelRiderEditor (*this); }
     juce::AudioProcessorEditor* PpmMeterProcessor::createEditor() { return new PpmMeterEditor (*this); }
+    juce::AudioProcessorEditor* StereoMeterProcessor::createEditor() { return new StereoMeterEditor (*this); }
     juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor() { return new SpectralAutoEqEditor (*this); }
     juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor() { return new ResonanceSuppressorEditor (*this); }
 
@@ -64,6 +67,8 @@ namespace dcr::builtin
                 return std::make_unique<LevelerProcessor>();
             if (id == ids::ppm)
                 return std::make_unique<PpmMeterProcessor>();
+            if (id == ids::stereo_meter)
+                return std::make_unique<StereoMeterProcessor>();
             if (id == ids::autoeq)
                 return std::make_unique<SpectralAutoEqProcessor>();
             if (id == ids::resonance)
@@ -86,6 +91,14 @@ namespace dcr::builtin
                 out.add (d);
             }
         return out;
+    }
+
+    juce::PluginDescription InternalPluginFormat::builtinDescriptionForId (const juce::String& id)
+    {
+        juce::PluginDescription d;
+        if (auto p = makeById (id))
+            p->fillInPluginDescription (d);
+        return d;
     }
 
     void InternalPluginFormat::findAllTypesForFile (juce::OwnedArray<juce::PluginDescription>& results,

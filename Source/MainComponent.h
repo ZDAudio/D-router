@@ -20,6 +20,7 @@
 #include "UI/OutputGroupPanel.h"
 #include "UI/PanelHost.h"
 #include "UI/StatusPanel.h"
+#include "UI/ZDFace.h"
 #include "Update/UpdateChecker.h"
 
 namespace dcr
@@ -139,6 +140,10 @@ namespace dcr
         std::vector<AudioEngine::DeviceSpec> currentSpecs;
         std::unique_ptr<juce::FileChooser> activeChooser;
 
+        // The "ZD" easter-egg smiley, shown next to the brand title once the
+        // Stereo Meter is unlocked (5 clicks on the title).
+        ZDFace zdFace;
+
         // GitHub auto-updater (opt-in); background-threaded, message-thread callback.
         dcr::update::UpdateChecker updateChecker;
 
@@ -157,7 +162,21 @@ namespace dcr
         // composite & paint cost dramatically for the slider/meter-heavy UI.
         juce::OpenGLContext openGLContext;
 
-        juce::Label title { {}, "ZDAudio D-Router" };
+        // Title label that reveals the hidden 3D stereo-scatter meter on 5 quick
+        // clicks (each within 0.6 s of the last). Deliberately undiscoverable.
+        struct SecretTitle : public juce::Label, private juce::Timer
+        {
+            using juce::Label::Label;
+            std::function<void()> onReveal;
+            void mouseDown (const juce::MouseEvent&) override
+            {
+                if (++clickCount >= 5) { clickCount = 0; stopTimer(); if (onReveal) onReveal(); }
+                else startTimer (600);
+            }
+            void timerCallback() override { clickCount = 0; stopTimer(); }
+            int clickCount = 0;
+        };
+        SecretTitle title { {}, "ZDAudio D-Router" };
         juce::TextButton devicesButton { "Devices..." };
         juce::TextButton settingsButton { "Settings..." };
         juce::TextButton groupsButton { "Groups..." };

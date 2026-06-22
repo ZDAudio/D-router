@@ -1,5 +1,6 @@
 #include "UI/OutputGroupPanel.h"
 
+#include "DSP/Builtin/BuiltinProcessors.h"
 #include "DSP/Builtin/InternalPluginFormat.h"
 #include "DSP/MultiChannelPluginHost.h"
 #include "Engine/AudioEngine.h"
@@ -600,6 +601,21 @@ namespace dcr
         menu.addItem ("Load Audio Unit from file...", [this, cardIdx, slotIdx] {
             browseForAuIntoGroup (cardIdx, slotIdx);
         });
+
+        // Hidden, unlock-gated Stereo 3D Pan Scatter meter -- stereo groups only.
+        if (auto* g = mgrGetGroup (cardIdx))
+        {
+            if (engine.isStereoMeterUnlocked() && g->channelSet.size() == 2)
+            {
+                const auto desc = dcr::builtin::InternalPluginFormat::builtinDescriptionForId (
+                    dcr::builtin::ids::stereo_meter);
+                menu.addSeparator();
+                menu.addItem ("Stereo Meter", [this, cardIdx, slotIdx, desc] {
+                    installPluginIntoGroup (cardIdx, slotIdx, desc);
+                });
+            }
+        }
+
         menu.showMenuAsync (juce::PopupMenu::Options());
     }
 
