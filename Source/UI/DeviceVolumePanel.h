@@ -4,6 +4,7 @@
 
 #include "Engine/AudioEngine.h"
 #include "Engine/DeviceVolume.h"
+#include "Engine/SystemAudioDevices.h"
 
 namespace dcr
 {
@@ -44,6 +45,14 @@ namespace dcr
     private:
         void timerCallback() override;
 
+        // Direction -> SystemAudioDevices::Scope.
+        SystemAudioDevices::Scope defaultScope() const noexcept;
+        // OS -> UI: set the combo selection (by AudioDeviceID) and the strip ★ from
+        // the current system default.  Skips the combo while its popup is open.
+        void syncDefaultToOS();
+        // UI -> OS: apply the combo's selection as the new system default.
+        void applyDefaultSelection();
+
         // One vertical device strip: name + fader + mute, greyed when the device
         // has no controllable volume.
         struct Strip : public juce::Component
@@ -52,6 +61,7 @@ namespace dcr
             void resized() override;
             void pull(); // OS -> UI (skips the fader while dragging)
             void applyEnabledLook();
+            void setIsDefault (bool isDefault); // show/hide the system-default ★
 
             DeviceVolume vol;
             juce::Label nameLabel;
@@ -59,6 +69,7 @@ namespace dcr
             juce::Label dbLabel; // dB readout (matches Audio MIDI Setup), 2 dp
             juce::TextButton mute { "M" };
             juce::Label naLabel; // "N/A" overlay when no controllable volume
+            juce::Label starLabel; // "★" badge: this device is the system default
             bool dragging = false;
             bool lastMuted = false;
         };
@@ -67,6 +78,9 @@ namespace dcr
         Direction direction;
 
         juce::Label title;
+        juce::Label defaultLabel; // "System Output" / "System Input"
+        juce::ComboBox defaultCombo; // pick the macOS default device for this direction
+        juce::Array<AudioDeviceRef> defaultDevices; // parallel to combo items (id = index + 1)
         juce::Viewport viewport;
         juce::Component stripsHolder;
         juce::OwnedArray<Strip> strips;
