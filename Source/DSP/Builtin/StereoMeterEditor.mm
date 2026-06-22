@@ -1,8 +1,10 @@
 #include "DSP/Builtin/StereoMeterEditor.h"
 
 #include "DSP/Builtin/StereoFreqAnalyzer.h"
+#include "DSP/Builtin/StereoMeterMath.h"
 #include "DSP/Builtin/StereoMeterProcessor.h"
 
+#include <juce_graphics/juce_graphics.h>
 #include <juce_gui_extra/juce_gui_extra.h> // juce::NSViewComponent
 
 #import <Metal/Metal.h>
@@ -36,6 +38,14 @@ struct LineVertex
     float pos[3];
     float color[4];
 };
+struct TexVertex
+{
+    float pos[3]; // packed_float3 (12 bytes)
+    float uv[2];  // packed_float2 (8 bytes)
+};
+constexpr float kFreqAxisX = -1.0f;  // labels/ticks sit on the left edge
+constexpr float kLabelHalfH = 0.05f; // billboard half-height, world units
+constexpr int kMaxLabels = 16;
 struct Uniforms
 {
     matrix_float4x4 mvp;
@@ -69,6 +79,40 @@ matrix_float4x4 lookAt(simd_float3 eye, simd_float3 centre, simd_float3 up)
     m.columns[2] = (simd_float4){side.z, u.z, -fwd.z, 0};
     m.columns[3] = (simd_float4){-simd_dot(side, eye), -simd_dot(u, eye), simd_dot(fwd, eye), 1};
     return m;
+}
+
+// Render a short string to a small premultiplied BGRA texture (UI thread, once).
+static id<MTLTexture> makeLabelTexture(id<MTLDevice> device, const juce::String& text, float& outAspect)
+{
+    const float fontH = 30.0f;
+    const int pad = 6;
+    juce::Font font{juce::FontOptions(fontH)};
+    juce::GlyphArrangement ga;
+    ga.addLineOfText(font, text, 0.0f, 0.0f);
+    const int w =
+        juce::jmax(8, (int)std::ceil(ga.getBoundingBox(0, -1, true).getWidth()) + pad * 2);
+    const int h = (int)std::ceil(fontH) + pad;
+    outAspect = (float)w / (float)h;
+
+    juce::Image img(juce::Image::ARGB, w, h, true);
+    {
+        juce::Graphics g(img);
+        g.setColour(juce::Colours::white);
+        g.setFont(font);
+        g.drawText(text, 0, 0, w, h, juce::Justification::centred, false);
+    }
+    juce::Image::BitmapData bd(img, juce::Image::BitmapData::readOnly);
+    MTLTextureDescriptor* td =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                           width:(NSUInteger)w
+                                                          height:(NSUInteger)h
+                                                       mipmapped:NO];
+    id<MTLTexture> tex = [device newTextureWithDescriptor:td];
+    [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h)
+           mipmapLevel:0
+             withBytes:bd.data
+           bytesPerRow:(NSUInteger)bd.lineStride];
+    return tex;
 }
 
 const char* kShaderSrc = R"METAL(
@@ -106,6 +150,23 @@ vertex LOut line_vs(uint vid [[vertex_id]],
 }
 fragment float4 line_fs(LOut in [[stage_in]]) {
     return float4(in.color.rgb * in.color.a, in.color.a); // premultiplied
+}
+struct TLV { packed_float3 pos; packed_float2 uv; };
+struct TLOut { float4 pos [[position]]; float2 uv; };
+vertex TLOut label_vs(uint vid [[vertex_id]],
+                      const device TLV* v [[buffer(0)]],
+                      constant Uniforms& u [[buffer(1)]]) {
+    TLOut o;
+    o.pos = u.mvp * float4(float3(v[vid].pos), 1.0);
+    o.uv = float2(v[vid].uv);
+    return o;
+}
+fragment float4 label_fs(TLOut in [[stage_in]],
+                         texture2d<float> tex [[texture(0)]],
+                         constant float& opacity [[buffer(0)]]) {
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float4 c = tex.sample(s, in.uv);   // JUCE ARGB is premultiplied
+    return c * opacity;                // scale premultiplied rgb + a together
 }
 )METAL";
 } // namespace
@@ -158,6 +219,8 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
 - (void)pushPoints:(const PointVertex*)pts count:(NSUInteger)count;
 - (void)setStems:(const LineVertex*)lines count:(NSUInteger)count;
 - (void)setTrailDepth:(int)depth decay:(float)decay;
+- (void)buildFreqAxisWithNyquist:(double)nyquist;
+- (void)setAxisOpacity:(float)opacity;
 @end
 
 @implementation DCRScatterRenderer
@@ -175,6 +238,15 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
     NSUInteger _stemCount;
     id<MTLBuffer> _boxBuf;
     NSUInteger _boxCount;
+    id<MTLRenderPipelineState> _labelPSO;
+    id<MTLBuffer> _freqAxisBuf;
+    NSUInteger _freqAxisCount;
+    id<MTLBuffer> _labelQuadBuf;
+    id<MTLTexture> _labelTex[kMaxLabels];
+    float _labelY[kMaxLabels];
+    float _labelAspect[kMaxLabels];
+    int _labelCount;
+    float _axisOpacity;
 }
 
 - (instancetype)initWithDevice:(id<MTLDevice>)device view:(MTKView*)view
@@ -219,6 +291,12 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
     };
     _pointPSO = makePSO(@"point_vs", @"point_fs");
     _linePSO = makePSO(@"line_vs", @"line_fs");
+    _labelPSO = makePSO(@"label_vs", @"label_fs");
+    _labelQuadBuf = [device newBufferWithLength:kMaxLabels * 4 * sizeof(TexVertex)
+                                        options:MTLResourceStorageModeShared];
+    _labelCount = 0;
+    _freqAxisCount = 0;
+    _axisOpacity = 0.85f;
 
     // Room wireframe: [-1,1] x [-1,1] x [0,kZScale] box, 12 edges.
     {
@@ -286,6 +364,70 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
     _trailDecay = std::max(0.0f, std::min(0.999f, decay));
 }
 
+- (void)setAxisOpacity:(float)opacity
+{
+    _axisOpacity = std::max(0.0f, std::min(1.0f, opacity));
+}
+
+- (void)buildFreqAxisWithNyquist:(double)nyquist
+{
+    struct Tick
+    {
+        float hz;
+        const char* label;
+    }; // label == nullptr -> minor tick, no text
+    static const Tick ticks[] = {{20, "20"},
+                                 {50, nullptr},
+                                 {100, "100"},
+                                 {200, nullptr},
+                                 {500, nullptr},
+                                 {1000, "1k"},
+                                 {2000, nullptr},
+                                 {5000, nullptr},
+                                 {10000, "10k"},
+                                 {20000, "20k"}};
+    const float col[4] = {0.0f, 1.0f, 0.82f, 0.7f}; // theme cyan; alpha scaled by axisOpacity at draw
+    std::vector<LineVertex> lv;
+    _labelCount = 0;
+    for (auto& t : ticks)
+    {
+        if (t.hz >= (float)nyquist)
+            continue;
+        const float yN =
+            2.0f * dcr::builtin::freqToNorm(t.hz, 20.0f, (float)nyquist) - 1.0f;
+        const bool major = (t.label != nullptr);
+        const float len = major ? 0.16f : 0.08f;
+        LineVertex a, b;
+        a.pos[0] = kFreqAxisX;
+        a.pos[1] = yN;
+        a.pos[2] = 0.0f;
+        b.pos[0] = kFreqAxisX + len;
+        b.pos[1] = yN;
+        b.pos[2] = 0.0f;
+        for (int k = 0; k < 4; ++k)
+        {
+            a.color[k] = col[k];
+            b.color[k] = col[k];
+        }
+        lv.push_back(a);
+        lv.push_back(b);
+        if (major && _labelCount < kMaxLabels)
+        {
+            float aspect = 1.0f;
+            _labelTex[_labelCount] =
+                makeLabelTexture(_device, juce::String(t.label), aspect);
+            _labelY[_labelCount] = yN;
+            _labelAspect[_labelCount] = aspect;
+            ++_labelCount;
+        }
+    }
+    _freqAxisCount = lv.size();
+    _freqAxisBuf = lv.empty() ? nil
+                              : [_device newBufferWithBytes:lv.data()
+                                                     length:lv.size() * sizeof(LineVertex)
+                                                    options:MTLResourceStorageModeShared];
+}
+
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
 }
@@ -306,6 +448,10 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
                              std::sin(sv.camPitch),
                              std::cos(sv.camPitch) * std::cos(sv.camYaw)};
     const simd_float3 eye = target + sv.camDist * dir;
+    const simd_float3 camFwd = simd_normalize(target - eye);
+    const simd_float3 camRight =
+        simd_normalize(simd_cross(camFwd, (simd_float3){0, 1, 0}));
+    const simd_float3 camUp = simd_cross(camRight, camFwd);
 
     Uniforms u;
     u.mvp = matrix_multiply(perspective(1.0f, aspect, 0.05f, 100.0f),
@@ -322,6 +468,16 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
     [enc setVertexBuffer:_boxBuf offset:0 atIndex:0];
     [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
     [enc drawPrimitives:MTLPrimitiveTypeLine vertexStart:0 vertexCount:_boxCount];
+
+    // Frequency-axis tick lines — faded by Axis opacity.
+    if (_freqAxisCount > 0 && _freqAxisBuf != nil)
+    {
+        u.alphaMul = _axisOpacity;
+        [enc setVertexBuffer:_freqAxisBuf offset:0 atIndex:0];
+        [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+        [enc drawPrimitives:MTLPrimitiveTypeLine vertexStart:0 vertexCount:_freqAxisCount];
+        u.alphaMul = 1.0f;
+    }
 
     // Stems (current frame only).
     if (_stemCount > 0)
@@ -347,6 +503,45 @@ fragment float4 line_fs(LOut in [[stage_in]]) {
         }
     }
 
+    // Frequency labels — camera-facing billboards at each major tick height.
+    if (_labelCount > 0 && _labelPSO != nil)
+    {
+        TexVertex quads[kMaxLabels * 4];
+        for (int i = 0; i < _labelCount; ++i)
+        {
+            const float hh = kLabelHalfH;
+            const float hw = hh * _labelAspect[i];
+            const simd_float3 anchor = {kFreqAxisX - 0.14f, _labelY[i], 0.0f};
+            auto setc = [&](int j, float sx, float sy, float uu, float vv)
+            {
+                const simd_float3 p = anchor + camRight * (sx * hw) + camUp * (sy * hh);
+                quads[i * 4 + j].pos[0] = p.x;
+                quads[i * 4 + j].pos[1] = p.y;
+                quads[i * 4 + j].pos[2] = p.z;
+                quads[i * 4 + j].uv[0] = uu;
+                quads[i * 4 + j].uv[1] = vv;
+            };
+            setc(0, -1, -1, 0, 1);
+            setc(1, 1, -1, 1, 1);
+            setc(2, -1, 1, 0, 0);
+            setc(3, 1, 1, 1, 0);
+        }
+        std::memcpy(_labelQuadBuf.contents, quads,
+                    (size_t)_labelCount * 4 * sizeof(TexVertex));
+        [enc setRenderPipelineState:_labelPSO];
+        [enc setVertexBuffer:_labelQuadBuf offset:0 atIndex:0];
+        [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
+        float op = _axisOpacity;
+        [enc setFragmentBytes:&op length:sizeof(op) atIndex:0];
+        for (int i = 0; i < _labelCount; ++i)
+        {
+            [enc setFragmentTexture:_labelTex[i] atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                    vertexStart:(NSUInteger)(i * 4)
+                    vertexCount:4];
+        }
+    }
+
     [enc endEncoding];
     [cb presentDrawable:drawable];
     [cb commit];
@@ -363,15 +558,28 @@ namespace dcr::builtin
 class StereoControls : public juce::Component
 {
    public:
-    explicit StereoControls(juce::AudioProcessorValueTreeState& s)
+    explicit StereoControls(StereoMeterProcessor& p) : proc(p)
     {
+        auto& s = p.getValueTreeState();
         struct Def
         {
             const char* id;
             const char* name;
         };
         static const Def defs[kN] = {
-            {"floorDb", "Floor (dB)"}, {"ceilDb", "Ceiling (dB)"}, {"highLift", "High lift"}, {"pointMin", "Min size"}, {"pointMax", "Max size"}, {"heightScale", "Height"}, {"smooth", "Smooth"}, {"colorSat", "Colour"}, {"trailDepth", "Trail"}, {"trailDecay", "Trail fade"}, {"stemAmount", "Stems"}};
+            {"floorDb", "Floor (dB)"},
+            {"ceilDb", "Ceiling (dB)"},
+            {"highLift", "High lift"},
+            {"liftPivot", "Lift pivot"},
+            {"pointMin", "Min size"},
+            {"pointMax", "Max size"},
+            {"heightScale", "Height"},
+            {"smooth", "Smooth"},
+            {"colorSat", "Colour"},
+            {"axisOpacity", "Axis opacity"},
+            {"trailDepth", "Trail"},
+            {"trailDecay", "Trail fade"},
+            {"stemAmount", "Stems"}};
         for (int i = 0; i < kN; ++i)
         {
             sliders[i].setSliderStyle(juce::Slider::LinearHorizontal);
@@ -383,12 +591,20 @@ class StereoControls : public juce::Component
             addAndMakeVisible(labels[i]);
             atts[i] = std::make_unique<Attach>(s, defs[i].id, sliders[i]);
         }
-        legend.setText("X = Pan (L <-> R)\nY = Frequency (20 Hz -> 20 kHz)\nZ = Level   colour = phase\n(red anti / green in)\nDrag = orbit   Scroll = zoom",
+        legend.setText("X = Pan (L <-> R)   Y = Frequency\nZ = Level   colour = phase (red anti / green in)\nDrag = orbit   Scroll = zoom",
                        juce::dontSendNotification);
         legend.setJustificationType(juce::Justification::topLeft);
         legend.setFont(juce::FontOptions(10.0f));
         legend.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.5f));
         addAndMakeVisible(legend);
+        saveBtn.setButtonText("Save");
+        resetBtn.setButtonText("Reset");
+        addAndMakeVisible(saveBtn);
+        addAndMakeVisible(resetBtn);
+        saveBtn.onClick = [this]
+        { proc.saveUserDefault(); };
+        resetBtn.onClick = [this]
+        { proc.resetToFactory(); };
     }
 
     void paint(juce::Graphics& g) override
@@ -400,7 +616,12 @@ class StereoControls : public juce::Component
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced(8);
+        auto full = getLocalBounds().reduced(8);
+        auto top = full.removeFromTop(24);
+        saveBtn.setBounds(top.removeFromLeft(top.getWidth() / 2).reduced(2, 0));
+        resetBtn.setBounds(top.reduced(2, 0));
+        full.removeFromTop(6);
+        auto r = full;
         legend.setBounds(r.removeFromBottom(84));
         const int rh = juce::jmax(30, r.getHeight() / kN);
         for (int i = 0; i < kN; ++i)
@@ -412,8 +633,10 @@ class StereoControls : public juce::Component
     }
 
    private:
-    static constexpr int kN = 11;
+    static constexpr int kN = 13;
     using Attach = juce::AudioProcessorValueTreeState::SliderAttachment;
+    StereoMeterProcessor& proc;
+    juce::TextButton saveBtn, resetBtn;
     juce::Slider sliders[kN];
     juce::Label labels[kN];
     juce::Label legend;
@@ -428,6 +651,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
     std::vector<float> winL, winR, tmp;
     std::vector<PointVertex> pts;
     std::vector<LineVertex> stems;
+    float nyquistHz = 24000.0f;
 
     id<MTLDevice> device = nil;
     DCRScatterMTKView* view = nil;
@@ -439,6 +663,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         : proc(p),
           analyzer(juce::jmax(8000.0, p.meterSampleRate()), 2048, 256, 20.0f)
     {
+        nyquistHz = (float)(juce::jmax(8000.0, p.meterSampleRate()) * 0.5);
         const int M = analyzer.windowSize();
         winL.assign((size_t)M, 0.0f);
         winR.assign((size_t)M, 0.0f);
@@ -452,9 +677,10 @@ struct StereoMeterEditor::Impl : private juce::Timer
         view.enableSetNeedsDisplay = YES;
         renderer = [[DCRScatterRenderer alloc] initWithDevice:device view:view];
         view.delegate = renderer;
+        [renderer buildFreqAxisWithNyquist:(double)nyquistHz];
 
         nsView.setView((__bridge void*)view);
-        controls = std::make_unique<StereoControls>(p.getValueTreeState());
+        controls = std::make_unique<StereoControls>(p);
         startTimerHz(60);
     }
 
@@ -513,6 +739,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         const float pFloor = s.getRawParameterValue("floorDb")->load();
         const float pCeil = s.getRawParameterValue("ceilDb")->load();
         const float pHighLift = s.getRawParameterValue("highLift")->load();
+        const float pLiftPivot = s.getRawParameterValue("liftPivot")->load();
         const float pPointMin = s.getRawParameterValue("pointMin")->load();
         const float pPointMax = s.getRawParameterValue("pointMax")->load();
         const float pHeight = s.getRawParameterValue("heightScale")->load();
@@ -535,8 +762,10 @@ struct StereoMeterEditor::Impl : private juce::Timer
         for (int i = 0; i < N; ++i)
         {
             const float intensity = frame.ints[(size_t)i];
-            const float freqNorm = N > 1 ? (float)i / (float)(N - 1) : 0.0f; // 0 low → 1 high
-            const float it = std::min(1.0f, intensity * (1.0f + pHighLift * freqNorm * 3.0f));
+            const float freqNorm = N > 1 ? (float)i / (float)(N - 1) : 0.0f; // 0 low → 1 high (Y axis)
+            // HF tilt: lift only true highs (flat below the pivot) so bass/mids stay put.
+            const float gain = dcr::builtin::highLiftGain(frame.freqs[(size_t)i], pLiftPivot, nyquistHz, pHighLift);
+            const float it = std::min(1.0f, intensity * gain);
             if (it <= 0.01f)
                 continue; // gate silence
 
@@ -594,6 +823,8 @@ struct StereoMeterEditor::Impl : private juce::Timer
             }
         }
 
+        const float pAxisOpacity = s.getRawParameterValue("axisOpacity")->load();
+        [renderer setAxisOpacity:pAxisOpacity];
         [renderer setTrailDepth:pTrailDepth decay:pTrailDecay];
         [renderer setStems:stems.data() count:stems.size()];
         [renderer pushPoints:pts.data() count:pts.size()];
