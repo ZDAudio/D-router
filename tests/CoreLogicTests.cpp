@@ -7,6 +7,7 @@
 // staging) are intentionally NOT here -- they belong in a JUCE-linked target;
 // see the PR notes.
 
+#include "DSP/Builtin/RecorderNaming.h"
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
 #include "DSP/Builtin/StereoMeterMath.h"
@@ -923,6 +924,52 @@ namespace
         CHECK (!p.stalls);
     }
 
+    // ---------------------------------------------------------------------------
+    // RecorderNaming (JUCE-free recording-file naming)
+    // ---------------------------------------------------------------------------
+    void test_recorder_naming()
+    {
+        using namespace dcr::recorder;
+        CHECK (extensionForFormat (0) == "wav");
+        CHECK (extensionForFormat (1) == "flac");
+        CHECK (extensionForFormat (2) == "m4a");
+        CHECK (extensionForFormat (99) == "wav"); // out-of-range clamps
+
+        CHECK (sanitizePrefix ("Vocals") == "Vocals");
+        CHECK (sanitizePrefix ("a/b:c") == "a_b_c"); // unsafe -> '_'
+        CHECK (sanitizePrefix ("") == "Recording"); // empty -> fallback
+        CHECK (sanitizePrefix ("   ") == "Recording"); // whitespace -> fallback
+        CHECK (sanitizePrefix ("__Lead__") == "Lead"); // trim _ . space
+        CHECK (sanitizePrefix ("My Take 1") == "My Take 1"); // spaces kept
+
+        CHECK (makeFileName ("Drums", 2026, 6, 23, 14, 30, 5, 0)
+               == "Drums_2026-06-23_14-30-05.wav");
+        CHECK (makeFileName ("", 2026, 12, 1, 9, 8, 7, 2)
+               == "Recording_2026-12-01_09-08-07.m4a"); // zero-pad + fallback
+        CHECK (makeFileName ("Take", 2026, 1, 1, 0, 0, 0, 1)
+               == "Take_2026-01-01_00-00-00.flac"); // FLAC ext + all-zero time
+    }
+
+    // ---------------------------------------------------------------------------
+    // Recorder channel count -- how many channels a take is written with.
+    // ---------------------------------------------------------------------------
+    void test_recorder_channel_count()
+    {
+        using dcr::recorder::recordChannelCount;
+        // A per-channel insert runs in a "mono host" that duplicates the mono
+        // signal across a stereo scratch (L == R).  Collapse it to one true
+        // mono channel regardless of the presented (duplicated) width.
+        CHECK (recordChannelCount (true, 2) == 1); // the duplicated-mono case
+        CHECK (recordChannelCount (true, 1) == 1);
+        CHECK (recordChannelCount (true, 0) == 1); // never zero channels
+
+        // A group host presents its true N-channel buffer -> record as-is.
+        CHECK (recordChannelCount (false, 2) == 2); // stereo group -> stereo
+        CHECK (recordChannelCount (false, 6) == 6); // N-ch group -> N
+        CHECK (recordChannelCount (false, 1) == 1); // (defensive) 1-ch group
+        CHECK (recordChannelCount (false, 0) == 1); // never zero channels
+    }
+
 } // namespace
 
 int main()
@@ -975,6 +1022,8 @@ int main()
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
+    test_recorder_naming();
+    test_recorder_channel_count();
 
     test_spectral_sanitize_node_db();
 

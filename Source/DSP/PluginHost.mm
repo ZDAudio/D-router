@@ -1,5 +1,7 @@
 #include "DSP/PluginHost.h"
 
+#include "DSP/Builtin/BuiltinProcessors.h"
+
 #include <chrono>
 
 #if JUCE_MAC
@@ -97,6 +99,12 @@ void PluginHost::setPluginAt(int slotIdx, std::unique_ptr<juce::AudioPluginInsta
     if (p != nullptr)
     {
         auto* raw = p.get();
+        // This is the per-channel (mono) insert host: processBlock() duplicates
+        // the mono input across every plugin channel (L == R).  Tell our built-in
+        // processors so a tap like the Recorder collapses that back to a true
+        // mono file; third-party plugins (not BuiltinProcessor) ignore it.
+        if (auto* bp = dynamic_cast<dcr::builtin::BuiltinProcessor*>(raw))
+            bp->setMonoHost(true);
         // Canonical AU restore order, performed while the instance is still
         // private to this (message) thread and invisible to the audio thread:
         //   1. releaseResources + prepareToPlay  (make it ready to run)
