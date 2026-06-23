@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A built-in "Recorder" plugin that captures whatever bus it is inserted on (per-channel slot → mono file, output group → stereo/N-ch file) to WAV / FLAC / AAC, with all disk I/O off the matrix thread.
+**Goal:** A built-in "Recorder" plugin that captures whatever bus it is inserted on (per-channel slot → 2-ch duplicated-mono file, output group → stereo/N-ch file) to WAV / FLAC / AAC, with all disk I/O off the matrix thread.
 
 **Architecture:** A `BuiltinProcessor` pass-through "tap" (like the PPM/Stereo meters). The matrix thread pushes float frames into a JUCE `AudioFormatWriter::ThreadedWriter` (lock-free FIFO); a per-instance `TimeSliceThread` does every file/stream op. Arm/disarm swaps the active-writer pointer under a `SpinLock`; the matrix thread try-locks and skips a block only during the brief swap — the same pattern the plugin hosts use for hot-swap. WAV/FLAC use stock JUCE writers; AAC uses a macOS `ExtAudioFile`-backed custom `AudioFormatWriter` that slots into the same `ThreadedWriter`.
 
@@ -915,7 +915,7 @@ Expected: D-Router launches. "Recorder" appears in the **Built-in** section of a
 These confirm behavior the headless tests can't. Report results honestly; do not claim "works" without observing each:
 
   1. **Stereo group, WAV 24-bit:** insert Recorder on a stereo output group with audio playing. Record button enables once audio is flowing. Press Record → timer counts up, file size grows, meter moves. Press Stop. Open the file in `~/Music/D-Router Recordings` — it is a **stereo** 24-bit WAV that plays back correctly.
-  2. **Per-channel slot:** insert on a single channel slot → the resulting file is **mono**.
+  2. **Per-channel slot:** insert on a single channel slot → the resulting file is **2-channel with identical L/R** (the per-channel host feeds a duplicated-mono buffer), not a true mono file.
   3. **FLAC + AAC:** repeat (1) with Format = FLAC, then AAC. Files are `.flac` / `.m4a`, smaller than WAV, and play in QuickTime/Finder.
   4. **32-bit float WAV:** Format = WAV, Bit depth = 32-bit float → file reports 32-bit float and plays.
   5. **Name + folder:** change Name (e.g. "Vocals") → filename is `Vocals_<timestamp>.<ext>`. Choose a different folder → files land there; "Reveal" opens it.
@@ -934,5 +934,5 @@ After the user confirms real-device results, record what was/wasn't verified in 
 - **Collision handling** uses `juce::File::getNonexistentSibling` at the call site (JUCE, already tested) rather than a JUCE-free helper — so the unit tests cover extension/sanitize/filename only, not collision suffixing. (Spec §6 listed collision logic as a test item; this is a cleaner equivalent.)
 - **Name prefix** comes from the editor's Name field, not auto-derived from the insert point (a plugin instance can't see its host slot without invasive plumbing) — as agreed during brainstorming.
 - **AAC bitrate** is the codec default (~128 kbps); no bitrate control (YAGNI; not in the format/bit-depth params).
-- **Record gating:** the editor enables Record only once `audioFlowing()` (the processor has seen ≥1 real block), guaranteeing `startRecording` reads the true channel count (mono host = 1, group = N) rather than the base class's `preparedChannels` floor of 2.
+- **Record gating:** the editor enables Record only once `audioFlowing()` (the processor has seen ≥1 real block), guaranteeing `startRecording` reads the true *presented* channel count (per-channel host = 2 duplicated-mono, group = N) rather than the base class's `preparedChannels` floor of 2. The per-channel host presents a duplicated-mono stereo buffer, so per-channel recordings are 2-channel (identical L/R), not true mono.
 ```

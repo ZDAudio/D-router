@@ -2,7 +2,7 @@
 
 **Status:** Designed 2026-06-23. Not yet implemented.
 **Scope:** A built-in *recorder* plugin that captures whatever bus it is inserted
-on (per-channel slot → mono file, stereo output group → stereo file) to disk as
+on (a per-channel slot, or a stereo/N-ch output group) to disk as
 WAV / FLAC / AAC, with all disk I/O off the real-time thread.
 
 ---
@@ -14,7 +14,9 @@ its editor to capture that insert point to an audio file. It is a *tap* plugin:
 audio passes through unchanged (like the PPM / Stereo meters). What it records is
 determined purely by where it is inserted — no special engine plumbing:
 
-- a **per-channel slot** (mono host) → a **mono** file
+- a **per-channel slot** (mono host) → a **2-channel duplicated-mono** file: the
+  per-channel host wraps the mono signal in a stereo scratch (L == R), so the file
+  has identical L/R, not a single true mono channel
 - a **stereo output group** slot (multichannel host) → a **stereo** file
 - an N-channel group → an N-channel file
 
@@ -163,8 +165,10 @@ depth, folder, name) are disabled while recording.
   plugins + group inserts run pre-fader, then a post-fader trim/mute stage).
   So the Recorder captures the **pre-fader program signal**, independent of the
   monitor fader — the usual, desired behavior for recording a processed program.
-- A per-channel slot is a **mono** host, so per-channel recordings are mono;
-  stereo/N-ch recording is done by inserting on an output group.
+- A per-channel slot's **mono** host hands the plugin a 2-channel scratch with
+  L == R, so a per-channel insert records a **2-channel duplicated-mono** file
+  (identical L/R), not a true mono file. Record a true stereo/N-ch program by
+  inserting on an output group.
 - Multiple Recorders (e.g. one per group) can record simultaneously; each is an
   independent instance with its own writer + `TimeSliceThread`. Timestamped
   names avoid collisions across instances.
