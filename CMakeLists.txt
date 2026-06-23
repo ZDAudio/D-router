@@ -68,6 +68,7 @@ target_sources(dcorerouter PRIVATE
     Source/DSP/MultiChannelPluginHost.mm
     Source/DSP/SafePluginOps.mm
     Source/DSP/Builtin/InternalPluginFormat.cpp
+    Source/DSP/Builtin/CoreAudioAacWriter.cpp
     Source/UI/PluginEditorWindow.mm
     Source/DSP/Builtin/StereoMeterEditor.mm
     Source/Update/UpdateChecker.cpp
