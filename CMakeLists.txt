@@ -39,6 +39,8 @@ target_sources(dcorerouter PRIVATE
     Source/Engine/DeviceVolume.cpp
     Source/Engine/SystemAudioDevices.cpp
     Source/Engine/ReconfigurationController.cpp
+    Source/Engine/AppAudioProcesses.mm
+    Source/Engine/AppAudioWorker.mm
     Source/Routing/RoutingMatrix.cpp
     Source/Routing/PanicController.cpp
     Source/Routing/OutputGroupManager.cpp
@@ -80,6 +82,12 @@ target_include_directories(dcorerouter PRIVATE Source)
 # Metal / MTKView object graph is managed automatically. (The project's other
 # .mm files predate it and use manual retain/release, so ARC is scoped per-file.)
 set_source_files_properties(Source/DSP/Builtin/StereoMeterEditor.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+# App-audio capture is new Objective-C++; compile with ARC so the CoreAudio tap
+# objects (CATapDescription) and NSWorkspace observer tokens are managed
+# automatically, like StereoMeterEditor above.
+set_source_files_properties(Source/Engine/AppAudioProcesses.mm Source/Engine/AppAudioWorker.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_compile_definitions(dcorerouter PRIVATE
