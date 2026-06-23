@@ -123,6 +123,7 @@ namespace dcr
             int numOutputChannels = 0;
             double deviceSampleRate = 0.0;
             bool blockSelfLoop = false; // carried from the DeviceSpec
+            bool isAppInput = false; // true for app-audio capture sources (AppAudioWorker)
         };
         const std::vector<DeviceInfo>& getDeviceInfo() const noexcept { return deviceInfo; }
 

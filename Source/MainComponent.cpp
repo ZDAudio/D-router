@@ -1372,12 +1372,16 @@ namespace dcr
                 continue;
             if (cmd.type == dcr::appinput::CommandType::Attach)
             {
-                if (w->attach ((AudioObjectID) cmd.processId))
+                const bool ok = w->attach ((AudioObjectID) cmd.processId);
+                juce::Logger::writeToLog ("appaudio.reconcile: ATTACH src=" + juce::String (cmd.sourceIndex)
+                                          + " proc=" + juce::String (cmd.processId) + " -> " + juce::String (ok ? "ok" : "FAIL"));
+                if (ok)
                     appAttachedPids[(size_t) cmd.sourceIndex] = cmd.processId;
             }
             else
             {
                 w->detach();
+                juce::Logger::writeToLog ("appaudio.reconcile: DETACH src=" + juce::String (cmd.sourceIndex));
                 appAttachedPids[(size_t) cmd.sourceIndex] = 0;
             }
         }
@@ -1400,6 +1404,8 @@ namespace dcr
             const juce::String bid = juce::String::fromUTF8 (e.bundleId.c_str());
             if (bid.isEmpty() || seen.contains (bid))
                 continue;
+            if (bid.startsWith ("com.zdaudio.drouter"))
+                continue; // never capture ourselves -- that's a feedback loop
             seen.add (bid);
             const juce::String name = juce::String::fromUTF8 (
                 e.displayName.empty() ? e.bundleId.c_str() : e.displayName.c_str());

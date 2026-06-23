@@ -104,8 +104,13 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
 
     // 2) Create the process tap.
     AudioObjectID newTap = kAudioObjectUnknown;
-    if (AudioHardwareCreateProcessTap(desc, &newTap) != noErr || newTap == kAudioObjectUnknown)
-        return false; // permission denial / failure lands here [tune on device: map OSStatus]
+    const OSStatus tapErr = AudioHardwareCreateProcessTap(desc, &newTap);
+    if (tapErr != noErr || newTap == kAudioObjectUnknown)
+    {
+        juce::Logger::writeToLog("appworker.attach: AudioHardwareCreateProcessTap FAILED os=" + juce::String((int)tapErr) + " proc=" + juce::String((int)processObject) + " -- likely TCC audio-capture permission not granted");
+        return false;
+    }
+    juce::Logger::writeToLog("appworker.attach: tap created proc=" + juce::String((int)processObject) + " tap=" + juce::String((int)newTap));
 
     // 3) Read the tap's stream format (sample rate; channel count informational).
     AudioStreamBasicDescription asbd{};
@@ -115,11 +120,13 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
         UInt32 size = sizeof(asbd);
         if (AudioObjectGetPropertyData(newTap, &fa, 0, nullptr, &size, &asbd) != noErr)
         {
+            juce::Logger::writeToLog("appworker.attach: read tap format FAILED");
             AudioHardwareDestroyProcessTap(newTap);
             return false;
         }
     }
     tapSampleRate = asbd.mSampleRate > 0 ? asbd.mSampleRate : settings.engineSampleRate;
+    juce::Logger::writeToLog("appworker.attach: tap format sr=" + juce::String(asbd.mSampleRate) + " ch=" + juce::String((int)asbd.mChannelsPerFrame));
 
     // 4) Prepare per-channel SRC (tap rate -> engine rate) and clear rings.
     for (auto& src : inputSRCs)
@@ -152,8 +159,10 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
     }
 
     AudioObjectID newAgg = kAudioObjectUnknown;
-    if (AudioHardwareCreateAggregateDevice((__bridge CFDictionaryRef)description, &newAgg) != noErr || newAgg == kAudioObjectUnknown)
+    const OSStatus aggErr = AudioHardwareCreateAggregateDevice((__bridge CFDictionaryRef)description, &newAgg);
+    if (aggErr != noErr || newAgg == kAudioObjectUnknown)
     {
+        juce::Logger::writeToLog("appworker.attach: CreateAggregateDevice FAILED os=" + juce::String((int)aggErr));
         AudioHardwareDestroyProcessTap(newTap);
         return false;
     }
@@ -167,10 +176,23 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
     if ((int)scratchEngine.size() < needScratch)
         scratchEngine.assign((size_t)needScratch, 0.0f);
 
-    // 7) IOProc on the real-time I/O thread; publish handles before start.
+    // 7) IOProc -- process taps deliver captured audio via the BLOCK + dispatch-queue
+    // variant (this is what AudioCap does; the plain C AudioDeviceCreateIOProcID gives
+    // a SILENT input stream for taps).  Serial queue so the SPSC ring keeps exactly one
+    // producer.  Publish handles before start.
+    if (captureQueue == nullptr)
+        captureQueue = (void*)CFBridgingRetain(dispatch_queue_create("dcr.appaudio.tap", DISPATCH_QUEUE_SERIAL));
+    AppAudioWorker* self = this;
     AudioDeviceIOProcID newProc = nullptr;
-    if (AudioDeviceCreateIOProcID(newAgg, &AppAudioWorker::ioProcTrampoline, this, &newProc) != noErr || newProc == nullptr)
+    const OSStatus procErr = AudioDeviceCreateIOProcIDWithBlock(
+        &newProc, newAgg, (__bridge dispatch_queue_t)captureQueue,
+        ^(const AudioTimeStamp*, const AudioBufferList* inInputData, const AudioTimeStamp*,
+          AudioBufferList*, const AudioTimeStamp*) {
+          AppAudioWorker::ioProcTrampoline(0, nullptr, inInputData, nullptr, nullptr, nullptr, self);
+        });
+    if (procErr != noErr || newProc == nullptr)
     {
+        juce::Logger::writeToLog("appworker.attach: CreateIOProcIDWithBlock FAILED os=" + juce::String((int)procErr));
         AudioHardwareDestroyAggregateDevice(newAgg);
         AudioHardwareDestroyProcessTap(newTap);
         return false;
@@ -180,12 +202,15 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
     aggregateId = newAgg;
     procId = newProc;
 
-    if (AudioDeviceStart(newAgg, newProc) != noErr)
+    const OSStatus startErr = AudioDeviceStart(newAgg, newProc);
+    if (startErr != noErr)
     {
+        juce::Logger::writeToLog("appworker.attach: AudioDeviceStart FAILED os=" + juce::String((int)startErr));
         detach(); // tears down the handles we just published
         return false;
     }
     attached.store(true, std::memory_order_release); // matrix may now consume (spec §7)
+    juce::Logger::writeToLog("appworker.attach: OK capturing agg=" + juce::String((int)newAgg) + " outUID=" + (outUID != nil ? juce::String(outUID.UTF8String) : juce::String("<none>")));
     return true;
 }
 
@@ -207,6 +232,12 @@ void AppAudioWorker::detach()
     aggregateId = kAudioObjectUnknown;
     tapId = kAudioObjectUnknown;
     tapSampleRate = 0.0;
+
+    if (captureQueue != nullptr)
+    {
+        CFBridgingRelease(captureQueue); // balances the CFBridgingRetain in attach()
+        captureQueue = nullptr;
+    }
 }
 
 OSStatus AppAudioWorker::ioProcTrampoline(AudioObjectID, const AudioTimeStamp*, const AudioBufferList* inInputData, const AudioTimeStamp*, AudioBufferList*, const AudioTimeStamp*, void* clientData)
@@ -214,6 +245,7 @@ OSStatus AppAudioWorker::ioProcTrampoline(AudioObjectID, const AudioTimeStamp*, 
     auto* self = static_cast<AppAudioWorker*>(clientData);
     if (self == nullptr || inInputData == nullptr || inInputData->mNumberBuffers == 0)
         return noErr;
+
     const AudioBuffer& b = inInputData->mBuffers[0];
     const UInt32 chans = std::max<UInt32>(1, b.mNumberChannels);
     const int frames = (int)(b.mDataByteSize / sizeof(float) / chans);
@@ -255,6 +287,7 @@ void AppAudioWorker::ioBlock(const AudioBufferList* input, int numFrames)
         }
     }
 
+    framesProduced.fetch_add((uint64_t)numFrames, std::memory_order_relaxed);
     if (auto* ev = inputReadyEvent.load(std::memory_order_acquire))
         ev->signal();
 }

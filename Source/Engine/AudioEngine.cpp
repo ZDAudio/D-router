@@ -197,6 +197,7 @@ namespace dcr
             info.globalInputBase = totalIns;
             info.globalOutputBase = -1;
             info.blockSelfLoop = false;
+            info.isAppInput = true;
             deviceInfo.push_back (info);
             totalIns += nIn;
             appWorkers.push_back (std::move (w));

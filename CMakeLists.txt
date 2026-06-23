@@ -24,6 +24,11 @@ juce_add_gui_app(dcorerouter
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "D-Router routes audio between devices and needs microphone access."
+    # Core Audio process taps (app-audio capture, macOS 14.4+) are gated by the
+    # audio-capture TCC permission; THIS key drives the system prompt.  Without it the
+    # tap is created but delivers pure silence (every PCM sample 0.0f) and no prompt
+    # ever appears -- the exact symptom we chased for hours (2026-06-24).
+    PLIST_TO_MERGE "<plist version=\"1.0\"><dict><key>NSAudioCaptureUsageDescription</key><string>D-Router captures the audio of apps you select and routes it through the routing matrix.</string></dict></plist>"
 )
 
 juce_generate_juce_header(dcorerouter)

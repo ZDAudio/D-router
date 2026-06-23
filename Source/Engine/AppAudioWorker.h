@@ -47,6 +47,9 @@ namespace dcr
             inputReadyEvent.store (e, std::memory_order_release);
         }
         uint64_t getInputOverruns() const noexcept { return inputOverruns.load (std::memory_order_relaxed); }
+        // Diagnostic: total engine-rate samples the IOProc has written to the rings.
+        // 0 while detached or if the tap delivers no audio.
+        uint64_t getFramesProduced() const noexcept { return framesProduced.load (std::memory_order_relaxed); }
 
     private:
         void ioBlock (const AudioBufferList* input, int numFrames); // HAL thread
@@ -67,11 +70,13 @@ namespace dcr
         std::atomic<juce::WaitableEvent*> inputReadyEvent { nullptr };
         std::atomic<bool> attached { false };
         std::atomic<uint64_t> inputOverruns { 0 };
+        std::atomic<uint64_t> framesProduced { 0 };
 
         // CoreAudio handles (message thread owns lifecycle; HAL thread reads).
         AudioObjectID tapId = kAudioObjectUnknown;
         AudioObjectID aggregateId = kAudioObjectUnknown;
         AudioDeviceIOProcID procId = nullptr;
+        void* captureQueue = nullptr; // dispatch_queue_t (CFBridgingRetain'd) for the IOProc block
         double tapSampleRate = 0.0;
     };
 } // namespace dcr
