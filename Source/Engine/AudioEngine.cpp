@@ -1,6 +1,7 @@
 #include "Engine/AudioEngine.h"
 
 #include "DSP/Builtin/InternalPluginFormat.h"
+#include "Engine/AppAudioWorker.h"
 #include "Engine/PdcPlan.h"
 
 #include <limits>
@@ -85,7 +86,8 @@ namespace dcr
         return false;
     }
 
-    bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
+    bool AudioEngine::start (const std::vector<DeviceSpec>& devices,
+        const std::vector<AppInputSpec>& appInputs)
     {
         stop();
         if (deviceType == nullptr)
@@ -109,7 +111,9 @@ namespace dcr
         }
 
         workers.clear();
+        appWorkers.clear();
         deviceInfo.clear();
+        appInputSpecs = appInputs;
 
         int totalIns = 0, totalOuts = 0;
         for (const auto& spec : devices)
@@ -146,6 +150,23 @@ namespace dcr
             }
             deviceInfo.push_back (info);
             workers.push_back (std::move (w));
+        }
+
+        // App-audio capture sources occupy global input channels AFTER all device
+        // inputs.  open() allocates their rings (detached); the live tap is bound
+        // later by the watcher via attach() (Part 3b).
+        for (const auto& spec : appInputSpecs)
+        {
+            auto w = std::make_unique<AppAudioWorker> (spec.muteOriginalOutput, spec.numChannels);
+            if (!w->open (settings))
+            {
+                juce::Logger::writeToLog ("engine.start: app input OPEN FAILED for '" + spec.bundleId + "'");
+                continue;
+            }
+            juce::Logger::writeToLog ("engine.start: app input opened '" + spec.bundleId
+                                      + "'  ch=" + juce::String (w->getNumInputChannels()));
+            totalIns += w->getNumInputChannels();
+            appWorkers.push_back (std::move (w));
         }
 
         if (totalIns == 0 || totalOuts == 0)
@@ -238,6 +259,18 @@ namespace dcr
                 ++outIdx;
             }
         }
+
+        // App-audio inputs follow the device inputs in the global input space; they
+        // reuse the same inputPluginHosts pool (sized to the combined total above).
+        for (size_t i = 0; i < appWorkers.size(); ++i)
+        {
+            auto* w = appWorkers[i].get();
+            for (int ch = 0; ch < w->getNumInputChannels(); ++ch)
+            {
+                globalIns.push_back ({ w, ch, inputPluginHosts[(size_t) inIdx].get() });
+                ++inIdx;
+            }
+        }
         processor.configure (std::move (globalIns), std::move (globalOuts), &matrix, &groupManager, &inputGroupManager, settings);
 
         // Wire each device's input callback to wake the matrix thread directly
@@ -248,6 +281,8 @@ namespace dcr
         // that fires during teardown therefore signals a still-valid event (and
         // signalling an auto-reset event with no waiter is a harmless no-op).
         for (auto& w : workers)
+            w->setInputReadyEvent (&processor.getInputReadyEvent());
+        for (auto& w : appWorkers)
             w->setInputReadyEvent (&processor.getInputReadyEvent());
 
         processor.start();
@@ -273,6 +308,7 @@ namespace dcr
         pluginHosts.clear();
         inputPluginHosts.clear();
         workers.clear();
+        appWorkers.clear();
         deviceInfo.clear();
         runningFlag = false;
     }
