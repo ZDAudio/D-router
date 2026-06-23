@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Engine/EngineSettings.h"
+#include "Engine/InputSource.h"
 #include "Engine/RingBuffer.h"
 #include "Engine/SampleRateConverter.h"
 
@@ -19,11 +20,11 @@ namespace dcr
     // setInputReadyEvent.  open() allocates the rings (the slot); attach()/detach()
     // bind/unbind the live process tap (spec §6).  The IOProc runs on a CoreAudio
     // HAL thread under the same RT rules as DeviceWorker's callback.
-    class AppAudioWorker
+    class AppAudioWorker : public InputSource
     {
     public:
         AppAudioWorker (bool muteOriginalOutput, int numChannels);
-        ~AppAudioWorker();
+        ~AppAudioWorker() override;
 
         // Allocate rings + scratch for `numChannels`.  Detached (no tap yet).
         bool open (const EngineSettings& settings);
@@ -33,10 +34,11 @@ namespace dcr
         // the per-channel SRC, builds the private aggregate device, starts the IOProc.
         bool attach (AudioObjectID processObject);
         void detach();
-        bool isAttached() const noexcept { return attached.load (std::memory_order_acquire); }
+        bool isAppInput() const noexcept override { return true; }
+        bool isAttached() const noexcept override { return attached.load (std::memory_order_acquire); }
 
         int getNumInputChannels() const noexcept { return numChannels; }
-        FloatRingBuffer* getInputRing (int ch) noexcept
+        FloatRingBuffer* getInputRing (int ch) noexcept override
         {
             return ch >= 0 && ch < (int) inputRings.size() ? &inputRings[(size_t) ch] : nullptr;
         }

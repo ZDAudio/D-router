@@ -17,6 +17,7 @@ namespace dcr
 {
 
     class DeviceWorker;
+    class InputSource;
     class PluginHost;
     class OutputGroupManager;
     class InputGroupManager;
@@ -32,7 +33,7 @@ namespace dcr
 
         struct GlobalInput
         {
-            DeviceWorker* device;
+            InputSource* source;
             int channelIndex;
             PluginHost* plugin = nullptr;
         };

@@ -323,7 +323,7 @@ namespace dcr
         // Need every input ring to have >= blockSize samples available.
         for (auto& in : inputs)
         {
-            auto* ring = in.device->getInputRing (in.channelIndex);
+            auto* ring = in.source->getInputRing (in.channelIndex);
             if (ring == nullptr)
                 return false;
             if (ring->readAvailable() < (size_t) blockSize)
@@ -338,7 +338,7 @@ namespace dcr
         // Read one block per input channel and compute peak (SIMD).
         for (size_t i = 0; i < inputs.size(); ++i)
         {
-            auto* ring = inputs[i].device->getInputRing (inputs[i].channelIndex);
+            auto* ring = inputs[i].source->getInputRing (inputs[i].channelIndex);
             float* dst = inBuf.data() + i * (size_t) blockSize;
             ring->read (dst, (size_t) blockSize);
 
