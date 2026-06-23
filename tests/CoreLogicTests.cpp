@@ -7,6 +7,7 @@
 // staging) are intentionally NOT here -- they belong in a JUCE-linked target;
 // see the PR notes.
 
+#include "DSP/Builtin/RecorderNaming.h"
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
 #include "DSP/Builtin/StereoMeterMath.h"
@@ -801,6 +802,32 @@ namespace
         CHECK (!w.valid);
     }
 
+    // ---------------------------------------------------------------------------
+    // RecorderNaming (JUCE-free recording-file naming)
+    // ---------------------------------------------------------------------------
+    void test_recorder_naming()
+    {
+        using namespace dcr::recorder;
+        CHECK (extensionForFormat (0) == "wav");
+        CHECK (extensionForFormat (1) == "flac");
+        CHECK (extensionForFormat (2) == "m4a");
+        CHECK (extensionForFormat (99) == "wav"); // out-of-range clamps
+
+        CHECK (sanitizePrefix ("Vocals") == "Vocals");
+        CHECK (sanitizePrefix ("a/b:c") == "a_b_c"); // unsafe -> '_'
+        CHECK (sanitizePrefix ("") == "Recording"); // empty -> fallback
+        CHECK (sanitizePrefix ("   ") == "Recording"); // whitespace -> fallback
+        CHECK (sanitizePrefix ("__Lead__") == "Lead"); // trim _ . space
+        CHECK (sanitizePrefix ("My Take 1") == "My Take 1"); // spaces kept
+
+        CHECK (makeFileName ("Drums", 2026, 6, 23, 14, 30, 5, 0)
+               == "Drums_2026-06-23_14-30-05.wav");
+        CHECK (makeFileName ("", 2026, 12, 1, 9, 8, 7, 2)
+               == "Recording_2026-12-01_09-08-07.m4a"); // zero-pad + fallback
+        CHECK (makeFileName ("Take", 2026, 1, 1, 0, 0, 0, 1)
+               == "Take_2026-01-01_00-00-00.flac"); // FLAC ext + all-zero time
+    }
+
 } // namespace
 
 int main()
@@ -853,6 +880,7 @@ int main()
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
+    test_recorder_naming();
 
     test_spectral_sanitize_node_db();
 

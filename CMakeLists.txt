@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(dcorerouter VERSION 0.5.0 LANGUAGES C CXX OBJC OBJCXX)
+project(dcorerouter VERSION 0.6.0 LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -68,6 +68,7 @@ target_sources(dcorerouter PRIVATE
     Source/DSP/MultiChannelPluginHost.mm
     Source/DSP/SafePluginOps.mm
     Source/DSP/Builtin/InternalPluginFormat.cpp
+    Source/DSP/Builtin/CoreAudioAacWriter.cpp
     Source/UI/PluginEditorWindow.mm
     Source/DSP/Builtin/StereoMeterEditor.mm
     Source/Update/UpdateChecker.cpp
