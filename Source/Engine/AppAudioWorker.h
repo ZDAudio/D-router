@@ -49,6 +49,10 @@ namespace dcr
     private:
         void ioBlock (const AudioBufferList* input, int numFrames); // HAL thread
 
+        // C IOProc entry point (real-time I/O thread); forwards to ioBlock via
+        // clientData == this.
+        static OSStatus ioProcTrampoline (AudioObjectID, const AudioTimeStamp*, const AudioBufferList* inInputData, const AudioTimeStamp*, AudioBufferList*, const AudioTimeStamp*, void* clientData);
+
         const bool muteOriginalOutput;
         const int numChannels;
         EngineSettings settings {};
