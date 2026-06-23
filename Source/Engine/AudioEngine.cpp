@@ -181,9 +181,24 @@ namespace dcr
                 juce::Logger::writeToLog ("engine.start: app input OPEN FAILED for '" + spec.bundleId + "'");
                 continue;
             }
+            const int nIn = w->getNumInputChannels();
             juce::Logger::writeToLog ("engine.start: app input opened '" + spec.bundleId
-                                      + "'  ch=" + juce::String (w->getNumInputChannels()));
-            totalIns += w->getNumInputChannels();
+                                      + "'  ch=" + juce::String (nIn));
+            // Surface the app input in the UI: MatrixView / group / volume panels all
+            // build their input lists from getDeviceInfo(), so an app source needs a
+            // DeviceInfo entry too -- it appears as an input "device" labelled by the
+            // app, with its channels right after the hardware inputs (matching the
+            // GlobalInput order below).  Input-only; no output side.
+            DeviceInfo info;
+            info.name = spec.displayName.isNotEmpty() ? spec.displayName : spec.bundleId;
+            info.deviceSampleRate = settings.engineSampleRate; // post-SRC, engine rate
+            info.numInputChannels = nIn;
+            info.numOutputChannels = 0;
+            info.globalInputBase = totalIns;
+            info.globalOutputBase = -1;
+            info.blockSelfLoop = false;
+            deviceInfo.push_back (info);
+            totalIns += nIn;
             appWorkers.push_back (std::move (w));
         }
 
