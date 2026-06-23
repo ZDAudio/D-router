@@ -304,15 +304,27 @@ namespace dcr
             auto ins = engine.getAvailableInputDevices();
             auto outs = engine.getAvailableOutputDevices();
             std::vector<AudioEngine::DeviceSpec> filtered;
+            bool lostDirection = false;
             for (auto& sp : currentSpecs)
             {
                 const bool stillIn = sp.wantInput && ins.contains (sp.name);
                 const bool stillOut = sp.wantOutput && outs.contains (sp.name);
+                // A device we route actually lost a wanted direction (real removal).
+                if (stillIn != sp.wantInput || stillOut != sp.wantOutput)
+                    lostDirection = true;
                 if (stillIn || stillOut)
                     filtered.push_back ({ sp.name, stillIn, stillOut });
             }
-            // Restart engine with the surviving specs so it picks up the change.
-            applyDeviceSelection (filtered);
+            // ONLY restart when a routed device actually lost a wanted direction.
+            // Restarting on every device-list change loops forever once an app-audio
+            // input is active: each attach/detach of the tap's private aggregate
+            // device churns the CoreAudio device list, which would fire this handler,
+            // which restarts the engine, which re-attaches the tap, which churns
+            // again... (observed 2026-06-23 — a tight reconfigure loop). Benign churn
+            // (our own tap aggregate, or an unrelated device appearing) leaves every
+            // routed device intact, so we do nothing.
+            if (lostDirection)
+                applyDeviceSelection (filtered);
         };
 
         // Crash-guard: if the previous launch never reached markCleanExit() the

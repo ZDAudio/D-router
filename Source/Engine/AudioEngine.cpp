@@ -40,17 +40,35 @@ namespace dcr
             onDeviceListChanged();
     }
 
+    namespace
+    {
+        // Our OWN process-tap aggregate devices (named "DRouter-Tap-<pid>", created by
+        // AppAudioWorker) stay visible to THIS process even though they're marked
+        // private -- kAudioAggregateDeviceIsPrivateKey only hides them from OTHER apps.
+        // Strip them from the device enumeration so they never leak into the device
+        // dialog, the onDeviceListChanged hotplug handler, or the engine's device
+        // specs -- which drove the engine into a reconfigure/abort state (2026-06-23).
+        // NOTE: keep this prefix in sync with the name format in AppAudioWorker.mm.
+        juce::StringArray withoutOwnTapAggregates (juce::StringArray names)
+        {
+            for (int i = names.size(); --i >= 0;)
+                if (names[i].startsWith ("DRouter-Tap-"))
+                    names.remove (i);
+            return names;
+        }
+    } // namespace
+
     juce::StringArray AudioEngine::getAvailableInputDevices() const
     {
         if (deviceType == nullptr)
             return {};
-        return deviceType->getDeviceNames (true);
+        return withoutOwnTapAggregates (deviceType->getDeviceNames (true));
     }
     juce::StringArray AudioEngine::getAvailableOutputDevices() const
     {
         if (deviceType == nullptr)
             return {};
-        return deviceType->getDeviceNames (false);
+        return withoutOwnTapAggregates (deviceType->getDeviceNames (false));
     }
 
     juce::String AudioEngine::getDefaultInputDeviceName() const
