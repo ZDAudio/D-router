@@ -2,6 +2,7 @@
 
 #include "DSP/PluginHost.h"
 #include "Engine/DeviceWorker.h"
+#include "Engine/MatrixInputPlan.h"
 #include "Engine/PdcPlan.h"
 #include "Routing/InputGroupManager.h"
 #include "Routing/OutputGroup.h"
@@ -320,13 +321,17 @@ namespace dcr
         if (inputs.empty() || outputs.empty() || matrix == nullptr)
             return false;
 
-        // Need every input ring to have >= blockSize samples available.
+        // Each input must be ready before the matrix runs.  Hardware inputs gate the
+        // matrix (stall until a full block is buffered); app-tap inputs NEVER stall
+        // -- an offline/warming-up app contributes silence instead of freezing all
+        // audio (see MatrixInputPlan.h / spec §7).
         for (auto& in : inputs)
         {
             auto* ring = in.source->getInputRing (in.channelIndex);
             if (ring == nullptr)
                 return false;
-            if (ring->readAvailable() < (size_t) blockSize)
+            const auto plan = planMatrixInput (in.source->isAppInput(), in.source->isAttached(), (int) ring->readAvailable(), blockSize);
+            if (plan.stalls)
             {
                 blocksStalled.fetch_add (1, std::memory_order_relaxed);
                 return false;
@@ -335,12 +340,18 @@ namespace dcr
 
         const auto t0 = std::chrono::steady_clock::now();
 
-        // Read one block per input channel and compute peak (SIMD).
+        // Read one block per input channel and compute peak (SIMD).  App inputs that
+        // aren't ready (detached/underfull) are zero-filled rather than read, so they
+        // contribute silence without ever stalling the matrix.
         for (size_t i = 0; i < inputs.size(); ++i)
         {
             auto* ring = inputs[i].source->getInputRing (inputs[i].channelIndex);
             float* dst = inBuf.data() + i * (size_t) blockSize;
-            ring->read (dst, (size_t) blockSize);
+            const auto plan = planMatrixInput (inputs[i].source->isAppInput(), inputs[i].source->isAttached(), (int) ring->readAvailable(), blockSize);
+            if (plan.action == MatrixInputAction::Read)
+                ring->read (dst, (size_t) blockSize);
+            else
+                juce::FloatVectorOperations::clear (dst, blockSize);
 
             const auto r = juce::FloatVectorOperations::findMinAndMax (dst, blockSize);
             const float peak = juce::jmax (std::abs (r.getStart()), std::abs (r.getEnd()));
