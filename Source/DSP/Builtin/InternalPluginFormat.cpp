@@ -8,6 +8,7 @@
 #include "DSP/Builtin/ParametricEqEditor.h"
 #include "DSP/Builtin/PpmMeterEditor.h"
 #include "DSP/Builtin/PpmMeterProcessor.h"
+#include "DSP/Builtin/RecorderEditor.h"
 #include "DSP/Builtin/RecorderProcessor.h"
 #include "DSP/Builtin/ResonanceSuppressorEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
@@ -28,6 +29,7 @@ namespace dcr::builtin
     juce::AudioProcessorEditor* MultibandCompProcessor::createEditor() { return new MultibandCompEditor (*this); }
     juce::AudioProcessorEditor* LevelerProcessor::createEditor() { return new LevelRiderEditor (*this); }
     juce::AudioProcessorEditor* PpmMeterProcessor::createEditor() { return new PpmMeterEditor (*this); }
+    juce::AudioProcessorEditor* RecorderProcessor::createEditor() { return new RecorderEditor (*this); }
     juce::AudioProcessorEditor* StereoMeterProcessor::createEditor() { return new StereoMeterEditor (*this); }
     juce::AudioProcessorEditor* SpectralAutoEqProcessor::createEditor() { return new SpectralAutoEqEditor (*this); }
     juce::AudioProcessorEditor* ResonanceSuppressorProcessor::createEditor() { return new ResonanceSuppressorEditor (*this); }

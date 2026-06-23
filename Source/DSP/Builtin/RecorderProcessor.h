@@ -47,6 +47,8 @@ namespace dcr::builtin
             return l;
         }
 
+        juce::AudioProcessorEditor* createEditor() override; // RecorderEditor.h
+
         // ---- editor-facing API (message thread) --------------------------------
         bool isRecording() const noexcept { return recording.load (std::memory_order_relaxed); }
         bool audioFlowing() const noexcept { return liveChannels.load (std::memory_order_relaxed) > 0; }
