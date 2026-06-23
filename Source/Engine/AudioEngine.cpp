@@ -1,6 +1,7 @@
 #include "Engine/AudioEngine.h"
 
 #include "DSP/Builtin/InternalPluginFormat.h"
+#include "Engine/AppAudioWorker.h"
 #include "Engine/PdcPlan.h"
 
 #include <limits>
@@ -39,17 +40,35 @@ namespace dcr
             onDeviceListChanged();
     }
 
+    namespace
+    {
+        // Our OWN process-tap aggregate devices (named "DRouter-Tap-<pid>", created by
+        // AppAudioWorker) stay visible to THIS process even though they're marked
+        // private -- kAudioAggregateDeviceIsPrivateKey only hides them from OTHER apps.
+        // Strip them from the device enumeration so they never leak into the device
+        // dialog, the onDeviceListChanged hotplug handler, or the engine's device
+        // specs -- which drove the engine into a reconfigure/abort state (2026-06-23).
+        // NOTE: keep this prefix in sync with the name format in AppAudioWorker.mm.
+        juce::StringArray withoutOwnTapAggregates (juce::StringArray names)
+        {
+            for (int i = names.size(); --i >= 0;)
+                if (names[i].startsWith ("DRouter-Tap-"))
+                    names.remove (i);
+            return names;
+        }
+    } // namespace
+
     juce::StringArray AudioEngine::getAvailableInputDevices() const
     {
         if (deviceType == nullptr)
             return {};
-        return deviceType->getDeviceNames (true);
+        return withoutOwnTapAggregates (deviceType->getDeviceNames (true));
     }
     juce::StringArray AudioEngine::getAvailableOutputDevices() const
     {
         if (deviceType == nullptr)
             return {};
-        return deviceType->getDeviceNames (false);
+        return withoutOwnTapAggregates (deviceType->getDeviceNames (false));
     }
 
     juce::String AudioEngine::getDefaultInputDeviceName() const
@@ -85,7 +104,8 @@ namespace dcr
         return false;
     }
 
-    bool AudioEngine::start (const std::vector<DeviceSpec>& devices)
+    bool AudioEngine::start (const std::vector<DeviceSpec>& devices,
+        const std::vector<AppInputSpec>& appInputs)
     {
         stop();
         if (deviceType == nullptr)
@@ -109,7 +129,9 @@ namespace dcr
         }
 
         workers.clear();
+        appWorkers.clear();
         deviceInfo.clear();
+        appInputSpecs = appInputs;
 
         int totalIns = 0, totalOuts = 0;
         for (const auto& spec : devices)
@@ -146,6 +168,39 @@ namespace dcr
             }
             deviceInfo.push_back (info);
             workers.push_back (std::move (w));
+        }
+
+        // App-audio capture sources occupy global input channels AFTER all device
+        // inputs.  open() allocates their rings (detached); the live tap is bound
+        // later by the watcher via attach() (Part 3b).
+        for (const auto& spec : appInputSpecs)
+        {
+            auto w = std::make_unique<AppAudioWorker> (spec.muteOriginalOutput, spec.numChannels);
+            if (!w->open (settings))
+            {
+                juce::Logger::writeToLog ("engine.start: app input OPEN FAILED for '" + spec.bundleId + "'");
+                continue;
+            }
+            const int nIn = w->getNumInputChannels();
+            juce::Logger::writeToLog ("engine.start: app input opened '" + spec.bundleId
+                                      + "'  ch=" + juce::String (nIn));
+            // Surface the app input in the UI: MatrixView / group / volume panels all
+            // build their input lists from getDeviceInfo(), so an app source needs a
+            // DeviceInfo entry too -- it appears as an input "device" labelled by the
+            // app, with its channels right after the hardware inputs (matching the
+            // GlobalInput order below).  Input-only; no output side.
+            DeviceInfo info;
+            info.name = spec.displayName.isNotEmpty() ? spec.displayName : spec.bundleId;
+            info.deviceSampleRate = settings.engineSampleRate; // post-SRC, engine rate
+            info.numInputChannels = nIn;
+            info.numOutputChannels = 0;
+            info.globalInputBase = totalIns;
+            info.globalOutputBase = -1;
+            info.blockSelfLoop = false;
+            info.isAppInput = true;
+            deviceInfo.push_back (info);
+            totalIns += nIn;
+            appWorkers.push_back (std::move (w));
         }
 
         if (totalIns == 0 || totalOuts == 0)
@@ -200,6 +255,26 @@ namespace dcr
         // every plugin slot of every group on both sides.
         groupManager.setNumOutputChannels (totalOuts);
         inputGroupManager.setNumInputChannels (totalIns);
+
+        // Auto-build a "Soft In" input group over each app-audio source's channels so
+        // the captured app shows up (faderable + insertable) in the IN/OUT GROUPS view.
+        // Rebuilt from scratch every start; the user's regular input groups are left
+        // untouched.  The input-group plugin re-prepare loop below covers these too.
+        inputGroupManager.removeSoftInGroups();
+        for (const auto& d : deviceInfo)
+        {
+            if (!d.isAppInput || d.globalInputBase < 0 || d.numInputChannels <= 0)
+                continue;
+            const int gi = inputGroupManager.createGroup (d.name,
+                juce::AudioChannelSet::canonicalChannelSet (d.numInputChannels));
+            if (auto* g = inputGroupManager.getGroup (gi))
+            {
+                g->kind.store (OutputGroup::Kind::SoftIn, std::memory_order_relaxed);
+                for (int c = 0; c < d.numInputChannels; ++c)
+                    inputGroupManager.assignChannel (gi, c, d.globalInputBase + c);
+            }
+        }
+
         for (int gi = 0; gi < groupManager.getNumGroups(); ++gi)
         {
             if (auto* g = groupManager.getGroup (gi))
@@ -238,6 +313,18 @@ namespace dcr
                 ++outIdx;
             }
         }
+
+        // App-audio inputs follow the device inputs in the global input space; they
+        // reuse the same inputPluginHosts pool (sized to the combined total above).
+        for (size_t i = 0; i < appWorkers.size(); ++i)
+        {
+            auto* w = appWorkers[i].get();
+            for (int ch = 0; ch < w->getNumInputChannels(); ++ch)
+            {
+                globalIns.push_back ({ w, ch, inputPluginHosts[(size_t) inIdx].get() });
+                ++inIdx;
+            }
+        }
         processor.configure (std::move (globalIns), std::move (globalOuts), &matrix, &groupManager, &inputGroupManager, settings);
 
         // Wire each device's input callback to wake the matrix thread directly
@@ -248,6 +335,8 @@ namespace dcr
         // that fires during teardown therefore signals a still-valid event (and
         // signalling an auto-reset event with no waiter is a harmless no-op).
         for (auto& w : workers)
+            w->setInputReadyEvent (&processor.getInputReadyEvent());
+        for (auto& w : appWorkers)
             w->setInputReadyEvent (&processor.getInputReadyEvent());
 
         processor.start();
@@ -273,6 +362,7 @@ namespace dcr
         pluginHosts.clear();
         inputPluginHosts.clear();
         workers.clear();
+        appWorkers.clear();
         deviceInfo.clear();
         runningFlag = false;
     }

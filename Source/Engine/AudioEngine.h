@@ -17,6 +17,8 @@
 namespace dcr
 {
 
+    class AppAudioWorker;
+
     // Top-level audio orchestration:
     //   - holds a CoreAudio AudioIODeviceType
     //   - opens N DeviceWorkers
@@ -85,12 +87,26 @@ namespace dcr
             bool blockSelfLoop = false;
         };
 
+        // One application whose audio output is captured as an input source via a
+        // macOS process tap (see AppAudioWorker).  Persisted by bundleId; the live
+        // tap is bound at runtime by the watcher (Part 3b).
+        struct AppInputSpec
+        {
+            juce::String bundleId; // "com.google.Chrome" -- stable key
+            juce::String displayName; // cached friendly name
+            bool muteOriginalOutput = true;
+            int numChannels = 2; // stereo mixdown (v1 fixed)
+        };
+
         // Heuristic: does this device name look like a virtual loopback device?
         // Used to default blockSelfLoop on in the device dialog.
         static bool isLikelyVirtualDevice (const juce::String& name);
 
-        // (Re)start the engine with the given devices. Returns true if all opened.
-        bool start (const std::vector<DeviceSpec>& devices);
+        // (Re)start the engine with the given devices (and optional app-audio
+        // capture sources). Returns true if all opened.
+        bool start (const std::vector<DeviceSpec>& devices,
+            const std::vector<AppInputSpec>& appInputs);
+        bool start (const std::vector<DeviceSpec>& devices) { return start (devices, {}); }
 
         void stop();
 
@@ -107,8 +123,18 @@ namespace dcr
             int numOutputChannels = 0;
             double deviceSampleRate = 0.0;
             bool blockSelfLoop = false; // carried from the DeviceSpec
+            bool isAppInput = false; // true for app-audio capture sources (AppAudioWorker)
         };
         const std::vector<DeviceInfo>& getDeviceInfo() const noexcept { return deviceInfo; }
+
+        // App-audio capture sources (built by start()).  attach()/detach() are
+        // driven by the message-thread watcher (Part 3b).
+        int getNumAppWorkers() const noexcept { return (int) appWorkers.size(); }
+        AppAudioWorker* getAppWorker (int i) noexcept
+        {
+            return i >= 0 && i < (int) appWorkers.size() ? appWorkers[(size_t) i].get() : nullptr;
+        }
+        const std::vector<AppInputSpec>& getAppInputSpecs() const noexcept { return appInputSpecs; }
 
         // Diagnostics
         uint64_t getMatrixBlocksProcessed() const noexcept { return processor.getBlocksProcessed(); }
@@ -258,6 +284,8 @@ namespace dcr
         EngineSettings settings;
 
         std::vector<std::unique_ptr<DeviceWorker>> workers;
+        std::vector<std::unique_ptr<AppAudioWorker>> appWorkers;
+        std::vector<AppInputSpec> appInputSpecs; // remembered across start()
         std::vector<std::unique_ptr<PluginHost>> pluginHosts; // one per output channel
         std::vector<std::unique_ptr<PluginHost>> inputPluginHosts; // one per input channel
         std::vector<DeviceInfo> deviceInfo;

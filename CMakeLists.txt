@@ -24,6 +24,11 @@ juce_add_gui_app(dcorerouter
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "D-Router routes audio between devices and needs microphone access."
+    # Core Audio process taps (app-audio capture, macOS 14.4+) are gated by the
+    # audio-capture TCC permission; THIS key drives the system prompt.  Without it the
+    # tap is created but delivers pure silence (every PCM sample 0.0f) and no prompt
+    # ever appears -- the exact symptom we chased for hours (2026-06-24).
+    PLIST_TO_MERGE "<plist version=\"1.0\"><dict><key>NSAudioCaptureUsageDescription</key><string>D-Router captures the audio of apps you select and routes it through the routing matrix.</string></dict></plist>"
 )
 
 juce_generate_juce_header(dcorerouter)
@@ -39,6 +44,8 @@ target_sources(dcorerouter PRIVATE
     Source/Engine/DeviceVolume.cpp
     Source/Engine/SystemAudioDevices.cpp
     Source/Engine/ReconfigurationController.cpp
+    Source/Engine/AppAudioProcesses.mm
+    Source/Engine/AppAudioWorker.mm
     Source/Routing/RoutingMatrix.cpp
     Source/Routing/PanicController.cpp
     Source/Routing/OutputGroupManager.cpp
@@ -81,6 +88,12 @@ target_include_directories(dcorerouter PRIVATE Source)
 # Metal / MTKView object graph is managed automatically. (The project's other
 # .mm files predate it and use manual retain/release, so ARC is scoped per-file.)
 set_source_files_properties(Source/DSP/Builtin/StereoMeterEditor.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+# App-audio capture is new Objective-C++; compile with ARC so the CoreAudio tap
+# objects (CATapDescription) and NSWorkspace observer tokens are managed
+# automatically, like StereoMeterEditor above.
+set_source_files_properties(Source/Engine/AppAudioProcesses.mm Source/Engine/AppAudioWorker.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_compile_definitions(dcorerouter PRIVATE

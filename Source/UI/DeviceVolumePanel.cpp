@@ -198,6 +198,10 @@ namespace dcr
                                                                  : (di.numOutputChannels > 0);
             if (!wantThis)
                 continue;
+            // App-audio capture sources have no hardware volume control -- they live
+            // in IN/OUT GROUPS (Soft-In), not the Audio Setup volume panel.
+            if (di.isAppInput)
+                continue;
 
             auto scope = direction == Direction::Inputs ? DeviceVolume::Scope::Input
                                                         : DeviceVolume::Scope::Output;

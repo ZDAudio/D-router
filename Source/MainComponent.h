@@ -26,6 +26,8 @@
 namespace dcr
 {
 
+    class AppAudioProcesses; // fwd (Source/Engine/AppAudioProcesses.h)
+
     class MainComponent : public juce::Component,
                           public juce::MenuBarModel,
                           private juce::Timer
@@ -66,6 +68,15 @@ namespace dcr
 
         void openDeviceDialog();
         void applyDeviceSelection (std::vector<AudioEngine::DeviceSpec> newSpecs);
+
+        // App-audio capture (Part 3b): reconcile attach/detach against the running
+        // processes (message-thread, gated by reconfig.active()), plus the minimal
+        // "Add App Audio Input" picker.
+        void reconcileAppAudioAttachments();
+        void openAppInputMenu();
+        void addAppInput (const juce::String& bundleId, const juce::String& displayName);
+        void clearAppInputs();
+
         void refreshStatus();
         void stopEngine();
 
@@ -138,6 +149,15 @@ namespace dcr
 
         AudioEngine engine;
         std::vector<AudioEngine::DeviceSpec> currentSpecs;
+
+        // App-audio capture: the desired source list, the process watcher, and the
+        // per-source currently-attached process id (parallel to currentAppInputs;
+        // 0 == detached).  currentAppInputs is threaded through applyDeviceSelection
+        // exactly like currentSpecs.
+        std::vector<AudioEngine::AppInputSpec> currentAppInputs;
+        std::unique_ptr<AppAudioProcesses> appAudioProcesses;
+        std::vector<int> appAttachedPids;
+
         std::unique_ptr<juce::FileChooser> activeChooser;
 
         // The "ZD" easter-egg smiley, shown next to the brand title once the

@@ -3,6 +3,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include "Engine/EngineSettings.h"
+#include "Engine/InputSource.h"
 #include "Engine/RingBuffer.h"
 #include "Engine/SampleRateConverter.h"
 
@@ -17,7 +18,7 @@ namespace dcr
     //   - on input: SRC each enabled input channel from deviceRate -> engineRate, push into inputRing[ch].
     //   - on output: pull engineRate samples from outputRing[ch], SRC -> deviceRate, write to device.
     // Ring buffers live in engine rate.
-    class DeviceWorker : private juce::AudioIODeviceCallback
+    class DeviceWorker : private juce::AudioIODeviceCallback, public InputSource
     {
     public:
         DeviceWorker (juce::AudioIODeviceType& type,
@@ -37,8 +38,12 @@ namespace dcr
         int getNumInputChannels() const noexcept { return numInputChannels; }
         int getNumOutputChannels() const noexcept { return numOutputChannels; }
 
-        FloatRingBuffer* getInputRing (int ch) noexcept { return ch < (int) inputRings.size() ? &inputRings[(size_t) ch] : nullptr; }
+        FloatRingBuffer* getInputRing (int ch) noexcept override { return ch < (int) inputRings.size() ? &inputRings[(size_t) ch] : nullptr; }
         FloatRingBuffer* getOutputRing (int ch) noexcept { return ch < (int) outputRings.size() ? &outputRings[(size_t) ch] : nullptr; }
+
+        // InputSource: a hardware device is always present and always "attached".
+        bool isAppInput() const noexcept override { return false; }
+        bool isAttached() const noexcept override { return true; }
 
         juce::String getLastError() const { return lastError; }
 

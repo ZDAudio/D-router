@@ -28,6 +28,10 @@ namespace dcr
 
         int createGroup (juce::String name, juce::AudioChannelSet cs);
         void removeGroup (int groupIdx);
+        // Remove every auto-created Soft-In group (kind == SoftIn), leaving the user's
+        // regular input groups intact.  The engine calls this and then rebuilds the
+        // Soft-In groups from the current app-audio sources on each start.
+        void removeSoftInGroups();
         OutputGroup* getGroup (int groupIdx) noexcept;
         const OutputGroup* getGroup (int groupIdx) const noexcept;
         int getGroupIndexForChannel (int globalInputCh) const noexcept;

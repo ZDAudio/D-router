@@ -4,6 +4,9 @@
 #include "DSP/PluginHost.h"
 #include "DSP/SafePluginOps.h"
 #include "Diagnostics/Logger.h"
+#include "Engine/AppAudioProcesses.h"
+#include "Engine/AppAudioWorker.h"
+#include "Engine/AppInputResolver.h"
 #include "Persistence/CrashGuard.h"
 #include "Persistence/SettingsStore.h"
 #include "Routing/InputGroupManager.h"
@@ -61,6 +64,11 @@ namespace dcr
         };
         addAndMakeVisible (title);
         addChildComponent (zdFace); // hidden until unlocked
+
+        // App-audio capture: watch process launch/quit so captured apps
+        // auto-(re)attach via the message-thread reconcile.
+        appAudioProcesses = std::make_unique<AppAudioProcesses>();
+        appAudioProcesses->onProcessesChanged = [this] { reconcileAppAudioAttachments(); };
 
         devicesButton.onClick = [this] { openDeviceDialog(); };
         settingsButton.onClick = [this] {
@@ -296,15 +304,27 @@ namespace dcr
             auto ins = engine.getAvailableInputDevices();
             auto outs = engine.getAvailableOutputDevices();
             std::vector<AudioEngine::DeviceSpec> filtered;
+            bool lostDirection = false;
             for (auto& sp : currentSpecs)
             {
                 const bool stillIn = sp.wantInput && ins.contains (sp.name);
                 const bool stillOut = sp.wantOutput && outs.contains (sp.name);
+                // A device we route actually lost a wanted direction (real removal).
+                if (stillIn != sp.wantInput || stillOut != sp.wantOutput)
+                    lostDirection = true;
                 if (stillIn || stillOut)
                     filtered.push_back ({ sp.name, stillIn, stillOut });
             }
-            // Restart engine with the surviving specs so it picks up the change.
-            applyDeviceSelection (filtered);
+            // ONLY restart when a routed device actually lost a wanted direction.
+            // Restarting on every device-list change loops forever once an app-audio
+            // input is active: each attach/detach of the tap's private aggregate
+            // device churns the CoreAudio device list, which would fire this handler,
+            // which restarts the engine, which re-attaches the tap, which churns
+            // again... (observed 2026-06-23 — a tight reconfigure loop). Benign churn
+            // (our own tap aggregate, or an unrelated device appearing) leaves every
+            // routed device intact, so we do nothing.
+            if (lostDirection)
+                applyDeviceSelection (filtered);
         };
 
         // Crash-guard: if the previous launch never reached markCleanExit() the
@@ -415,6 +435,11 @@ namespace dcr
         // entirely while PDC is off.
         if (engine.isPdcEnabled())
             engine.replanPdc();
+
+        // Backstop: reconcile app-tap attach/detach against running processes.
+        // Self-gates on reconfig.active(); the watcher's launch/quit callback also
+        // calls this directly for promptness.
+        reconcileAppAudioAttachments();
     }
 
     MainComponent::~MainComponent()
@@ -538,6 +563,8 @@ namespace dcr
             miPanic = 1100,
             miReset,
             miTogglePdc,
+            miAddAppInput,
+            miClearAppInputs,
             // View
             miTabMatrix = 1200,
             miTabGroups,
@@ -588,6 +615,9 @@ namespace dcr
                 m.addItem (miReset, "Reset Engine (keep routing & FX)", !currentSpecs.empty(), false);
                 m.addSeparator();
                 m.addItem (miTogglePdc, "Plugin Delay Compensation (PDC)", true, engine.isPdcEnabled());
+                m.addSeparator();
+                m.addItem (miAddAppInput, "Add App Audio Input...", appAudioProcesses != nullptr, false);
+                m.addItem (miClearAppInputs, "Clear App Audio Inputs", !currentAppInputs.empty(), false);
                 break;
 
             case 2: // View
@@ -674,6 +704,12 @@ namespace dcr
                 // change (the reported bug).  Same reason the panic/tab handlers below
                 // call it.
                 menuItemsChanged();
+                break;
+            case miAddAppInput:
+                openAppInputMenu();
+                break;
+            case miClearAppInputs:
+                clearAppInputs();
                 break;
 
             // View
@@ -1161,7 +1197,7 @@ namespace dcr
             reconfigThread.join();
 
         auto specs = std::move (newSpecs);
-        reconfigThread = std::thread ([this, specs, preserved, preserveChains] {
+        reconfigThread = std::thread ([this, specs, preserved, preserveChains, appInputs = currentAppInputs] {
             // Graceful fade-out before tearing the engine down.  Ramp the MASTER
             // output gain to silence (the matrix smooths it over ~5*tau), then
             // sleep for the ramp to complete before stopping devices.  This MUST
@@ -1201,7 +1237,7 @@ namespace dcr
 
             reconfig.advance (ReconfigurationController::Phase::Rebuilding);
             engine.stop();
-            const bool started = specs.empty() ? true : engine.start (specs);
+            const bool started = specs.empty() ? true : engine.start (specs, appInputs);
 
             auto alive = aliveToken;
             juce::MessageManager::callAsync (
@@ -1211,6 +1247,9 @@ namespace dcr
                     auto& pendingSnap = reconfig.snapshot(); // single owner; message-thread only
                     reconfig.advance (ReconfigurationController::Phase::RestoringMatrix);
                     currentSpecs = specs;
+                    // App workers come back DETACHED from engine.start(); reset the
+                    // tracked attach state so the next reconcile re-binds running apps.
+                    appAttachedPids.assign ((size_t) engine.getNumAppWorkers(), 0);
                     if (!specs.empty() && !started)
                     {
                     } // failure is visible via empty matrix + status panel
@@ -1297,6 +1336,110 @@ namespace dcr
                     reconfig.finish();
                 });
         });
+    }
+
+    void MainComponent::reconcileAppAudioAttachments()
+    {
+        // Runs on the message thread (the status timer + the watcher's launch/quit
+        // callback).  applyDeviceSelection also runs here, so gating on
+        // reconfig.active() alone is race-free: a reconfigure can't interleave
+        // mid-reconcile on a single thread, and app workers are stable while Idle.
+        if (reconfig.active() || appAudioProcesses == nullptr)
+            return;
+        const int n = engine.getNumAppWorkers();
+        if (n == 0)
+            return;
+        const auto& specs = engine.getAppInputSpecs();
+        if ((int) specs.size() != n)
+            return; // invariant: one worker per spec
+        if ((int) appAttachedPids.size() != n)
+            appAttachedPids.assign ((size_t) n, 0);
+
+        // Currently-running tappable processes (bundle id -> process-object id).
+        std::vector<dcr::appinput::RunningProcess> running;
+        for (const auto& e : appAudioProcesses->enumerate())
+            running.push_back ({ e.bundleId, (int) e.processObject });
+
+        // The configured sources with their current attach state.
+        std::vector<dcr::appinput::Source> sources;
+        for (int i = 0; i < n; ++i)
+            sources.push_back ({ specs[(size_t) i].bundleId.toStdString(), appAttachedPids[(size_t) i] });
+
+        for (const auto& cmd : dcr::appinput::reconcile (sources, running))
+        {
+            auto* w = engine.getAppWorker (cmd.sourceIndex);
+            if (w == nullptr)
+                continue;
+            if (cmd.type == dcr::appinput::CommandType::Attach)
+            {
+                const bool ok = w->attach ((AudioObjectID) cmd.processId);
+                juce::Logger::writeToLog ("appaudio.reconcile: ATTACH src=" + juce::String (cmd.sourceIndex)
+                                          + " proc=" + juce::String (cmd.processId) + " -> " + juce::String (ok ? "ok" : "FAIL"));
+                if (ok)
+                    appAttachedPids[(size_t) cmd.sourceIndex] = cmd.processId;
+            }
+            else
+            {
+                w->detach();
+                juce::Logger::writeToLog ("appaudio.reconcile: DETACH src=" + juce::String (cmd.sourceIndex));
+                appAttachedPids[(size_t) cmd.sourceIndex] = 0;
+            }
+        }
+    }
+
+    void MainComponent::openAppInputMenu()
+    {
+        if (appAudioProcesses == nullptr)
+            return;
+
+        // Picker of apps currently producing output, de-duped by bundle id so a
+        // helper process can't flood the list.
+        juce::PopupMenu menu;
+        std::vector<std::pair<juce::String, juce::String>> items; // bundleId, displayName
+        juce::StringArray seen;
+        for (const auto& e : appAudioProcesses->enumerate())
+        {
+            if (!e.runningOutput)
+                continue;
+            const juce::String bid = juce::String::fromUTF8 (e.bundleId.c_str());
+            if (bid.isEmpty() || seen.contains (bid))
+                continue;
+            if (bid.startsWith ("com.zdaudio.drouter"))
+                continue; // never capture ourselves -- that's a feedback loop
+            seen.add (bid);
+            const juce::String name = juce::String::fromUTF8 (
+                e.displayName.empty() ? e.bundleId.c_str() : e.displayName.c_str());
+            items.push_back ({ bid, name });
+            menu.addItem ((int) items.size(), name);
+        }
+        if (items.empty())
+            menu.addItem (-1, "(no app is currently producing audio)", false, false);
+
+        menu.showMenuAsync (juce::PopupMenu::Options {}, [this, items] (int choice) {
+            if (choice >= 1 && choice <= (int) items.size())
+                addAppInput (items[(size_t) (choice - 1)].first, items[(size_t) (choice - 1)].second);
+        });
+    }
+
+    void MainComponent::addAppInput (const juce::String& bundleId, const juce::String& displayName)
+    {
+        for (const auto& s : currentAppInputs)
+            if (s.bundleId == bundleId)
+                return; // one capture per app (v1)
+
+        AudioEngine::AppInputSpec spec;
+        spec.bundleId = bundleId;
+        spec.displayName = displayName;
+        currentAppInputs.push_back (spec);
+        applyDeviceSelection (currentSpecs); // reconfigure: existing devices + new app inputs
+    }
+
+    void MainComponent::clearAppInputs()
+    {
+        if (currentAppInputs.empty())
+            return;
+        currentAppInputs.clear();
+        applyDeviceSelection (currentSpecs);
     }
 
     namespace

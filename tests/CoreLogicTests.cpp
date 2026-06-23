@@ -11,6 +11,8 @@
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
 #include "DSP/Builtin/StereoMeterMath.h"
+#include "Engine/AppInputResolver.h"
+#include "Engine/MatrixInputPlan.h"
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
 #include "Engine/RingBuffer.h"
@@ -803,6 +805,126 @@ namespace
     }
 
     // ---------------------------------------------------------------------------
+    // AppInputResolver (auto-reattach: reconcile configured app sources with the
+    // set of processes currently running, keyed by bundle id).
+    // ---------------------------------------------------------------------------
+    void test_appinput_reconcile_attach_when_running()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources { { "com.google.Chrome", 0 } }; // offline
+        std::vector<RunningProcess> running { { "com.google.Chrome", 42 } };
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.size() == 1);
+        CHECK (cmds[0].type == CommandType::Attach);
+        CHECK (cmds[0].sourceIndex == 0);
+        CHECK (cmds[0].processId == 42);
+    }
+
+    void test_appinput_reconcile_noop_when_offline_and_not_running()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources { { "com.apple.Music", 0 } };
+        std::vector<RunningProcess> running {}; // nothing running
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.empty());
+    }
+
+    void test_appinput_reconcile_steady_state_no_command()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources { { "com.google.Chrome", 42 } }; // attached to 42
+        std::vector<RunningProcess> running { { "com.google.Chrome", 42 } };
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.empty());
+    }
+
+    void test_appinput_reconcile_detach_when_quit()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources { { "com.google.Chrome", 42 } }; // attached
+        std::vector<RunningProcess> running {}; // Chrome quit
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.size() == 1);
+        CHECK (cmds[0].type == CommandType::Detach);
+        CHECK (cmds[0].sourceIndex == 0);
+    }
+
+    void test_appinput_reconcile_relaunch_detach_then_attach()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources { { "com.google.Chrome", 42 } }; // attached to old pid
+        std::vector<RunningProcess> running { { "com.google.Chrome", 99 } }; // relaunched
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.size() == 2);
+        CHECK (cmds[0].type == CommandType::Detach);
+        CHECK (cmds[0].sourceIndex == 0);
+        CHECK (cmds[1].type == CommandType::Attach);
+        CHECK (cmds[1].sourceIndex == 0);
+        CHECK (cmds[1].processId == 99);
+    }
+
+    void test_appinput_reconcile_multiple_sources_mixed()
+    {
+        using namespace dcr::appinput;
+        std::vector<Source> sources {
+            { "com.google.Chrome", 0 }, // offline -> attach
+            { "com.apple.Music", 7 }, // attached, still running -> noop
+            { "com.foo.Game", 12 }, // attached, quit -> detach
+        };
+        std::vector<RunningProcess> running {
+            { "com.google.Chrome", 42 },
+            { "com.apple.Music", 7 },
+        };
+        auto cmds = reconcile (sources, running);
+        CHECK (cmds.size() == 2);
+        CHECK (cmds[0].type == CommandType::Attach);
+        CHECK (cmds[0].sourceIndex == 0);
+        CHECK (cmds[0].processId == 42);
+        CHECK (cmds[1].type == CommandType::Detach);
+        CHECK (cmds[1].sourceIndex == 2);
+    }
+
+    // ---------------------------------------------------------------------------
+    // MatrixInputPlan (per-input read/silence/stall decision).  Hardware inputs
+    // gate the matrix (stall until a full block is ready); app inputs NEVER stall
+    // -- an offline or warming-up app contributes silence instead of freezing all
+    // audio.
+    // ---------------------------------------------------------------------------
+    void test_matrixinput_hardware_reads_when_full()
+    {
+        auto p = dcr::planMatrixInput (/*isAppInput*/ false, /*attached*/ false, /*avail*/ 128, /*block*/ 128);
+        CHECK (p.action == dcr::MatrixInputAction::Read);
+        CHECK (!p.stalls);
+    }
+
+    void test_matrixinput_hardware_stalls_when_underfull()
+    {
+        auto p = dcr::planMatrixInput (false, false, 64, 128);
+        CHECK (p.stalls); // hardware underfull -> the matrix waits
+    }
+
+    void test_matrixinput_app_reads_when_attached_and_full()
+    {
+        auto p = dcr::planMatrixInput (true, /*attached*/ true, 128, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Read);
+        CHECK (!p.stalls);
+    }
+
+    void test_matrixinput_app_silence_when_attached_but_underfull()
+    {
+        auto p = dcr::planMatrixInput (true, true, 64, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Silence);
+        CHECK (!p.stalls); // never stalls the matrix
+    }
+
+    void test_matrixinput_app_silence_when_detached()
+    {
+        auto p = dcr::planMatrixInput (true, /*attached*/ false, 9999, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Silence);
+        CHECK (!p.stalls);
+    }
+
+    // ---------------------------------------------------------------------------
     // RecorderNaming (JUCE-free recording-file naming)
     // ---------------------------------------------------------------------------
     void test_recorder_naming()
@@ -906,6 +1028,19 @@ int main()
     test_spectral_sanitize_node_db();
 
     test_update_version_compare();
+
+    test_appinput_reconcile_attach_when_running();
+    test_appinput_reconcile_noop_when_offline_and_not_running();
+    test_appinput_reconcile_steady_state_no_command();
+    test_appinput_reconcile_detach_when_quit();
+    test_appinput_reconcile_relaunch_detach_then_attach();
+    test_appinput_reconcile_multiple_sources_mixed();
+
+    test_matrixinput_hardware_reads_when_full();
+    test_matrixinput_hardware_stalls_when_underfull();
+    test_matrixinput_app_reads_when_attached_and_full();
+    test_matrixinput_app_silence_when_attached_but_underfull();
+    test_matrixinput_app_silence_when_detached();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;
