@@ -242,10 +242,14 @@ Sources: [Apple — Capturing system audio with Core Audio taps](https://develop
 
 - **14.4 gate:** all tap code behind `if (@available(macOS 14.4, *))` + a runtime
   guard; the feature is hidden/disabled below 14.4.
-- **TCC:** the first tap triggers a system audio-capture permission prompt. Needs a
-  usage-description string in `Info.plist` (likely `NSAudioCaptureUsageDescription`
-  — **to be verified**) and possibly an entitlement. Denial is handled gracefully:
-  the source shows a "permission denied" state with an "Open System Settings" link.
+- **TCC:** the first tap triggers a system audio-capture permission prompt gated on
+  the TCC service **`kTCCServiceAudioCapture`** (verified against AudioCap, 2026-06-23).
+  No `Info.plist` usage-description key is required (AudioCap references none). Prefer
+  the **public path**: attempt tap creation and handle a permission-denied `OSStatus`
+  by showing a "permission denied" state with an "Open System Settings" link. The
+  private `TCC.framework` SPI (`TCCAccessPreflight`/`TCCAccessRequest`, same service
+  string) can pre-check status for nicer UX but is **private API** — optional, flagged
+  as a risk.
 - **Ad-hoc signing:** D-Router is ad-hoc signed; TCC behavior under ad-hoc signing
   must be **verified on a real device**.
 - **Fallback:** the BlackHole README section stays as-is for < 14.4 and for users
@@ -308,8 +312,9 @@ snapshots simply have no `appInputs` node and `kind` defaults to 0 (Regular).
 
 1. Exact `CATapDescription` mute-behavior constants and the stereo-mixdown
    initializer signature.
-2. The precise TCC bucket + `Info.plist` key + whether an entitlement is required
-   for a non-sandboxed, ad-hoc-signed app.
+2. **Partly resolved (2026-06-23):** TCC service is `kTCCServiceAudioCapture`, no
+   `Info.plist` key needed (per AudioCap). Still to verify on a real device: whether
+   tap creation under **ad-hoc signing** prompts and persists the grant correctly.
 3. Whether ad-hoc signing keeps TCC grants stable across rebuilds (path/bundle-id
    keyed).
 4. SRC/latency characteristics of tap capture vs. hardware input (real-device).
