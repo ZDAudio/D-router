@@ -4,6 +4,9 @@
 #include "DSP/PluginHost.h"
 #include "DSP/SafePluginOps.h"
 #include "Diagnostics/Logger.h"
+#include "Engine/AppAudioProcesses.h"
+#include "Engine/AppAudioWorker.h"
+#include "Engine/AppInputResolver.h"
 #include "Persistence/CrashGuard.h"
 #include "Persistence/SettingsStore.h"
 #include "Routing/InputGroupManager.h"
@@ -61,6 +64,11 @@ namespace dcr
         };
         addAndMakeVisible (title);
         addChildComponent (zdFace); // hidden until unlocked
+
+        // App-audio capture: watch process launch/quit so captured apps
+        // auto-(re)attach via the message-thread reconcile.
+        appAudioProcesses = std::make_unique<AppAudioProcesses>();
+        appAudioProcesses->onProcessesChanged = [this] { reconcileAppAudioAttachments(); };
 
         devicesButton.onClick = [this] { openDeviceDialog(); };
         settingsButton.onClick = [this] {
@@ -415,6 +423,11 @@ namespace dcr
         // entirely while PDC is off.
         if (engine.isPdcEnabled())
             engine.replanPdc();
+
+        // Backstop: reconcile app-tap attach/detach against running processes.
+        // Self-gates on reconfig.active(); the watcher's launch/quit callback also
+        // calls this directly for promptness.
+        reconcileAppAudioAttachments();
     }
 
     MainComponent::~MainComponent()
@@ -1161,7 +1174,7 @@ namespace dcr
             reconfigThread.join();
 
         auto specs = std::move (newSpecs);
-        reconfigThread = std::thread ([this, specs, preserved, preserveChains] {
+        reconfigThread = std::thread ([this, specs, preserved, preserveChains, appInputs = currentAppInputs] {
             // Graceful fade-out before tearing the engine down.  Ramp the MASTER
             // output gain to silence (the matrix smooths it over ~5*tau), then
             // sleep for the ramp to complete before stopping devices.  This MUST
@@ -1201,7 +1214,7 @@ namespace dcr
 
             reconfig.advance (ReconfigurationController::Phase::Rebuilding);
             engine.stop();
-            const bool started = specs.empty() ? true : engine.start (specs);
+            const bool started = specs.empty() ? true : engine.start (specs, appInputs);
 
             auto alive = aliveToken;
             juce::MessageManager::callAsync (
@@ -1211,6 +1224,9 @@ namespace dcr
                     auto& pendingSnap = reconfig.snapshot(); // single owner; message-thread only
                     reconfig.advance (ReconfigurationController::Phase::RestoringMatrix);
                     currentSpecs = specs;
+                    // App workers come back DETACHED from engine.start(); reset the
+                    // tracked attach state so the next reconcile re-binds running apps.
+                    appAttachedPids.assign ((size_t) engine.getNumAppWorkers(), 0);
                     if (!specs.empty() && !started)
                     {
                     } // failure is visible via empty matrix + status panel
@@ -1297,6 +1313,51 @@ namespace dcr
                     reconfig.finish();
                 });
         });
+    }
+
+    void MainComponent::reconcileAppAudioAttachments()
+    {
+        // Runs on the message thread (the status timer + the watcher's launch/quit
+        // callback).  applyDeviceSelection also runs here, so gating on
+        // reconfig.active() alone is race-free: a reconfigure can't interleave
+        // mid-reconcile on a single thread, and app workers are stable while Idle.
+        if (reconfig.active() || appAudioProcesses == nullptr)
+            return;
+        const int n = engine.getNumAppWorkers();
+        if (n == 0)
+            return;
+        const auto& specs = engine.getAppInputSpecs();
+        if ((int) specs.size() != n)
+            return; // invariant: one worker per spec
+        if ((int) appAttachedPids.size() != n)
+            appAttachedPids.assign ((size_t) n, 0);
+
+        // Currently-running tappable processes (bundle id -> process-object id).
+        std::vector<dcr::appinput::RunningProcess> running;
+        for (const auto& e : appAudioProcesses->enumerate())
+            running.push_back ({ e.bundleId, (int) e.processObject });
+
+        // The configured sources with their current attach state.
+        std::vector<dcr::appinput::Source> sources;
+        for (int i = 0; i < n; ++i)
+            sources.push_back ({ specs[(size_t) i].bundleId.toStdString(), appAttachedPids[(size_t) i] });
+
+        for (const auto& cmd : dcr::appinput::reconcile (sources, running))
+        {
+            auto* w = engine.getAppWorker (cmd.sourceIndex);
+            if (w == nullptr)
+                continue;
+            if (cmd.type == dcr::appinput::CommandType::Attach)
+            {
+                if (w->attach ((AudioObjectID) cmd.processId))
+                    appAttachedPids[(size_t) cmd.sourceIndex] = cmd.processId;
+            }
+            else
+            {
+                w->detach();
+                appAttachedPids[(size_t) cmd.sourceIndex] = 0;
+            }
+        }
     }
 
     namespace
