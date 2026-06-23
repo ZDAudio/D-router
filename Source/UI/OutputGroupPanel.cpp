@@ -178,9 +178,13 @@ namespace dcr
         if (g == nullptr)
             return;
 
-        name.setText (g->name, juce::dontSendNotification);
+        const bool softIn = g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn;
+        name.setText (softIn ? ("SOFT IN  " + g->name) : g->name, juce::dontSendNotification);
         name.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::bold));
-        name.setColour (juce::Label::textColourId, juce::Colour::fromRGB (0, 255, 210));
+        // Soft-In (app-audio capture) groups get a distinct amber label so they read
+        // apart from the user's regular input groups.
+        name.setColour (juce::Label::textColourId,
+            softIn ? juce::Colour::fromRGB (255, 176, 32) : juce::Colour::fromRGB (0, 255, 210));
         name.setJustificationType (juce::Justification::centredLeft);
 
         juce::String memStr;

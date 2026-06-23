@@ -33,6 +33,12 @@ namespace dcr
         enum class FaderMode { VCA,
             Router };
 
+        // Regular = a user-created group.  SoftIn = auto-created over an app-audio
+        // capture source's channels (input side); the engine rebuilds these each
+        // start and the IN/OUT GROUPS view shows them distinctly.
+        enum class Kind { Regular,
+            SoftIn };
+
         juce::String name { "Group" };
         juce::AudioChannelSet channelSet { juce::AudioChannelSet::stereo() };
         std::vector<int> memberChannels; // size = channelSet.size(); -1 = unfilled slot
@@ -43,6 +49,7 @@ namespace dcr
         std::atomic<float> faderDb { 0.0f };
         std::atomic<bool> muted { false };
         std::atomic<FaderMode> faderMode { FaderMode::VCA };
+        std::atomic<Kind> kind { Kind::Regular };
 
         // Fixed insert chain.  Slots are processed in order; empty / bypassed
         // slots are skipped.

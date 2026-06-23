@@ -255,6 +255,26 @@ namespace dcr
         // every plugin slot of every group on both sides.
         groupManager.setNumOutputChannels (totalOuts);
         inputGroupManager.setNumInputChannels (totalIns);
+
+        // Auto-build a "Soft In" input group over each app-audio source's channels so
+        // the captured app shows up (faderable + insertable) in the IN/OUT GROUPS view.
+        // Rebuilt from scratch every start; the user's regular input groups are left
+        // untouched.  The input-group plugin re-prepare loop below covers these too.
+        inputGroupManager.removeSoftInGroups();
+        for (const auto& d : deviceInfo)
+        {
+            if (!d.isAppInput || d.globalInputBase < 0 || d.numInputChannels <= 0)
+                continue;
+            const int gi = inputGroupManager.createGroup (d.name,
+                juce::AudioChannelSet::canonicalChannelSet (d.numInputChannels));
+            if (auto* g = inputGroupManager.getGroup (gi))
+            {
+                g->kind.store (OutputGroup::Kind::SoftIn, std::memory_order_relaxed);
+                for (int c = 0; c < d.numInputChannels; ++c)
+                    inputGroupManager.assignChannel (gi, c, d.globalInputBase + c);
+            }
+        }
+
         for (int gi = 0; gi < groupManager.getNumGroups(); ++gi)
         {
             if (auto* g = groupManager.getGroup (gi))

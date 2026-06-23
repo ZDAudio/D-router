@@ -82,6 +82,17 @@ namespace dcr
         recomputeRouterGains(); // a removed Router group's members must drop back to unity
     }
 
+    void InputGroupManager::removeSoftInGroups()
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        for (int gi = (int) groups.size(); --gi >= 0;)
+            if (groups[(size_t) gi]
+                && groups[(size_t) gi]->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn)
+                groups.erase (groups.begin() + gi);
+        rebuildChannelLookup();
+        recomputeRouterGains();
+    }
+
     OutputGroup* InputGroupManager::getGroup (int groupIdx) noexcept
     {
         if (groupIdx < 0 || groupIdx >= (int) groups.size())
