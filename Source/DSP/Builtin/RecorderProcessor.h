@@ -12,12 +12,12 @@
 namespace dcr::builtin
 {
     // ===========================================================================
-    // Recorder -- a pass-through "tap" that records its insert point to disk at
-    // the channel width the host presents.  An output group records its true N
-    // channels (a stereo group -> stereo file, etc.).  NOTE: the per-channel
-    // (mono) host wraps a mono signal in a 2-channel scratch with L == R (it
-    // copies the mono input into every plugin channel), so a per-channel insert
-    // yields a 2-channel file with identical L/R -- not a true mono file.
+    // Recorder -- a pass-through "tap" that records its insert point to disk.
+    // An output group records its true N channels (a stereo group -> stereo
+    // file, etc.).  A per-channel slot records a true mono file: the per-channel
+    // (mono) host wraps the signal in a 2-channel scratch with L == R, so the
+    // Recorder detects that host (BuiltinProcessor::isMonoHost) and writes a
+    // single channel -- collapsing the duplication back to mono.
     //
     // RT safety: the matrix thread only pushes float frames into a JUCE
     // AudioFormatWriter::ThreadedWriter (lock-free FIFO).  A TimeSliceThread does
@@ -79,7 +79,10 @@ namespace dcr::builtin
         {
             stopRecording(); // idempotent: finalize any take in progress
 
-            const int nch = juce::jmax (1, liveChannels.load (std::memory_order_relaxed));
+            // Mono host (per-channel insert) -> 1 true channel; group -> its real
+            // width.  liveChannels is the presented (duplicated for mono) width.
+            const int nch = dcr::recorder::recordChannelCount (
+                isMonoHost(), liveChannels.load (std::memory_order_relaxed));
             const double sr = dspSampleRate > 0.0 ? dspSampleRate : 48000.0;
             const int fmt = (int) (formatParam != nullptr ? formatParam->load() : 0.0f);
 
@@ -156,10 +159,10 @@ namespace dcr::builtin
             dspSampleRate = sr;
             // A reconfigure re-prepares us; any take in progress was already
             // finalized in releaseResources().  The recording width comes from
-            // liveChannels (the real processDsp buffer width), not the base's
-            // preparedChannels (floored to 2), so a group records its true count
-            // and isn't mis-sized.  (A per-channel host still hands us a 2-ch
-            // duplicated-mono buffer -- see the class header.)
+            // liveChannels (the real processDsp buffer width) folded through the
+            // mono-host hint, not the base's preparedChannels (floored to 2): a
+            // group records its true N channels, a per-channel insert records a
+            // single mono channel (see startRecording / the class header).
             peak.store (0.0f, std::memory_order_relaxed);
         }
 
@@ -184,9 +187,14 @@ namespace dcr::builtin
             peak.store (pk, std::memory_order_relaxed);
 
             // push to the disk-writer FIFO under a try-lock: never blocks the
-            // matrix thread; skips a block only during an arm/disarm swap.
+            // matrix thread; skips a block only during an arm/disarm swap.  The
+            // writer's channel count was fixed at startRecording() (1 for a
+            // mono-host insert, N for a group); the buffer must supply at least
+            // that many channels.  A mono-host take has recChannels == 1 while
+            // the duplicated-mono buffer is 2-wide, so the writer takes ch0 only
+            // (== the true mono signal, since L == R).
             const juce::SpinLock::ScopedTryLockType sl (writerLock);
-            if (sl.isLocked() && activeWriter != nullptr && nch == recChannels)
+            if (sl.isLocked() && activeWriter != nullptr && nch >= recChannels)
             {
                 if (activeWriter->write (buffer.getArrayOfReadPointers(), ns))
                     samplesWritten.fetch_add (ns, std::memory_order_relaxed);

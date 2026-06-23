@@ -2,8 +2,8 @@
 
 **Status:** Designed 2026-06-23. Not yet implemented.
 **Scope:** A built-in *recorder* plugin that captures whatever bus it is inserted
-on (a per-channel slot, or a stereo/N-ch output group) to disk as
-WAV / FLAC / AAC, with all disk I/O off the real-time thread.
+on (per-channel slot → mono file, stereo/N-ch output group → stereo/N-ch file)
+to disk as WAV / FLAC / AAC, with all disk I/O off the real-time thread.
 
 ---
 
@@ -14,9 +14,9 @@ its editor to capture that insert point to an audio file. It is a *tap* plugin:
 audio passes through unchanged (like the PPM / Stereo meters). What it records is
 determined purely by where it is inserted — no special engine plumbing:
 
-- a **per-channel slot** (mono host) → a **2-channel duplicated-mono** file: the
-  per-channel host wraps the mono signal in a stereo scratch (L == R), so the file
-  has identical L/R, not a single true mono channel
+- a **per-channel slot** (mono host) → a **mono** file: the per-channel host
+  wraps the mono signal in a stereo scratch (L == R), so the Recorder detects
+  that host (a mono-host hint set by `PluginHost`) and writes a single channel
 - a **stereo output group** slot (multichannel host) → a **stereo** file
 - an N-channel group → an N-channel file
 
@@ -103,8 +103,10 @@ codebase already accepts for plugin swaps).
   cleanly*, never left corrupt. Consequence (documented, not a bug): an engine
   reconfigure/restart that tears down or re-prepares the host **ends the current
   recording** (cleanly finalized).
-- Writer channel count is fixed at `startRecording()` from the live buffer's
-  channel count; the writer's sample rate is the engine rate (`dspSampleRate`).
+- Writer channel count is fixed at `startRecording()`: **1** when the instance is
+  in a per-channel mono host (the mono-host hint), otherwise the live buffer's
+  channel count (a group's true N). The writer's sample rate is the engine rate
+  (`dspSampleRate`).
 
 ---
 
@@ -166,9 +168,9 @@ depth, folder, name) are disabled while recording.
   So the Recorder captures the **pre-fader program signal**, independent of the
   monitor fader — the usual, desired behavior for recording a processed program.
 - A per-channel slot's **mono** host hands the plugin a 2-channel scratch with
-  L == R, so a per-channel insert records a **2-channel duplicated-mono** file
-  (identical L/R), not a true mono file. Record a true stereo/N-ch program by
-  inserting on an output group.
+  L == R; the Recorder detects this (the mono-host hint from `PluginHost`) and
+  records a single channel, so a per-channel insert yields a true **mono** file.
+  Record a stereo/N-ch program by inserting on an output group.
 - Multiple Recorders (e.g. one per group) can record simultaneously; each is an
   independent instance with its own writer + `TimeSliceThread`. Timestamped
   names avoid collisions across instances.

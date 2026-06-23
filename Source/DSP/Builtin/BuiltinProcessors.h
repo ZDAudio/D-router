@@ -209,6 +209,15 @@ namespace dcr::builtin
         // Exposed so custom editors can read/write parameters.
         APVTS& getValueTreeState() noexcept { return apvts; }
 
+        // ----- per-channel "mono host" hint ------------------------------------
+        // PluginHost (the per-channel insert host) duplicates a mono signal
+        // across the stereo scratch (L == R) before processBlock.  It sets this
+        // so a tap like the Recorder can collapse the duplication back to a true
+        // mono file; most processors ignore it.  Message-thread only: set when
+        // the plugin is installed in a slot, read at startRecording().
+        void setMonoHost (bool m) noexcept { monoHost = m; }
+        bool isMonoHost() const noexcept { return monoHost; }
+
         // ----- AudioPluginInstance ---------------------------------------------
         void fillInPluginDescription (juce::PluginDescription& d) const override
         {
@@ -252,6 +261,7 @@ namespace dcr::builtin
         APVTS apvts;
         int preparedChannels = 2;
         double dspSampleRate = 48000.0;
+        bool monoHost = false; // set true by a per-channel PluginHost (duplicated-mono)
     };
 
     // ===========================================================================
