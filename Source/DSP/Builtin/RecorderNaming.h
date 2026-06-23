@@ -2,11 +2,11 @@
 
 #include <string>
 
-// JUCE-free recording-file naming helpers.  Kept dependency-free so the
-// pure-logic test target (dcorerouter_tests) covers them without linking JUCE.
-// The processor supplies the wall-clock fields (from juce::Time, message
-// thread) and the format index; collision avoidance is the caller's job
-// (juce::File::getNonexistentSibling).
+// JUCE-free recorder helpers: output-file naming + record channel count.  Kept
+// dependency-free so the pure-logic test target (dcorerouter_tests) covers them
+// without linking JUCE.  The processor supplies the wall-clock fields (from
+// juce::Time, message thread) and the format index; collision avoidance is the
+// caller's job (juce::File::getNonexistentSibling).
 namespace dcr::recorder
 {
     // Format index -> lower-case extension (no dot).  0 = WAV, 1 = FLAC,
@@ -70,5 +70,17 @@ namespace dcr::recorder
                + std::to_string (year) + "-" + p2 (month) + "-" + p2 (day) + "_"
                + p2 (hour) + "-" + p2 (minute) + "-" + p2 (second) + "."
                + extensionForFormat (formatIndex);
+    }
+
+    // How many channels a take is written with.  A per-channel insert runs in a
+    // "mono host" (PluginHost) that duplicates the mono signal across the stereo
+    // scratch (L == R); collapse that to a single true mono channel.  A group
+    // host presents its true N-channel buffer -> record it as-is.  Floors at 1 so
+    // a take is never opened with zero channels.
+    inline int recordChannelCount (bool monoHost, int presentedChannels)
+    {
+        if (monoHost)
+            return 1;
+        return presentedChannels > 0 ? presentedChannels : 1;
     }
 } // namespace dcr::recorder

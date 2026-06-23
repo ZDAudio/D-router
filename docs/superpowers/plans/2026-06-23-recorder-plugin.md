@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A built-in "Recorder" plugin that captures whatever bus it is inserted on (per-channel slot → 2-ch duplicated-mono file, output group → stereo/N-ch file) to WAV / FLAC / AAC, with all disk I/O off the matrix thread.
+**Goal:** A built-in "Recorder" plugin that captures whatever bus it is inserted on (per-channel slot → mono file, output group → stereo/N-ch file) to WAV / FLAC / AAC, with all disk I/O off the matrix thread.
 
 **Architecture:** A `BuiltinProcessor` pass-through "tap" (like the PPM/Stereo meters). The matrix thread pushes float frames into a JUCE `AudioFormatWriter::ThreadedWriter` (lock-free FIFO); a per-instance `TimeSliceThread` does every file/stream op. Arm/disarm swaps the active-writer pointer under a `SpinLock`; the matrix thread try-locks and skips a block only during the brief swap — the same pattern the plugin hosts use for hot-swap. WAV/FLAC use stock JUCE writers; AAC uses a macOS `ExtAudioFile`-backed custom `AudioFormatWriter` that slots into the same `ThreadedWriter`.
 
@@ -392,7 +392,11 @@ namespace dcr::builtin
 {
     // ===========================================================================
     // Recorder -- a pass-through "tap" that records its insert point to disk.
-    // Per-channel slot -> mono file; stereo/N-ch output group -> stereo/N-ch file.
+    // An output group records its true N channels (a stereo group -> stereo
+    // file, etc.).  A per-channel slot records a true mono file: the per-channel
+    // (mono) host wraps the signal in a 2-channel scratch with L == R, so the
+    // Recorder detects that host (BuiltinProcessor::isMonoHost) and writes a
+    // single channel -- collapsing the duplication back to mono.
     //
     // RT safety: the matrix thread only pushes float frames into a JUCE
     // AudioFormatWriter::ThreadedWriter (lock-free FIFO).  A TimeSliceThread does
@@ -456,7 +460,10 @@ namespace dcr::builtin
         {
             stopRecording(); // idempotent: finalize any take in progress
 
-            const int nch = juce::jmax (1, liveChannels.load (std::memory_order_relaxed));
+            // Mono host (per-channel insert) -> 1 true channel; group -> its real
+            // width.  liveChannels is the presented (duplicated for mono) width.
+            const int nch = dcr::recorder::recordChannelCount (
+                isMonoHost(), liveChannels.load (std::memory_order_relaxed));
             const double sr = dspSampleRate > 0.0 ? dspSampleRate : 48000.0;
             const int fmt = (int) (formatParam != nullptr ? formatParam->load() : 0.0f);
 
@@ -527,8 +534,11 @@ namespace dcr::builtin
         {
             dspSampleRate = sr;
             // A reconfigure re-prepares us; any take in progress was already
-            // finalized in releaseResources().  liveChannels is set from the real
-            // buffer in processDsp (NOT from the inflated preparedChannels).
+            // finalized in releaseResources().  The recording width comes from
+            // liveChannels (the real processDsp buffer width) folded through the
+            // mono-host hint, not the base's preparedChannels (floored to 2): a
+            // group records its true N channels, a per-channel insert records a
+            // single mono channel (see startRecording / the class header).
             peak.store (0.0f, std::memory_order_relaxed);
         }
 
@@ -553,9 +563,14 @@ namespace dcr::builtin
             peak.store (pk, std::memory_order_relaxed);
 
             // push to the disk-writer FIFO under a try-lock: never blocks the
-            // matrix thread; skips a block only during an arm/disarm swap.
+            // matrix thread; skips a block only during an arm/disarm swap.  The
+            // writer's channel count was fixed at startRecording() (1 for a
+            // mono-host insert, N for a group); the buffer must supply at least
+            // that many channels.  A mono-host take has recChannels == 1 while
+            // the duplicated-mono buffer is 2-wide, so the writer takes ch0 only
+            // (== the true mono signal, since L == R).
             const juce::SpinLock::ScopedTryLockType sl (writerLock);
-            if (sl.isLocked() && activeWriter != nullptr && nch == recChannels)
+            if (sl.isLocked() && activeWriter != nullptr && nch >= recChannels)
             {
                 if (activeWriter->write (buffer.getArrayOfReadPointers(), ns))
                     samplesWritten.fetch_add (ns, std::memory_order_relaxed);
@@ -915,7 +930,7 @@ Expected: D-Router launches. "Recorder" appears in the **Built-in** section of a
 These confirm behavior the headless tests can't. Report results honestly; do not claim "works" without observing each:
 
   1. **Stereo group, WAV 24-bit:** insert Recorder on a stereo output group with audio playing. Record button enables once audio is flowing. Press Record → timer counts up, file size grows, meter moves. Press Stop. Open the file in `~/Music/D-Router Recordings` — it is a **stereo** 24-bit WAV that plays back correctly.
-  2. **Per-channel slot:** insert on a single channel slot → the resulting file is **2-channel with identical L/R** (the per-channel host feeds a duplicated-mono buffer), not a true mono file.
+  2. **Per-channel slot:** insert on a single channel slot → the resulting file is a true **mono** file (the per-channel host feeds a duplicated-mono buffer, but the Recorder detects the mono host and writes a single channel).
   3. **FLAC + AAC:** repeat (1) with Format = FLAC, then AAC. Files are `.flac` / `.m4a`, smaller than WAV, and play in QuickTime/Finder.
   4. **32-bit float WAV:** Format = WAV, Bit depth = 32-bit float → file reports 32-bit float and plays.
   5. **Name + folder:** change Name (e.g. "Vocals") → filename is `Vocals_<timestamp>.<ext>`. Choose a different folder → files land there; "Reveal" opens it.
@@ -934,5 +949,6 @@ After the user confirms real-device results, record what was/wasn't verified in 
 - **Collision handling** uses `juce::File::getNonexistentSibling` at the call site (JUCE, already tested) rather than a JUCE-free helper — so the unit tests cover extension/sanitize/filename only, not collision suffixing. (Spec §6 listed collision logic as a test item; this is a cleaner equivalent.)
 - **Name prefix** comes from the editor's Name field, not auto-derived from the insert point (a plugin instance can't see its host slot without invasive plumbing) — as agreed during brainstorming.
 - **AAC bitrate** is the codec default (~128 kbps); no bitrate control (YAGNI; not in the format/bit-depth params).
-- **Record gating:** the editor enables Record only once `audioFlowing()` (the processor has seen ≥1 real block), guaranteeing `startRecording` reads the true *presented* channel count (per-channel host = 2 duplicated-mono, group = N) rather than the base class's `preparedChannels` floor of 2. The per-channel host presents a duplicated-mono stereo buffer, so per-channel recordings are 2-channel (identical L/R), not true mono.
+- **Record gating:** the editor enables Record only once `audioFlowing()` (the processor has seen ≥1 real block), guaranteeing `startRecording` reads the true *presented* channel count (per-channel host = 2 duplicated-mono, group = N) rather than the base class's `preparedChannels` floor of 2. `recordChannelCount` then folds the mono-host hint in: a per-channel insert records a true **mono** file, a group records its N channels.
+- **True mono via a host hint:** the per-channel `PluginHost` marks every built-in it installs as mono-hosted (`BuiltinProcessor::setMonoHost`, set in `setPluginAt`); the Recorder reads it (`isMonoHost()` → `recordChannelCount`) and writes a single channel from the duplicated-mono buffer. This small host→plugin push is what makes a per-channel slot yield a *true* mono file — the alternative (presenting a real 1-ch buffer) would mean re-laying-out every per-channel plugin, not just the Recorder. The decision is unit-tested in `recordChannelCount` (`CoreLogicTests.cpp`).
 ```
