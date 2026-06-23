@@ -11,6 +11,7 @@
 #include "DSP/Builtin/SpectralNodeMath.h"
 #include "DSP/Builtin/StereoMeterMath.h"
 #include "Engine/AppInputResolver.h"
+#include "Engine/MatrixInputPlan.h"
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
 #include "Engine/RingBuffer.h"
@@ -882,6 +883,46 @@ namespace
         CHECK (cmds[1].sourceIndex == 2);
     }
 
+    // ---------------------------------------------------------------------------
+    // MatrixInputPlan (per-input read/silence/stall decision).  Hardware inputs
+    // gate the matrix (stall until a full block is ready); app inputs NEVER stall
+    // -- an offline or warming-up app contributes silence instead of freezing all
+    // audio.
+    // ---------------------------------------------------------------------------
+    void test_matrixinput_hardware_reads_when_full()
+    {
+        auto p = dcr::planMatrixInput (/*isAppInput*/ false, /*attached*/ false, /*avail*/ 128, /*block*/ 128);
+        CHECK (p.action == dcr::MatrixInputAction::Read);
+        CHECK (!p.stalls);
+    }
+
+    void test_matrixinput_hardware_stalls_when_underfull()
+    {
+        auto p = dcr::planMatrixInput (false, false, 64, 128);
+        CHECK (p.stalls); // hardware underfull -> the matrix waits
+    }
+
+    void test_matrixinput_app_reads_when_attached_and_full()
+    {
+        auto p = dcr::planMatrixInput (true, /*attached*/ true, 128, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Read);
+        CHECK (!p.stalls);
+    }
+
+    void test_matrixinput_app_silence_when_attached_but_underfull()
+    {
+        auto p = dcr::planMatrixInput (true, true, 64, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Silence);
+        CHECK (!p.stalls); // never stalls the matrix
+    }
+
+    void test_matrixinput_app_silence_when_detached()
+    {
+        auto p = dcr::planMatrixInput (true, /*attached*/ false, 9999, 128);
+        CHECK (p.action == dcr::MatrixInputAction::Silence);
+        CHECK (!p.stalls);
+    }
+
 } // namespace
 
 int main()
@@ -945,6 +986,12 @@ int main()
     test_appinput_reconcile_detach_when_quit();
     test_appinput_reconcile_relaunch_detach_then_attach();
     test_appinput_reconcile_multiple_sources_mixed();
+
+    test_matrixinput_hardware_reads_when_full();
+    test_matrixinput_hardware_stalls_when_underfull();
+    test_matrixinput_app_reads_when_attached_and_full();
+    test_matrixinput_app_silence_when_attached_but_underfull();
+    test_matrixinput_app_silence_when_detached();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;
