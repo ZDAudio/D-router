@@ -8,6 +8,7 @@
 #include "DSP/Builtin/ParametricEqEditor.h"
 #include "DSP/Builtin/PpmMeterEditor.h"
 #include "DSP/Builtin/PpmMeterProcessor.h"
+#include "DSP/Builtin/RecorderProcessor.h"
 #include "DSP/Builtin/ResonanceSuppressorEditor.h"
 #include "DSP/Builtin/ResonanceSuppressorProcessor.h"
 #include "DSP/Builtin/SpectralAutoEqEditor.h"
@@ -73,6 +74,8 @@ namespace dcr::builtin
                 return std::make_unique<SpectralAutoEqProcessor>();
             if (id == ids::resonance)
                 return std::make_unique<ResonanceSuppressorProcessor>();
+            if (id == ids::recorder)
+                return std::make_unique<RecorderProcessor>();
             return nullptr;
         }
     }
@@ -81,7 +84,7 @@ namespace dcr::builtin
     {
         juce::Array<juce::PluginDescription> out;
         const char* allIds[] = {
-            ids::gain, ids::filter, ids::eq, ids::compressor, ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone, ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp, ids::leveler, ids::ppm, ids::autoeq, ids::resonance
+            ids::gain, ids::filter, ids::eq, ids::compressor, ids::gate, ids::limiter, ids::reverb, ids::delay, ids::tone, ids::tremolo, ids::width, ids::deesser, ids::strip, ids::mbcomp, ids::leveler, ids::ppm, ids::autoeq, ids::resonance, ids::recorder
         };
         for (auto* id : allIds)
             if (auto p = makeById (id))
