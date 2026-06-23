@@ -551,6 +551,8 @@ namespace dcr
             miPanic = 1100,
             miReset,
             miTogglePdc,
+            miAddAppInput,
+            miClearAppInputs,
             // View
             miTabMatrix = 1200,
             miTabGroups,
@@ -601,6 +603,9 @@ namespace dcr
                 m.addItem (miReset, "Reset Engine (keep routing & FX)", !currentSpecs.empty(), false);
                 m.addSeparator();
                 m.addItem (miTogglePdc, "Plugin Delay Compensation (PDC)", true, engine.isPdcEnabled());
+                m.addSeparator();
+                m.addItem (miAddAppInput, "Add App Audio Input...", appAudioProcesses != nullptr, false);
+                m.addItem (miClearAppInputs, "Clear App Audio Inputs", !currentAppInputs.empty(), false);
                 break;
 
             case 2: // View
@@ -687,6 +692,12 @@ namespace dcr
                 // change (the reported bug).  Same reason the panic/tab handlers below
                 // call it.
                 menuItemsChanged();
+                break;
+            case miAddAppInput:
+                openAppInputMenu();
+                break;
+            case miClearAppInputs:
+                clearAppInputs();
                 break;
 
             // View
@@ -1358,6 +1369,59 @@ namespace dcr
                 appAttachedPids[(size_t) cmd.sourceIndex] = 0;
             }
         }
+    }
+
+    void MainComponent::openAppInputMenu()
+    {
+        if (appAudioProcesses == nullptr)
+            return;
+
+        // Picker of apps currently producing output, de-duped by bundle id so a
+        // helper process can't flood the list.
+        juce::PopupMenu menu;
+        std::vector<std::pair<juce::String, juce::String>> items; // bundleId, displayName
+        juce::StringArray seen;
+        for (const auto& e : appAudioProcesses->enumerate())
+        {
+            if (!e.runningOutput)
+                continue;
+            const juce::String bid = juce::String::fromUTF8 (e.bundleId.c_str());
+            if (bid.isEmpty() || seen.contains (bid))
+                continue;
+            seen.add (bid);
+            const juce::String name = juce::String::fromUTF8 (
+                e.displayName.empty() ? e.bundleId.c_str() : e.displayName.c_str());
+            items.push_back ({ bid, name });
+            menu.addItem ((int) items.size(), name);
+        }
+        if (items.empty())
+            menu.addItem (-1, "(no app is currently producing audio)", false, false);
+
+        menu.showMenuAsync (juce::PopupMenu::Options {}, [this, items] (int choice) {
+            if (choice >= 1 && choice <= (int) items.size())
+                addAppInput (items[(size_t) (choice - 1)].first, items[(size_t) (choice - 1)].second);
+        });
+    }
+
+    void MainComponent::addAppInput (const juce::String& bundleId, const juce::String& displayName)
+    {
+        for (const auto& s : currentAppInputs)
+            if (s.bundleId == bundleId)
+                return; // one capture per app (v1)
+
+        AudioEngine::AppInputSpec spec;
+        spec.bundleId = bundleId;
+        spec.displayName = displayName;
+        currentAppInputs.push_back (spec);
+        applyDeviceSelection (currentSpecs); // reconfigure: existing devices + new app inputs
+    }
+
+    void MainComponent::clearAppInputs()
+    {
+        if (currentAppInputs.empty())
+            return;
+        currentAppInputs.clear();
+        applyDeviceSelection (currentSpecs);
     }
 
     namespace
