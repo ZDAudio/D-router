@@ -71,6 +71,7 @@ namespace dcr
         appAudioProcesses->onProcessesChanged = [this] { reconcileAppAudioAttachments(); };
 
         devicesButton.onClick = [this] { openDeviceDialog(); };
+        softwareButton.onClick = [this] { openAppInputMenu(); };
         settingsButton.onClick = [this] {
             SettingsDialog::launch (engine.getSettings(),
                 [this] (std::optional<EngineSettings> s, bool persistToDisk) {
@@ -151,6 +152,7 @@ namespace dcr
                 inputGroupPanel.closeAllPluginEditors(); }, GroupManagerDialog::Direction::Outputs);
         };
         addAndMakeVisible (devicesButton);
+        addAndMakeVisible (softwareButton);
         addAndMakeVisible (settingsButton);
         addAndMakeVisible (groupsButton);
 
@@ -555,6 +557,7 @@ namespace dcr
             miSave = 1000,
             miLoad,
             miDevices,
+            miSoftware,
             miSettings,
             miGroups,
             miCloseWindow,
@@ -578,6 +581,7 @@ namespace dcr
             // Window
             miMinimize = 1300,
             miBringToFront,
+            miShowDRouter,
             // Developer
             miOpenLogs = 1400,
             miRevealLogFolder,
@@ -588,7 +592,7 @@ namespace dcr
 
     juce::StringArray MainComponent::getMenuBarNames()
     {
-        return { "File", "Edit", "View", "Window", "Developer" };
+        return { "File", "Config", "View", "Window", "Developer" };
     }
 
     juce::PopupMenu MainComponent::getMenuForIndex (int topLevelMenuIndex, const juce::String&)
@@ -603,14 +607,15 @@ namespace dcr
                 m.addItem (miLoad, "Load Snapshot...", true, false);
                 m.addSeparator();
                 m.addItem (miDevices, "Devices...", true, false);
-                m.addItem (miSettings, "Settings...", true, false);
+                m.addItem (miSoftware, "Software...", appAudioProcesses != nullptr, false);
                 m.addItem (miGroups, "Groups...", true, false);
+                m.addItem (miSettings, "Settings...", true, false);
                 m.addSeparator();
                 m.addItem (miCloseWindow, "Close Window (hide to menu bar)", true, false);
                 m.addItem (miQuit, "Quit D-Router", true, false);
                 break;
 
-            case 1: // Edit
+            case 1: // Config (formerly Edit)
                 m.addItem (miPanic, panic.isActive() ? "Release PANIC (restore mutes)" : "PANIC (mute everything)", true, panic.isActive());
                 m.addItem (miReset, "Reset Engine (keep routing & FX)", !currentSpecs.empty(), false);
                 m.addSeparator();
@@ -635,6 +640,7 @@ namespace dcr
                 break;
 
             case 3: // Window
+                m.addItem (miShowDRouter, "Show D-Router", true, false);
                 m.addItem (miMinimize, "Minimize", true, false);
                 m.addItem (miBringToFront, "Bring D-Router to Front", true, false);
                 break;
@@ -670,6 +676,9 @@ namespace dcr
                 break;
             case miDevices:
                 fire (devicesButton);
+                break;
+            case miSoftware:
+                fire (softwareButton);
                 break;
             case miSettings:
                 fire (settingsButton);
@@ -752,6 +761,17 @@ namespace dcr
             case miBringToFront:
                 if (auto* w = getTopLevelComponent())
                     w->toFront (true);
+                break;
+            case miShowDRouter:
+                // Same as the tray's "Show D-Router": restore Dock + menu bar,
+                // make the window visible, and pull it to the front / focus.
+                juce::Process::setDockIconVisible (true);
+                if (auto* w = getTopLevelComponent())
+                {
+                    w->setVisible (true);
+                    w->toFront (true);
+                }
+                juce::Process::makeForegroundProcess();
                 break;
 
             // Developer
@@ -941,9 +961,11 @@ namespace dcr
         top.removeFromLeft (10);
         devicesButton.setBounds (top.removeFromLeft (90));
         top.removeFromLeft (4);
-        settingsButton.setBounds (top.removeFromLeft (90));
+        softwareButton.setBounds (top.removeFromLeft (90));
         top.removeFromLeft (4);
         groupsButton.setBounds (top.removeFromLeft (90));
+        top.removeFromLeft (4);
+        settingsButton.setBounds (top.removeFromLeft (90));
         top.removeFromLeft (4);
 
         // Right Session Section (Save, Load, Logs, [Reset], PANIC)
@@ -1175,6 +1197,7 @@ namespace dcr
         auto preserved = captureMatrixByName();
 
         devicesButton.setEnabled (false);
+        softwareButton.setEnabled (false);
         settingsButton.setEnabled (false);
         groupsButton.setEnabled (false);
         saveButton.setEnabled (false);
@@ -1342,6 +1365,7 @@ namespace dcr
                     refreshStatus();
 
                     devicesButton.setEnabled (true);
+                    softwareButton.setEnabled (true);
                     settingsButton.setEnabled (true);
                     groupsButton.setEnabled (true);
                     saveButton.setEnabled (true);
