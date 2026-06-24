@@ -10,6 +10,12 @@ namespace dcr
         static const juce::Identifier engine ("engine");
         static const juce::Identifier devices ("devices");
         static const juce::Identifier device ("device");
+        static const juce::Identifier appInputs ("appInputs");
+        static const juce::Identifier appInput ("appInput");
+        static const juce::Identifier bundleId ("bundleId");
+        static const juce::Identifier displayName ("displayName");
+        static const juce::Identifier muteOriginal ("muteOriginalOutput");
+        static const juce::Identifier numChannels ("numChannels");
         static const juce::Identifier matrix ("matrix");
         static const juce::Identifier inputTrim ("inputTrim");
         static const juce::Identifier outputTrim ("outputTrim");
@@ -98,6 +104,20 @@ namespace dcr
             devs.addChild (dv, -1, nullptr);
         }
         root.addChild (devs, -1, nullptr);
+
+        // App-audio (Soft-In) capture sources: persisted by bundle id so they
+        // auto-reattach on next launch when the app is running.
+        juce::ValueTree appIns (ids::appInputs);
+        for (const auto& a : s.appInputs)
+        {
+            juce::ValueTree av (ids::appInput);
+            av.setProperty (ids::bundleId, a.bundleId, nullptr);
+            av.setProperty (ids::displayName, a.displayName, nullptr);
+            av.setProperty (ids::muteOriginal, a.muteOriginalOutput, nullptr);
+            av.setProperty (ids::numChannels, a.numChannels, nullptr);
+            appIns.addChild (av, -1, nullptr);
+        }
+        root.addChild (appIns, -1, nullptr);
 
         juce::ValueTree mat (ids::matrix);
         for (size_t i = 0; i < s.inputTrim.size(); ++i)
@@ -263,6 +283,20 @@ namespace dcr
             d.blockSelfLoop = (bool) child.getProperty (ids::blockSelfLoop, false);
             if (d.name.isNotEmpty() && (d.wantInput || d.wantOutput))
                 s.devices.push_back (d);
+        }
+
+        auto appIns = root.getChildWithName (ids::appInputs);
+        for (auto child : appIns)
+        {
+            if (!child.hasType (ids::appInput))
+                continue;
+            AudioEngine::AppInputSpec a;
+            a.bundleId = child.getProperty (ids::bundleId).toString();
+            a.displayName = child.getProperty (ids::displayName).toString();
+            a.muteOriginalOutput = (bool) child.getProperty (ids::muteOriginal, true);
+            a.numChannels = (int) child.getProperty (ids::numChannels, 2);
+            if (a.bundleId.isNotEmpty())
+                s.appInputs.push_back (a);
         }
 
         auto mat = root.getChildWithName (ids::matrix);

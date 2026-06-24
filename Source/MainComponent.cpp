@@ -1578,12 +1578,19 @@ namespace dcr
         s.engineSampleRate = engine.getEngineSampleRate();
         s.engineBlockSize = engine.getEngineBlockSize();
         s.devices = currentSpecs;
+        s.appInputs = currentAppInputs;
 
         auto gatherFromManager = [&] (auto& mgr, std::vector<Snapshot::Group>& dest) {
             for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
             {
                 const auto* g = mgr.getGroup (gi);
                 if (g == nullptr)
+                    continue;
+                // Soft-In groups are auto-derived from app-audio sources and
+                // rebuilt on every engine start.  Persisting one would restore an
+                // orphaned (sourceless) group; skip it -- restoring the app source
+                // (s.appInputs above) brings the Soft-In group back instead.
+                if (g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn)
                     continue;
                 Snapshot::Group gs;
                 gs.name = g->name;
@@ -1635,6 +1642,8 @@ namespace dcr
                 auto* g = mgr.getGroup (gi);
                 if (g == nullptr)
                     continue;
+                if (g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn)
+                    continue; // not persisted (see gatherFromManager) -- Soft-In is rebuilt
                 Snapshot::GroupChain gc;
                 gc.groupIdx = gi;
                 gc.isInput = isInput;
@@ -1723,6 +1732,12 @@ namespace dcr
         // first paint already reflects it (no flash-then-collapse).
         matrixView.setCollapsedDeviceNames (true, s.collapsedInputDevices);
         matrixView.setCollapsedDeviceNames (false, s.collapsedOutputDevices);
+
+        // Restore app-audio (Soft-In) sources so engine.start rebuilds their
+        // Soft-In groups and the watcher re-attaches the taps once those apps are
+        // running.  Must precede applyDeviceSelection, which reads currentAppInputs
+        // (and resets appAttachedPids to match).
+        currentAppInputs = s.appInputs;
 
         applyDeviceSelection (s.devices);
         // Don't touch the matrix or rebuildFromEngine() here.  applyDeviceSelection
