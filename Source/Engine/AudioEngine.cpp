@@ -133,11 +133,35 @@ namespace dcr
         deviceInfo.clear();
         appInputSpecs = appInputs;
 
+        // Bounded retry for a transient device-open failure (HAL still releasing
+        // the device, e.g. just after an app-tap aggregate was destroyed).
+        static constexpr int kDeviceOpenAttempts = 5; // first try + 4 retries
+        static constexpr int kDeviceOpenRetryMs = 100; // wait between tries
+
         int totalIns = 0, totalOuts = 0;
         for (const auto& spec : devices)
         {
             auto w = std::make_unique<DeviceWorker> (*deviceType, spec.name, spec.wantInput, spec.wantOutput);
-            if (!w->open (settings))
+
+            // Open with a short bounded retry.  A device can transiently fail to
+            // open while CoreAudio is still releasing it -- notably right after an
+            // app-audio tap's private aggregate (which anchors to the default
+            // OUTPUT device) was destroyed on the previous teardown: the HAL needs
+            // a beat to free that physical device before we can re-open it.
+            // Without the retry, adding a Soft-In source intermittently leaves the
+            // output device unopened and it vanishes from the matrix.  This runs on
+            // the reconfigure worker thread (never the audio thread), so the short
+            // sleep between attempts is safe.
+            bool opened = w->open (settings);
+            for (int attempt = 1; !opened && attempt < kDeviceOpenAttempts; ++attempt)
+            {
+                juce::Logger::writeToLog ("engine.start: '" + spec.name + "' open attempt "
+                                          + juce::String (attempt) + " failed (" + w->getLastError()
+                                          + "); retrying in " + juce::String (kDeviceOpenRetryMs) + " ms");
+                juce::Thread::sleep (kDeviceOpenRetryMs);
+                opened = w->open (settings);
+            }
+            if (!opened)
             {
                 juce::Logger::writeToLog ("engine.start: device OPEN FAILED for '"
                                           + spec.name + "': " + w->getLastError());
