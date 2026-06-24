@@ -17,6 +17,7 @@ namespace dcr
         int engineBlockSize = 128;
 
         std::vector<AudioEngine::DeviceSpec> devices;
+        std::vector<AudioEngine::AppInputSpec> appInputs; // app-audio (Soft-In) capture sources
 
         std::vector<float> inputTrim; // linear, per global input
         std::vector<float> outputTrim; // linear, per global output

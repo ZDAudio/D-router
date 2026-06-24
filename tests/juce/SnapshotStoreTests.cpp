@@ -56,6 +56,24 @@ struct SnapshotStoreTests : juce::UnitTest
             expect (r.outputGroups[0].muted);
         }
 
+        beginTest ("app-audio (Soft-In) sources round-trip (bundle id, name, mute, channels)");
+        {
+            Snapshot s;
+            dcr::AudioEngine::AppInputSpec a;
+            a.bundleId = "com.apple.Music";
+            a.displayName = "Music";
+            a.muteOriginalOutput = false;
+            a.numChannels = 2;
+            s.appInputs.push_back (a);
+
+            auto r = SnapshotStore::fromValueTree (SnapshotStore::toValueTree (s));
+            expectEquals ((int) r.appInputs.size(), 1);
+            expectEquals (r.appInputs[0].bundleId, juce::String ("com.apple.Music"));
+            expectEquals (r.appInputs[0].displayName, juce::String ("Music"));
+            expect (!r.appInputs[0].muteOriginalOutput);
+            expectEquals (r.appInputs[0].numChannels, 2);
+        }
+
         beginTest ("empty snapshot round-trips without error");
         {
             Snapshot s;
