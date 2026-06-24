@@ -1025,19 +1025,34 @@ namespace dcr
         statusPanel.refreshNow();
 
         // Watchdog: if the OS renegotiated a device's sample rate / buffer size
-        // out from under us (e.g. Music opened the same shared output and flipped
-        // its nominal rate), our SRCs are now misconfigured and the audio
-        // crackles.  Auto-recover with a preserve-state restart -- the same path
-        // the Reset button uses.  Guarded by reconfig.active() so we don't stack
-        // restarts; the fresh DeviceWorkers come up with formatChanged=false so
-        // this fires once per actual change, not in a loop.
+        // out from under us (e.g. another app opened the same shared device and
+        // flipped its nominal rate), our SRCs are now misconfigured and the
+        // audio crackles.  Auto-recover with a preserve-state restart -- the same
+        // path the Reset button uses.  Guarded by reconfig.active() so we don't
+        // stack restarts.  open() now ADOPTS the device's new rate instead of
+        // forcing it back (DeviceRateChoice.h), so a real change converges in a
+        // single restart rather than ping-ponging against the other app.  The
+        // FormatRestartGuard is the backstop for a device that flaps its rate on
+        // its own: it rate-limits restarts so the watchdog can never spin.
         if (!reconfig.active()
             && !currentSpecs.empty()
             && engine.anyDeviceFormatChanged())
         {
-            juce::Logger::writeToLog ("MainComponent: device format change detected "
-                                      "-- auto preserve-state restart to re-sync SRC.");
-            applyDeviceSelection (currentSpecs);
+            const double nowMs = (double) juce::Time::getMillisecondCounter();
+            if (formatRestartGuard.allowRestart (nowMs))
+            {
+                formatBackoffLogged = false;
+                juce::Logger::writeToLog ("MainComponent: device format change detected "
+                                          "-- auto preserve-state restart to re-sync SRC.");
+                applyDeviceSelection (currentSpecs);
+            }
+            else if (formatRestartGuard.isBackedOff() && !formatBackoffLogged)
+            {
+                formatBackoffLogged = true;
+                juce::Logger::writeToLog ("MainComponent: device sample rate is flapping "
+                                          "repeatedly; backing off auto-restart until it "
+                                          "settles (re-select the device or Reset to retry).");
+            }
         }
     }
 
