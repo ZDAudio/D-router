@@ -10,6 +10,7 @@
 
 #include "Diagnostics/PerfMonitor.h"
 #include "Engine/AudioEngine.h"
+#include "Engine/FormatRestartGuard.h"
 #include "Engine/ReconfigurationController.h"
 #include "Persistence/SnapshotStore.h"
 #include "Routing/PanicController.h"
@@ -175,6 +176,13 @@ namespace dcr
         // Explicit reconfigure lifecycle (Phase C3) -- single owner of "are we
         // reconfiguring", replacing a bare atomic bool with ordered phases.
         ReconfigurationController reconfig;
+
+        // Backstop for the device-format-change watchdog (refreshStatus).  With
+        // rate-following open() a real OS rate change converges in one restart;
+        // this rate-limits restarts so a pathologically flapping device/driver
+        // can't spin the engine.  See FormatRestartGuard.h.
+        dcr::FormatRestartGuard formatRestartGuard;
+        bool formatBackoffLogged = false;
 
         LookAndFeel customLookAndFeel;
 

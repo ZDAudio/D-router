@@ -12,6 +12,8 @@
 #include "DSP/Builtin/SpectralNodeMath.h"
 #include "DSP/Builtin/StereoMeterMath.h"
 #include "Engine/AppInputResolver.h"
+#include "Engine/DeviceRateChoice.h"
+#include "Engine/FormatRestartGuard.h"
 #include "Engine/MatrixInputPlan.h"
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
@@ -970,6 +972,104 @@ namespace
         CHECK (recordChannelCount (false, 0) == 1); // never zero channels
     }
 
+    // ---------------------------------------------------------------------------
+    // chooseDeviceSampleRate -- adopt the device's current rate, don't force it.
+    // ---------------------------------------------------------------------------
+    void test_device_rate_choice()
+    {
+        using dcr::chooseDeviceSampleRate;
+        const std::vector<double> common { 16000, 24000, 44100, 48000, 96000 };
+
+        // Regression for the shared-device sample-rate war: another app put the
+        // device at 24k while our engine runs at 48k.  We MUST follow the device
+        // (24k), not yank it back to 48k -- yanking is what caused the restart
+        // ping-pong that broke the other app's stream and froze the machine.
+        CHECK (chooseDeviceSampleRate (common, 48000.0, 24000.0) == 24000.0);
+
+        // Matched case: device already at the engine rate -> open at engine rate.
+        CHECK (chooseDeviceSampleRate (common, 48000.0, 48000.0) == 48000.0);
+
+        // Device at 44.1k, engine 48k -> follow the device; the SRC bridges it.
+        CHECK (chooseDeviceSampleRate (common, 48000.0, 44100.0) == 44100.0);
+
+        // No usable current rate reported -> fall back to the engine rate.
+        CHECK (chooseDeviceSampleRate (common, 48000.0, 0.0) == 48000.0);
+        CHECK (chooseDeviceSampleRate (common, 48000.0, -1.0) == 48000.0);
+
+        // Fallback target unsupported -> nearest supported wins (current<=0 so
+        // target == engine == 88200; nearest of {44100,96000} is 96000).
+        const std::vector<double> sparse { 44100, 96000 };
+        CHECK (chooseDeviceSampleRate (sparse, 88200.0, 0.0) == 96000.0);
+
+        // Empty supported list -> pass the target through untouched.
+        const std::vector<double> none {};
+        CHECK (chooseDeviceSampleRate (none, 48000.0, 24000.0) == 24000.0);
+        CHECK (chooseDeviceSampleRate (none, 48000.0, 0.0) == 48000.0);
+
+        // Within 1 Hz counts as supported (drivers report e.g. 47999.9 vs 48000).
+        const std::vector<double> jittered { 47999.9, 96000 };
+        CHECK (chooseDeviceSampleRate (jittered, 48000.0, 48000.0) == 47999.9);
+    }
+
+    // ---------------------------------------------------------------------------
+    // FormatRestartGuard -- rate-limit watchdog restarts; never spin the engine.
+    // ---------------------------------------------------------------------------
+    void test_format_restart_guard()
+    {
+        // First change always restarts; an immediate repeat is debounced; after
+        // the debounce interval it is allowed again.
+        {
+            dcr::FormatRestartGuard g;
+            CHECK (g.allowRestart (1000.0) == true);
+            CHECK (g.allowRestart (1100.0) == false);
+            CHECK (g.allowRestart (1000.0 + g.minIntervalMs + 1.0) == true);
+        }
+
+        // Burst cap: only maxInWindow restarts are allowed inside one window,
+        // then the guard backs off instead of spinning the engine.
+        {
+            dcr::FormatRestartGuard g;
+            double t = 0.0;
+            int allowed = 0;
+            for (int i = 0; i < 12; ++i)
+            {
+                if (g.allowRestart (t))
+                    ++allowed;
+                t += g.minIntervalMs + 1.0;
+                if (t > g.windowMs)
+                    break;
+            }
+            CHECK (allowed == g.maxInWindow);
+            CHECK (g.isBackedOff() == true);
+        }
+
+        // Self-heal: a change long after the cooldown re-arms automatically.
+        {
+            dcr::FormatRestartGuard g;
+            CHECK (g.allowRestart (0.0) == true);
+            double t = 0.0;
+            for (int i = 0; i < 8; ++i)
+            {
+                g.allowRestart (t);
+                t += g.minIntervalMs + 1.0;
+            }
+            CHECK (g.isBackedOff() == true);
+            CHECK (g.allowRestart (t + g.cooldownMs + 1.0) == true);
+            CHECK (g.isBackedOff() == false);
+        }
+
+        // reset() re-arms immediately (e.g. after a manual Reset).
+        {
+            dcr::FormatRestartGuard g;
+            for (int i = 0; i < 8; ++i)
+                g.allowRestart ((double) i * (g.minIntervalMs + 1.0));
+            CHECK (g.isBackedOff() == true);
+            g.reset();
+            CHECK (g.isBackedOff() == false);
+            CHECK (g.allowRestart (1.0e6) == true);
+        }
+    }
+
 } // namespace
 
 int main()
@@ -1041,6 +1141,9 @@ int main()
     test_matrixinput_app_reads_when_attached_and_full();
     test_matrixinput_app_silence_when_attached_but_underfull();
     test_matrixinput_app_silence_when_detached();
+
+    test_device_rate_choice();
+    test_format_restart_guard();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

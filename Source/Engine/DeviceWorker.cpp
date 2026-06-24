@@ -1,8 +1,11 @@
 #include "Engine/DeviceWorker.h"
 
+#include "Engine/DeviceRateChoice.h"
+
 #include <algorithm>
 #include <cmath>
 #include <new>
+#include <vector>
 
 namespace dcr
 {
@@ -59,23 +62,18 @@ namespace dcr
             chosenBuf = best;
         }
 
-        // Pick a supported sample rate (prefer engine rate if supported, else closest).
-        auto sampleRates = device->getAvailableSampleRates();
-        double chosenSr = engineSampleRate;
-        bool srSupported = false;
-        for (double r : sampleRates)
-            if (std::abs (r - engineSampleRate) < 1.0)
-            {
-                srSupported = true;
-                break;
-            }
-        if (!srSupported && !sampleRates.isEmpty())
-        {
-            chosenSr = sampleRates[0];
-            for (double r : sampleRates)
-                if (std::abs (r - engineSampleRate) < std::abs (chosenSr - engineSampleRate))
-                    chosenSr = r;
-        }
+        // Pick the device sample rate.  We ADOPT the device's current nominal
+        // rate rather than forcing the engine rate, so we never yank a shared
+        // device away from another app that just set it (e.g. a voice/comms app
+        // starting a call) -- forcing it back triggered a restart tug-of-war
+        // that broke the other app's stream and thrashed CoreAudio.  The
+        // per-channel SRC bridges device rate <-> engine rate.  A freshly
+        // created (not-yet-opened) CoreAudio device already reports the OS's
+        // current nominal rate via getCurrentSampleRate().  See DeviceRateChoice.h.
+        const auto availRatesArr = device->getAvailableSampleRates();
+        const std::vector<double> availRates (availRatesArr.begin(), availRatesArr.end());
+        const double currentDeviceRate = device->getCurrentSampleRate();
+        const double chosenSr = chooseDeviceSampleRate (availRates, engineSampleRate, currentDeviceRate);
 
         auto err = device->open (inMask, outMask, chosenSr, chosenBuf);
         if (err.isNotEmpty())
