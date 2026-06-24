@@ -217,6 +217,7 @@ namespace dcr
         };
         SecretTitle title { {}, "ZDAudio D-Router" };
         juce::TextButton devicesButton { "Devices..." };
+        juce::TextButton softwareButton { "Software..." };
         juce::TextButton settingsButton { "Settings..." };
         juce::TextButton groupsButton { "Groups..." };
         juce::TextButton saveButton { "Save..." };
