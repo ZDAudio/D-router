@@ -338,6 +338,22 @@ namespace dcr
             }
         }
 
+        // Output backpressure: never run ahead of the output device.  If any
+        // output ring can't take a full block, stall so the thread waits instead
+        // of producing.  Without a gating hardware input (app-tap inputs never
+        // stall, above), this is the ONLY thing pacing the matrix -- without it
+        // the loop spins flat out and floods the ring, dropping millions of
+        // samples (audible as continuous crackle).  See MatrixInputPlan.h.
+        for (auto& out : outputs)
+        {
+            auto* ring = out.device->getOutputRing (out.channelIndex);
+            if (ring != nullptr && matrixOutputStalls ((int) ring->writeAvailable(), blockSize))
+            {
+                blocksStalled.fetch_add (1, std::memory_order_relaxed);
+                return false;
+            }
+        }
+
         const auto t0 = std::chrono::steady_clock::now();
 
         // Read one block per input channel and compute peak (SIMD).  App inputs that

@@ -44,4 +44,23 @@ namespace dcr
             return { MatrixInputAction::Read, false };
         return { MatrixInputAction::Silence, false };
     }
+
+    // Output backpressure: the matrix must never run ahead of the output device.
+    // If an output ring can't accept a full block, the matrix stalls (waits for
+    // the device to drain) instead of producing.
+    //
+    // This is essential because hardware inputs are the *only* thing that
+    // otherwise gates the loop (they stall when underfull, above).  A config
+    // whose sole input is an app-tap -- which by design never stalls -- has no
+    // input gate, so without this the matrix thread spins flat out, floods the
+    // output ring, and drops millions of samples per second (a continuous
+    // crackle).  It also bounds output-clock drift in normal configs: when the
+    // ring is full we wait rather than overflow-and-drop.
+    //
+    // writeAvailable : samples this output ring can currently accept.
+    // blockSize      : the engine block the matrix wants to write.
+    inline bool matrixOutputStalls (int writeAvailable, int blockSize)
+    {
+        return writeAvailable < blockSize;
+    }
 } // namespace dcr

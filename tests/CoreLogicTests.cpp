@@ -926,6 +926,21 @@ namespace
         CHECK (!p.stalls);
     }
 
+    // Output backpressure: the matrix stalls when the output ring can't take a
+    // full block.  Regression for the app-input-only spin: with no gating
+    // hardware input, this is the only thing that paces the matrix thread.
+    void test_matrix_output_backpressure()
+    {
+        using dcr::matrixOutputStalls;
+        // Room for a full block (or more) -> produce, don't stall.
+        CHECK (matrixOutputStalls (128, 128) == false);
+        CHECK (matrixOutputStalls (256, 128) == false);
+        // Less than a block of room -> stall (wait for the device to drain).
+        CHECK (matrixOutputStalls (127, 128) == true);
+        CHECK (matrixOutputStalls (1, 128) == true);
+        CHECK (matrixOutputStalls (0, 128) == true);
+    }
+
     // ---------------------------------------------------------------------------
     // RecorderNaming (JUCE-free recording-file naming)
     // ---------------------------------------------------------------------------
@@ -1141,6 +1156,7 @@ int main()
     test_matrixinput_app_reads_when_attached_and_full();
     test_matrixinput_app_silence_when_attached_but_underfull();
     test_matrixinput_app_silence_when_detached();
+    test_matrix_output_backpressure();
 
     test_device_rate_choice();
     test_format_restart_guard();
