@@ -68,6 +68,7 @@ target_sources(dcorerouter PRIVATE
     Source/Persistence/CrashGuard.cpp
     Source/Diagnostics/Logger.cpp
     Source/Diagnostics/CrashHandler.mm
+    Source/Diagnostics/AppNap.mm
     Source/Diagnostics/PerfMonitor.cpp
     Source/UI/LogViewerDialog.cpp
     Source/UI/LoadingOverlay.cpp
@@ -94,6 +95,11 @@ set_source_files_properties(Source/DSP/Builtin/StereoMeterEditor.mm
 # objects (CATapDescription) and NSWorkspace observer tokens are managed
 # automatically, like StereoMeterEditor above.
 set_source_files_properties(Source/Engine/AppAudioProcesses.mm Source/Engine/AppAudioWorker.mm
+    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+# App Nap disabler holds an NSProcessInfo activity token; ARC manages its
+# lifetime via CFBridgingRetain/Release (same pattern as the files above).
+set_source_files_properties(Source/Diagnostics/AppNap.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 target_compile_definitions(dcorerouter PRIVATE

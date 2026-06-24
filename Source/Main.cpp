@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include "Diagnostics/AppNap.h"
 #include "Diagnostics/CrashHandler.h"
 #include "Diagnostics/Logger.h"
 #include "MainComponent.h"
@@ -58,6 +59,15 @@ namespace dcr
             // so every subsequent DBG / juce::Logger::writeToLog flows through.
             Logger::init();
             CrashHandler::install();
+
+            // Keep macOS App Nap from suspending us while the window is hidden to
+            // the menu bar -- the engine and its watchdog timers must keep running
+            // in the background (field logs showed multi-minute stalls otherwise).
+            appNapDisabler = std::make_unique<AppNapDisabler>();
+            juce::Logger::writeToLog (juce::String ("App Nap: ")
+                                      + (appNapDisabler->isActive() ? "disabled (NSProcessInfo activity held)"
+                                                                    : "not held (non-macOS or unavailable)"));
+
             mainWindow.reset (new MainWindow (getApplicationName()));
 
             // HYBRID presence:
@@ -82,6 +92,7 @@ namespace dcr
         {
             trayIcon = nullptr;
             mainWindow = nullptr;
+            appNapDisabler.reset(); // release the NSProcessInfo activity token
             Logger::shutdown();
         }
 
@@ -159,6 +170,9 @@ namespace dcr
 
         std::unique_ptr<MainWindow> mainWindow;
         std::unique_ptr<TrayIcon> trayIcon;
+
+        // Held for the whole app lifetime to keep us out of macOS App Nap.
+        std::unique_ptr<AppNapDisabler> appNapDisabler;
     };
 
 } // namespace dcr
