@@ -9,27 +9,54 @@
 
 namespace
 {
-// UID of the current system default output device, or nil.  The tap aggregate
-// is anchored to a real output device for clocking + drift compensation
-// (matches the verified AudioCap layout).  [tune on device] a tap-only
-// aggregate is the fallback if anchoring proves brittle.
-NSString* defaultOutputDeviceUID()
+// The current system default output device: its UID (for anchoring the tap
+// aggregate -- clocking + drift compensation, matches the verified AudioCap
+// layout), its name (to detect when it's a device D-Router also opens), and
+// whether it's the built-in output.  A tap-only aggregate is the documented
+// fallback when anchoring would be brittle (see attach()).
+struct DefaultOutputInfo
 {
+    NSString* uid = nil;
+    juce::String name;
+    bool builtIn = false;
+};
+
+DefaultOutputInfo defaultOutputInfo()
+{
+    DefaultOutputInfo out;
     AudioObjectID dev = kAudioObjectUnknown;
     AudioObjectPropertyAddress da{
         kAudioHardwarePropertyDefaultOutputDevice,
         kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
     UInt32 size = sizeof(dev);
     if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &da, 0, nullptr, &size, &dev) != noErr || dev == kAudioObjectUnknown)
-        return nil;
+        return out;
 
     CFStringRef uid = nullptr;
     AudioObjectPropertyAddress ua{
         kAudioDevicePropertyDeviceUID, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
     size = sizeof(uid);
-    if (AudioObjectGetPropertyData(dev, &ua, 0, nullptr, &size, &uid) != noErr || uid == nullptr)
-        return nil;
-    return (__bridge_transfer NSString*)uid; // +1 CFString -> ARC takes ownership
+    if (AudioObjectGetPropertyData(dev, &ua, 0, nullptr, &size, &uid) == noErr && uid != nullptr)
+        out.uid = (__bridge_transfer NSString*)uid; // +1 CFString -> ARC takes ownership
+
+    CFStringRef name = nullptr;
+    AudioObjectPropertyAddress na{
+        kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    size = sizeof(name);
+    if (AudioObjectGetPropertyData(dev, &na, 0, nullptr, &size, &name) == noErr && name != nullptr)
+    {
+        out.name = juce::String::fromCFString(name);
+        CFRelease(name);
+    }
+
+    UInt32 transport = 0;
+    AudioObjectPropertyAddress ta{
+        kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    size = sizeof(transport);
+    if (AudioObjectGetPropertyData(dev, &ta, 0, nullptr, &size, &transport) == noErr)
+        out.builtIn = (transport == kAudioDeviceTransportTypeBuiltIn);
+
+    return out;
 }
 
 // IOProc buffer size (frames) for a device, or 0.
@@ -139,7 +166,30 @@ bool AppAudioWorker::attach(AudioObjectID processObject)
         r.clear();
 
     // 5) Private aggregate device wrapping the tap (verified AudioCap key set).
-    NSString* outUID = defaultOutputDeviceUID();
+    const DefaultOutputInfo def = defaultOutputInfo();
+    NSString* outUID = def.uid;
+
+    // Anchor-conflict guard (see header).  Anchoring the aggregate to the system
+    // default output is fine UNLESS that default is a NON-built-in device D-Router
+    // also opens this session: then the tap aggregate and D-Router both drive the
+    // same physical device, and two HAL clients on one fragile device (notably
+    // Bluetooth) corrupt the tap's capture clock -> pitch + crackle on ALL
+    // app-tapped audio (confirmed on a 44.1k BT out the user added).  Drop the
+    // anchor (tap-only aggregate) in that case so they never share a device.  We
+    // keep the anchor for the built-in output, which tolerates multi-client and is
+    // the proven-good path.
+    if (outUID != nil && !def.builtIn && !routerOutputNames.empty())
+    {
+        const juce::String defName = def.name.trim();
+        for (const auto& n : routerOutputNames)
+            if (defName.isNotEmpty() && defName.equalsIgnoreCase(n.trim()))
+            {
+                juce::Logger::writeToLog("appworker.attach: default output '" + defName + "' is a non-built-in device D-Router also opens -- using a tap-only aggregate (no anchor) to avoid a shared-device clock conflict");
+                outUID = nil; // tap-only aggregate; the `if (outUID != nil)` block below is skipped
+                break;
+            }
+    }
+
     NSString* aggUID = [[NSUUID UUID] UUIDString];
     NSMutableDictionary* description = [@{
         @(kAudioAggregateDeviceNameKey) : [NSString stringWithFormat:@"DRouter-Tap-%u", (unsigned)processObject],

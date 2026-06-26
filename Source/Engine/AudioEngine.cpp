@@ -194,12 +194,22 @@ namespace dcr
             workers.push_back (std::move (w));
         }
 
+        // Output device names D-Router is opening this session -- handed to each
+        // app-tap worker so it won't anchor its capture aggregate to a (non-built-in)
+        // device we also open, which would make both drive the same physical device
+        // and corrupt the tap clock (shared-device conflict; see AppAudioWorker).
+        std::vector<juce::String> routerOutputNames;
+        for (const auto& s : devices)
+            if (s.wantOutput)
+                routerOutputNames.push_back (s.name);
+
         // App-audio capture sources occupy global input channels AFTER all device
         // inputs.  open() allocates their rings (detached); the live tap is bound
         // later by the watcher via attach() (Part 3b).
         for (const auto& spec : appInputSpecs)
         {
             auto w = std::make_unique<AppAudioWorker> (spec.muteOriginalOutput, spec.numChannels);
+            w->setRouterOutputDeviceNames (routerOutputNames);
             if (!w->open (settings))
             {
                 juce::Logger::writeToLog ("engine.start: app input OPEN FAILED for '" + spec.bundleId + "'");

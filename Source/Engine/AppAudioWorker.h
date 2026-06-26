@@ -46,6 +46,19 @@ namespace dcr
         {
             inputReadyEvent.store (e, std::memory_order_release);
         }
+
+        // The names of the OUTPUT devices D-Router itself is opening this session.
+        // attach() anchors the tap's private aggregate to the system DEFAULT output
+        // for clocking; if that default is a NON-built-in device D-Router also opens
+        // (e.g. a Bluetooth out the user added), anchoring makes the tap aggregate and
+        // D-Router both drive the same physical device -- two HAL clients on one
+        // device corrupts the tap's capture clock (pitch + crackle on ALL app-tapped
+        // audio).  Given this list, attach() drops the anchor in that case (tap-only
+        // aggregate) so the two never share a device.  Set before the watcher attaches.
+        void setRouterOutputDeviceNames (std::vector<juce::String> names)
+        {
+            routerOutputNames = std::move (names);
+        }
         uint64_t getInputOverruns() const noexcept { return inputOverruns.load (std::memory_order_relaxed); }
         // Diagnostic: total engine-rate samples the IOProc has written to the rings.
         // 0 while detached or if the tap delivers no audio.
@@ -66,6 +79,8 @@ namespace dcr
         std::vector<std::unique_ptr<SampleRateConverter>> inputSRCs;
         std::vector<float> scratchEngine;
         std::vector<float> deinterleave; // tap delivers interleaved stereo
+
+        std::vector<juce::String> routerOutputNames; // D-Router's own outputs (anchor-conflict guard)
 
         std::atomic<juce::WaitableEvent*> inputReadyEvent { nullptr };
         std::atomic<bool> attached { false };
