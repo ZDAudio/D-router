@@ -32,6 +32,11 @@ namespace dcr
         // UI-thread group management.
         int createGroup (juce::String name, juce::AudioChannelSet cs);
         void removeGroup (int groupIdx);
+        // Remove every auto-created stereo-output-device group (kind == DeviceAuto),
+        // leaving the user's regular groups untouched.  The engine calls this each
+        // start before rebuilding the auto-groups from the live device list (mirror
+        // of InputGroupManager::removeSoftInGroups for the output side).
+        void removeAutoGroups();
         OutputGroup* getGroup (int groupIdx) noexcept;
         const OutputGroup* getGroup (int groupIdx) const noexcept;
         int getGroupIndexForChannel (int globalOutputCh) const noexcept;

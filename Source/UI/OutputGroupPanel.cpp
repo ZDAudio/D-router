@@ -178,13 +178,19 @@ namespace dcr
         if (g == nullptr)
             return;
 
-        const bool softIn = g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn;
-        name.setText (softIn ? ("SOFT IN  " + g->name) : g->name, juce::dontSendNotification);
+        const auto kind = g->kind.load (std::memory_order_relaxed);
+        const bool softIn = kind == OutputGroup::Kind::SoftIn;
+        const bool deviceAuto = kind == OutputGroup::Kind::DeviceAuto;
+        const juce::String prefix = softIn ? "SOFT IN  " : (deviceAuto ? "OUT  " : juce::String());
+        name.setText (prefix + g->name, juce::dontSendNotification);
         name.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::bold));
-        // Soft-In (app-audio capture) groups get a distinct amber label so they read
-        // apart from the user's regular input groups.
-        name.setColour (juce::Label::textColourId,
-            softIn ? juce::Colour::fromRGB (255, 176, 32) : juce::Colour::fromRGB (0, 255, 210));
+        // Auto-created groups get a distinct label colour so they read apart from the
+        // user's regular groups: amber for Soft-In (app-audio capture), cyan-blue for
+        // DeviceAuto (a stereo output device).
+        const juce::Colour labelColour = softIn       ? juce::Colour::fromRGB (255, 176, 32)
+                                         : deviceAuto ? juce::Colour::fromRGB (90, 170, 255)
+                                                      : juce::Colour::fromRGB (0, 255, 210);
+        name.setColour (juce::Label::textColourId, labelColour);
         name.setJustificationType (juce::Justification::centredLeft);
 
         juce::String memStr;

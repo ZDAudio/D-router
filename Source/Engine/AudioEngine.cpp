@@ -34,8 +34,19 @@ namespace dcr
 
     void AudioEngine::audioDeviceListChanged()
     {
+        // This listener fires on the message thread from a HAL device-change
+        // notification.  A threaded reconfigure (start()) scans AND createDevice()s on
+        // `deviceType` from its worker thread, and CoreAudioIODeviceType is not
+        // thread-safe -- a concurrent scan here corrupted the heap (crash).  So skip
+        // entirely while a reconfigure is in progress (it does its own scan); the
+        // deviceScanLock below is a backstop for any residual overlap.
+        if (deviceReconfigInProgress.load (std::memory_order_acquire))
+            return;
         if (deviceType != nullptr)
+        {
+            const juce::ScopedLock sl (deviceScanLock);
             deviceType->scanForDevices();
+        }
         if (onDeviceListChanged)
             onDeviceListChanged();
     }
@@ -62,12 +73,14 @@ namespace dcr
     {
         if (deviceType == nullptr)
             return {};
+        const juce::ScopedLock sl (deviceScanLock);
         return withoutOwnTapAggregates (deviceType->getDeviceNames (true));
     }
     juce::StringArray AudioEngine::getAvailableOutputDevices() const
     {
         if (deviceType == nullptr)
             return {};
+        const juce::ScopedLock sl (deviceScanLock);
         return withoutOwnTapAggregates (deviceType->getDeviceNames (false));
     }
 
@@ -75,6 +88,7 @@ namespace dcr
     {
         if (deviceType == nullptr)
             return {};
+        const juce::ScopedLock sl (deviceScanLock);
         auto names = deviceType->getDeviceNames (true);
         int idx = deviceType->getDefaultDeviceIndex (true);
         return juce::isPositiveAndBelow (idx, names.size()) ? names[idx] : juce::String {};
@@ -84,6 +98,7 @@ namespace dcr
     {
         if (deviceType == nullptr)
             return {};
+        const juce::ScopedLock sl (deviceScanLock);
         auto names = deviceType->getDeviceNames (false);
         int idx = deviceType->getDefaultDeviceIndex (false);
         return juce::isPositiveAndBelow (idx, names.size()) ? names[idx] : juce::String {};
@@ -110,7 +125,24 @@ namespace dcr
         stop();
         if (deviceType == nullptr)
             return false;
-        deviceType->scanForDevices();
+
+        // Suppress the message-thread device-change listener for the whole of this
+        // call: we scan AND createDevice() on the (non-thread-safe) deviceType from
+        // this worker thread, and a concurrent listener scan corrupts the heap.  RAII
+        // so the flag clears on every exit path (the abort returns below included).
+        deviceReconfigInProgress.store (true, std::memory_order_release);
+        struct ScanGuard
+        {
+            std::atomic<bool>& f;
+            ~ScanGuard() { f.store (false, std::memory_order_release); }
+        } scanGuard { deviceReconfigInProgress };
+
+        // Runs on the reconfigure WORKER thread.  Lock as a backstop so it can't realloc
+        // the device array even if a listener scan slips past the flag above.
+        {
+            const juce::ScopedLock sl (deviceScanLock);
+            deviceType->scanForDevices();
+        }
 
         // ---- Diagnostic preamble --------------------------------------------
         {
@@ -309,6 +341,29 @@ namespace dcr
             }
         }
 
+        // Output-side mirror: auto-build a group over each STEREO (2-channel) output
+        // device so the device is faderable + insertable in the IN/OUT GROUPS view.
+        // Rebuilt every start; not persisted (gather skips DeviceAuto, like SoftIn).
+        // SKIP a device whose channels are already in a (remaining) group --
+        // assignChannel would otherwise steal them from the user's manual group.
+        groupManager.removeAutoGroups();
+        for (const auto& d : deviceInfo)
+        {
+            if (d.isAppInput || d.globalOutputBase < 0 || d.numOutputChannels != 2)
+                continue;
+            const int base = d.globalOutputBase;
+            if (groupManager.getGroupIndexForChannel (base) >= 0
+                || groupManager.getGroupIndexForChannel (base + 1) >= 0)
+                continue; // already grouped -- respect the existing grouping
+            const int gi = groupManager.createGroup (d.name, juce::AudioChannelSet::stereo());
+            if (auto* g = groupManager.getGroup (gi))
+            {
+                g->kind.store (OutputGroup::Kind::DeviceAuto, std::memory_order_relaxed);
+                groupManager.assignChannel (gi, 0, base);
+                groupManager.assignChannel (gi, 1, base + 1);
+            }
+        }
+
         for (int gi = 0; gi < groupManager.getNumGroups(); ++gi)
         {
             if (auto* g = groupManager.getGroup (gi))
@@ -375,6 +430,15 @@ namespace dcr
 
         processor.start();
         runningFlag = true;
+
+        // Start the device IO callbacks ONLY now that the matrix thread is live, so it
+        // drains the input rings from the very first callback.  (If the callbacks
+        // started back in DeviceWorker::open(), captured input piled up during the
+        // rest of engine setup and overran the 3-block input rings -- a one-time
+        // "xrun in" burst on every engine (re)start.)  Output rings were pre-filled in
+        // open(), so the output side still has silence to play from the first callback.
+        for (auto& w : workers)
+            w->startIO();
 
         // Initial PDC plan now the matrix knows its output count (a no-op when PDC
         // is off or no plugin reports latency).  The status timer keeps it current

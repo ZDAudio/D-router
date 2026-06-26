@@ -27,7 +27,13 @@ namespace dcr
             bool wantOutput);
         ~DeviceWorker() override;
 
+        // Open the device + allocate rings/SRCs + pre-fill the output ring.  Does
+        // NOT begin the IO callback -- call startIO() for that, AFTER the matrix
+        // thread is live, so captured input isn't left to pile up unattended.
         bool open (const EngineSettings& settings);
+        // Begin the device IO callback.  Separate from open() so the engine can get
+        // the matrix draining before any input arrives (avoids a startup "xrun in").
+        void startIO();
         void close();
 
         bool isOpen() const noexcept { return device != nullptr && device->isOpen(); }

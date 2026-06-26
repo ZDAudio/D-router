@@ -1145,6 +1145,11 @@ namespace dcr
         DeviceManagerDialog::launch (engine, currentSpecs, [this] (std::optional<std::vector<AudioEngine::DeviceSpec>> sel) {
             if (!sel.has_value())
                 return;
+            // No-op guard: clicking OK without changing the selection must NOT tear
+            // down and restart the engine -- a restart is audible (brief gap) and
+            // pointless when nothing changed.  (Cancel already returns above.)
+            if (*sel == currentSpecs)
+                return;
             applyDeviceSelection (std::move (*sel));
         });
     }
@@ -1586,12 +1591,12 @@ namespace dcr
                 const auto* g = mgr.getGroup (gi);
                 if (g == nullptr)
                     continue;
-                // Soft-In groups are auto-derived from app-audio sources and
-                // rebuilt on every engine start.  Persisting one would restore an
-                // orphaned (sourceless) group; skip it -- restoring the app source
-                // (s.appInputs above) brings the Soft-In group back instead.
-                if (g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn)
-                    continue;
+                // Auto-derived groups -- SoftIn (over an app-audio source) and
+                // DeviceAuto (over a stereo output device) -- are rebuilt on every
+                // engine start.  Persisting one would restore an orphaned group; skip
+                // it -- restoring the source (app input / device) rebuilds it instead.
+                if (g->kind.load (std::memory_order_relaxed) != OutputGroup::Kind::Regular)
+                    continue; // SoftIn / DeviceAuto are derived + rebuilt each start
                 Snapshot::Group gs;
                 gs.name = g->name;
                 gs.layoutName = layoutName (g->channelSet);
@@ -1642,8 +1647,8 @@ namespace dcr
                 auto* g = mgr.getGroup (gi);
                 if (g == nullptr)
                     continue;
-                if (g->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::SoftIn)
-                    continue; // not persisted (see gatherFromManager) -- Soft-In is rebuilt
+                if (g->kind.load (std::memory_order_relaxed) != OutputGroup::Kind::Regular)
+                    continue; // SoftIn / DeviceAuto are derived -- not persisted (see gatherFromManager)
                 Snapshot::GroupChain gc;
                 gc.groupIdx = gi;
                 gc.isInput = isInput;

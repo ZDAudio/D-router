@@ -90,6 +90,17 @@ namespace dcr
         recomputeRouterGains(); // a removed Router group's members must drop back to unity
     }
 
+    void OutputGroupManager::removeAutoGroups()
+    {
+        juce::SpinLock::ScopedLockType lk (lock);
+        for (int gi = (int) groups.size(); --gi >= 0;)
+            if (groups[(size_t) gi]
+                && groups[(size_t) gi]->kind.load (std::memory_order_relaxed) == OutputGroup::Kind::DeviceAuto)
+                groups.erase (groups.begin() + gi);
+        rebuildChannelLookup();
+        recomputeRouterGains();
+    }
+
     OutputGroup* OutputGroupManager::getGroup (int groupIdx) noexcept
     {
         if (groupIdx < 0 || groupIdx >= (int) groups.size())
