@@ -85,6 +85,13 @@ namespace dcr
             // same-device / same-channel crosspoints in the matrix.  Defaults to
             // true for devices the dialog detects as virtual.
             bool blockSelfLoop = false;
+
+            bool operator== (const DeviceSpec& o) const
+            {
+                return name == o.name && wantInput == o.wantInput
+                       && wantOutput == o.wantOutput && blockSelfLoop == o.blockSelfLoop;
+            }
+            bool operator!= (const DeviceSpec& o) const { return !(*this == o); }
         };
 
         // One application whose audio output is captured as an input source via a
@@ -281,6 +288,21 @@ namespace dcr
         std::vector<int> computePerOutputPluginLatencySamples() const;
 
         std::unique_ptr<juce::AudioIODeviceType> deviceType;
+        // Serialises ALL access to `deviceType` (scanForDevices / getDeviceNames).
+        // juce::CoreAudioIODeviceType is NOT thread-safe: the message-thread
+        // device-change listener (audioDeviceListChanged -> scanForDevices) can fire
+        // while a threaded reconfigure (applyDeviceSelection -> start -> scanForDevices)
+        // is running -- e.g. tearing down an app-tap aggregate fires a HAL device-change
+        // notification mid-reconfigure -- and two concurrent scans realloc the same
+        // device array -> heap corruption / abort.  Re-entrant (a scan that re-notifies
+        // on the same thread won't self-deadlock).
+        mutable juce::CriticalSection deviceScanLock;
+        // True while start() is scanning + opening devices on the reconfigure worker
+        // thread.  The message-thread device-change listener checks this and skips its
+        // own scan during that window: the reconfigure both scans AND createDevice()s
+        // on `deviceType`, none of which is thread-safe, so a concurrent listener scan
+        // (fired by e.g. an app-tap aggregate teardown) corrupts the heap.
+        std::atomic<bool> deviceReconfigInProgress { false };
         EngineSettings settings;
 
         std::vector<std::unique_ptr<DeviceWorker>> workers;

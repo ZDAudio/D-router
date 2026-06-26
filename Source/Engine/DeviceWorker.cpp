@@ -168,8 +168,17 @@ namespace dcr
         for (auto& r : outputRings)
             r.write (silence.data(), silence.size());
 
-        device->start (this);
+        // NOTE: the IO callback is NOT started here -- the engine calls startIO()
+        // later, once the matrix thread is running.  Starting it here let input
+        // accumulate in the rings during the rest of engine setup and overrun them
+        // (a one-time "xrun in" burst at every restart).
         return true;
+    }
+
+    void DeviceWorker::startIO()
+    {
+        if (device != nullptr)
+            device->start (this);
     }
 
     void DeviceWorker::close()

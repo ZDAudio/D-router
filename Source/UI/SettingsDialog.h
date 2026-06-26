@@ -87,7 +87,8 @@ namespace dcr
         juce::OwnedArray<InfoIcon> infoIcons;
         juce::TooltipWindow tooltipWindow { this, 350 };
 
-        juce::TextButton applyButton { "Apply" };
+        // One button applies the changes AND saves them as the defaults (the old
+        // "Apply" session-only button was merged into Save).
         juce::TextButton saveButton { "Save" };
         juce::TextButton cancelButton { "Cancel" };
         juce::TextButton resetButton { "Reset to defaults" };

@@ -142,21 +142,11 @@ namespace dcr
 
         fieldsHolder.setSize (520, nextRowY + 12);
 
-        applyButton.setTooltip ("Apply changes to the running engine for this session only.\n"
-                                "If you close the app, the previously saved values come back.");
-        saveButton.setTooltip ("Apply AND write to disk so these values are the new defaults "
-                               "on every launch.");
+        saveButton.setTooltip ("Apply the changes to the running engine AND write them to disk "
+                               "so they are the new defaults on every launch.");
         resetButton.setTooltip ("Restore every field to its built-in default value.\n"
                                 "You still need to click Save afterwards to persist that to disk.");
 
-        applyButton.onClick = [this] {
-            for (auto& a : applyActions)
-                a();
-            if (onClose)
-                onClose (working, /*persistToDisk=*/false);
-            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState (1);
-        };
         saveButton.onClick = [this] {
             for (auto& a : applyActions)
                 a();
@@ -173,7 +163,7 @@ namespace dcr
         };
         resetButton.onClick = [this] {
             working = EngineSettings {};
-            // Don't auto-close - user can review defaults and then Apply / Save.
+            // Don't auto-close - user can review defaults and then Save.
             // But we DO need to refresh field values to show the defaults.  Easiest:
             // tell the host so it can re-launch.  For now we just close, treating
             // reset as an "apply" since the user explicitly chose to wipe.
@@ -183,7 +173,6 @@ namespace dcr
                 dw->exitModalState (1);
         };
 
-        addAndMakeVisible (applyButton);
         addAndMakeVisible (saveButton);
         addAndMakeVisible (cancelButton);
         addAndMakeVisible (resetButton);
@@ -200,8 +189,6 @@ namespace dcr
 
         auto bottom = r.removeFromBottom (36);
         saveButton.setBounds (bottom.removeFromRight (90));
-        bottom.removeFromRight (6);
-        applyButton.setBounds (bottom.removeFromRight (90));
         bottom.removeFromRight (6);
         cancelButton.setBounds (bottom.removeFromRight (90));
         resetButton.setBounds (bottom.removeFromLeft (160));

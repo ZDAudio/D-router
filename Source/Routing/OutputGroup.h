@@ -34,10 +34,12 @@ namespace dcr
             Router };
 
         // Regular = a user-created group.  SoftIn = auto-created over an app-audio
-        // capture source's channels (input side); the engine rebuilds these each
-        // start and the IN/OUT GROUPS view shows them distinctly.
+        // capture source's channels (input side).  DeviceAuto = auto-created over a
+        // stereo OUTPUT device's channels (output side).  The engine rebuilds both
+        // auto kinds every start and the IN/OUT GROUPS view shows them distinctly.
         enum class Kind { Regular,
-            SoftIn };
+            SoftIn,
+            DeviceAuto };
 
         juce::String name { "Group" };
         juce::AudioChannelSet channelSet { juce::AudioChannelSet::stereo() };
