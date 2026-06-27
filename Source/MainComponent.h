@@ -76,6 +76,7 @@ namespace dcr
         void reconcileAppAudioAttachments();
         void openAppInputMenu();
         void addAppInput (const juce::String& bundleId, const juce::String& displayName);
+        void removeAppInput (const juce::String& bundleId);
         void clearAppInputs();
 
         void refreshStatus();

@@ -1445,38 +1445,139 @@ namespace dcr
         }
     }
 
+    namespace
+    {
+        // A "joined app" row for the Software... menu: the app name on the left
+        // and a dedicated X button on the right.  Constructed non-auto-triggering
+        // so only the X is interactive -- the rest of the row is a status line.
+        // The X calls triggerMenuItem(), which dismisses the popup and reports
+        // this item's result id; openAppInputMenu's callback then maps it to
+        // removeAppInput().  Doing the removal *after* the menu has closed keeps
+        // the engine reconfigure (which disables the toolbar) from racing a still
+        // -open modal popup.
+        class JoinedAppMenuRow : public juce::PopupMenu::CustomComponent
+        {
+        public:
+            explicit JoinedAppMenuRow (juce::String name)
+                : juce::PopupMenu::CustomComponent (false), // false: only X triggers
+                  displayName (std::move (name))
+            {
+                removeButton.setButtonText (juce::CharPointer_UTF8 ("\xe2\x9c\x95")); // X
+                removeButton.setTooltip (juce::CharPointer_UTF8 ("\xe7\xa7\xbb\xe9\x99\xa4\xe8\xaf\xa5 App")); // 移除该 App
+                removeButton.onClick = [this] { triggerMenuItem(); };
+                addAndMakeVisible (removeButton);
+            }
+
+            void getIdealSize (int& idealWidth, int& idealHeight) override
+            {
+                juce::GlyphArrangement ga;
+                ga.addLineOfText (juce::Font { juce::FontOptions (15.0f) }, displayName, 0.0f, 0.0f);
+                const int textW = (int) std::ceil (ga.getBoundingBox (0, -1, true).getWidth());
+                idealWidth = kPadLeft + textW + kButtonW + kPadRight;
+                idealHeight = 24;
+            }
+
+            void paint (juce::Graphics& g) override
+            {
+                g.setColour (findColour (juce::PopupMenu::textColourId));
+                g.setFont (juce::Font { juce::FontOptions (15.0f) });
+                auto r = getLocalBounds().withTrimmedLeft (kPadLeft).withTrimmedRight (kButtonW + kPadRight);
+                g.drawText (displayName, r, juce::Justification::centredLeft, true);
+            }
+
+            void resized() override
+            {
+                removeButton.setBounds (
+                    getLocalBounds().removeFromRight (kButtonW + kPadRight).withTrimmedRight (kPadRight).reduced (0, 3));
+            }
+
+        private:
+            static constexpr int kPadLeft = 18;
+            static constexpr int kButtonW = 22;
+            static constexpr int kPadRight = 8;
+            juce::String displayName;
+            juce::TextButton removeButton;
+        };
+    } // namespace
+
     void MainComponent::openAppInputMenu()
     {
         if (appAudioProcesses == nullptr)
             return;
 
-        // Picker of apps currently producing output, de-duped by bundle id so a
-        // helper process can't flood the list.
-        juce::PopupMenu menu;
-        std::vector<std::pair<juce::String, juce::String>> items; // bundleId, displayName
-        juce::StringArray seen;
-        for (const auto& e : appAudioProcesses->enumerate())
-        {
-            if (!e.runningOutput)
-                continue;
-            const juce::String bid = juce::String::fromUTF8 (e.bundleId.c_str());
-            if (bid.isEmpty() || seen.contains (bid))
-                continue;
-            if (bid.startsWith ("com.zdaudio.drouter"))
-                continue; // never capture ourselves -- that's a feedback loop
-            seen.add (bid);
-            const juce::String name = juce::String::fromUTF8 (
-                e.displayName.empty() ? e.bundleId.c_str() : e.displayName.c_str());
-            items.push_back ({ bid, name });
-            menu.addItem ((int) items.size(), name);
-        }
-        if (items.empty())
-            menu.addItem (-1, "(no app is currently producing audio)", false, false);
+        // Result-id scheme for the async callback:
+        //   [1 .. addItems.size()]               -> add that available app
+        //   [kRemoveBase .. kRemoveBase+joined)  -> remove that joined app
+        //   kClearAllId                          -> clear every joined app
+        constexpr int kRemoveBase = 1000;
+        constexpr int kClearAllId = 2000;
 
-        menu.showMenuAsync (juce::PopupMenu::Options {}, [this, items] (int choice) {
-            if (choice >= 1 && choice <= (int) items.size())
-                addAppInput (items[(size_t) (choice - 1)].first, items[(size_t) (choice - 1)].second);
-        });
+        juce::PopupMenu menu;
+
+        // --- Not yet joined: apps producing output that aren't already a Soft-In.
+        // De-duped by bundle id (a helper process can't flood the list) and with
+        // anything already in currentAppInputs hidden -- a joined app belongs in
+        // the lower section only.
+        menu.addSectionHeader (juce::CharPointer_UTF8 ("\xe6\x9c\xaa\xe5\x8a\xa0\xe5\x85\xa5\xe7\x9a\x84\xe8\xae\xbe\xe5\xa4\x87")); // 未加入的设备
+        std::vector<std::pair<juce::String, juce::String>> addItems; // bundleId, displayName
+        {
+            juce::StringArray seen;
+            for (const auto& s : currentAppInputs)
+                seen.add (s.bundleId);
+            for (const auto& e : appAudioProcesses->enumerate())
+            {
+                if (!e.runningOutput)
+                    continue;
+                const juce::String bid = juce::String::fromUTF8 (e.bundleId.c_str());
+                if (bid.isEmpty() || seen.contains (bid))
+                    continue;
+                if (bid.startsWith ("com.zdaudio.drouter"))
+                    continue; // never capture ourselves -- that's a feedback loop
+                seen.add (bid);
+                const juce::String name = juce::String::fromUTF8 (
+                    e.displayName.empty() ? e.bundleId.c_str() : e.displayName.c_str());
+                addItems.push_back ({ bid, name });
+                menu.addItem ((int) addItems.size(), name);
+            }
+            if (addItems.empty())
+                menu.addItem (-1, juce::CharPointer_UTF8 ("(\xe6\xb2\xa1\xe6\x9c\x89\xe6\xad\xa3\xe5\x9c\xa8\xe5\x87\xba\xe5\xa3\xb0\xe7\x9a\x84 App)"), false, false); // (没有正在出声的 App)
+        }
+
+        // --- Already joined: currentAppInputs, each with a X remove button.  These
+        // stay listed even when the app is currently silent -- that's the point of
+        // being able to remove a source you added earlier.
+        menu.addSeparator();
+        menu.addSectionHeader (juce::CharPointer_UTF8 ("\xe5\xb7\xb2\xe5\x8a\xa0\xe5\x85\xa5\xe7\x9a\x84\xe8\xae\xbe\xe5\xa4\x87")); // 已加入的设备
+        std::vector<juce::String> joined; // bundleId per row, index == result id - kRemoveBase
+        for (const auto& s : currentAppInputs)
+        {
+            const juce::String name = s.displayName.isNotEmpty() ? s.displayName : s.bundleId;
+            menu.addCustomItem (kRemoveBase + (int) joined.size(),
+                std::make_unique<JoinedAppMenuRow> (name),
+                nullptr,
+                name);
+            joined.push_back (s.bundleId);
+        }
+        if (joined.empty())
+            menu.addItem (-1, juce::CharPointer_UTF8 ("(\xe5\xb0\x9a\xe6\x9c\xaa\xe5\x8a\xa0\xe5\x85\xa5\xe4\xbb\xbb\xe4\xbd\x95 App)"), false, false); // (尚未加入任何 App)
+
+        // --- Clear every joined source (disabled when there's nothing to clear).
+        menu.addSeparator();
+        menu.addItem (kClearAllId,
+            juce::CharPointer_UTF8 ("\xf0\x9f\x97\x91  \xe6\xb8\x85\xe9\x99\xa4\xe6\x89\x80\xe6\x9c\x89\xe5\xb7\xb2\xe9\x93\xbe\xe6\x8e\xa5\xe7\x9a\x84\xe8\xae\xbe\xe5\xa4\x87"), // 🗑  清除所有已链接的设备
+            !joined.empty(),
+            false);
+
+        menu.showMenuAsync (
+            juce::PopupMenu::Options().withTargetComponent (softwareButton),
+            [this, addItems, joined] (int choice) {
+                if (choice >= 1 && choice <= (int) addItems.size())
+                    addAppInput (addItems[(size_t) (choice - 1)].first, addItems[(size_t) (choice - 1)].second);
+                else if (choice >= kRemoveBase && choice < kRemoveBase + (int) joined.size())
+                    removeAppInput (joined[(size_t) (choice - kRemoveBase)]);
+                else if (choice == kClearAllId)
+                    clearAppInputs();
+            });
     }
 
     void MainComponent::addAppInput (const juce::String& bundleId, const juce::String& displayName)
@@ -1490,6 +1591,17 @@ namespace dcr
         spec.displayName = displayName;
         currentAppInputs.push_back (spec);
         applyDeviceSelection (currentSpecs); // reconfigure: existing devices + new app inputs
+    }
+
+    void MainComponent::removeAppInput (const juce::String& bundleId)
+    {
+        const auto before = currentAppInputs.size();
+        currentAppInputs.erase (
+            std::remove_if (currentAppInputs.begin(), currentAppInputs.end(), [&] (const AudioEngine::AppInputSpec& s) { return s.bundleId == bundleId; }),
+            currentAppInputs.end());
+        if (currentAppInputs.size() == before)
+            return; // nothing matched -- don't trigger a needless reconfigure
+        applyDeviceSelection (currentSpecs); // reconfigure: remaining devices + app inputs
     }
 
     void MainComponent::clearAppInputs()
