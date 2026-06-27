@@ -363,6 +363,13 @@ namespace dcr
         void browseForAuAndBroadcast (bool isInput, std::vector<int> channels, int slotIdx);
         void showEditorFor (bool isInput, int ch, int slotIdx);
         void closeEditorFor (bool isInput, int ch, int slotIdx);
+        // Close EVERY open editor at this slot (all channels, same side) before a
+        // plugin instance at the slot is freed: a linked editor on another channel
+        // may hold this instance as a raw sibling pointer (see PluginEditorWindow),
+        // and freeing it underneath would dangle that pointer -> UAF on the next
+        // parameter change.  Siblings are always same-side/same-slot, so this is
+        // the exact set that can reference the dying plugin.
+        void closeEditorsAtSlot (bool isInput, int slotIdx);
 
         // Channel-selection state (drives FX broadcast).
         std::vector<int> selectedInputs;

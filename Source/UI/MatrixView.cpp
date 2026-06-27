@@ -1746,9 +1746,11 @@ namespace dcr
 
     void MatrixView::FxChainPopupContent::onSlotRemoveClicked (int slotIdx)
     {
+        // Close every same-slot editor up front: any of them (on any channel)
+        // may hold a soon-to-be-freed plugin as a linked sibling -> UAF guard.
+        owner.closeEditorsAtSlot (isInput, slotIdx);
         for (int targetCh : targets)
         {
-            owner.closeEditorFor (isInput, targetCh, slotIdx);
             if (auto* h = getHost (owner.engine, targetCh == ch ? isInput : isInput, targetCh))
                 h->clearSlot (slotIdx);
             owner.updateFxButtonAppearance (isInput, targetCh);
@@ -1841,7 +1843,9 @@ namespace dcr
                             auto* host = getHost (engine, isInput, ch);
                             if (host == nullptr)
                                 return;
-                            closeEditorFor (isInput, ch, slotIdx);
+                            // Close all same-slot editors (any channel may hold the
+                            // outgoing plugin as a linked sibling) before it's freed.
+                            closeEditorsAtSlot (isInput, slotIdx);
                             host->setPluginAt (slotIdx, std::move (instance));
                             updateFxButtonAppearance (isInput, ch);
                         });
@@ -1935,7 +1939,9 @@ namespace dcr
                     auto* host = getHost (engine, isInput, targetCh);
                     if (host == nullptr)
                         return;
-                    closeEditorFor (isInput, targetCh, slotIdx);
+                    // Close all same-slot editors (any channel may hold the outgoing
+                    // plugin as a linked sibling) before it's freed.
+                    closeEditorsAtSlot (isInput, slotIdx);
                     host->setPluginAt (slotIdx, std::move (instance));
                     updateFxButtonAppearance (isInput, targetCh);
                 });
@@ -2073,6 +2079,15 @@ namespace dcr
         if (slotIdx < 0 || slotIdx >= PluginHost::kNumSlots)
             return;
         wins[(size_t) ch][(size_t) slotIdx].reset();
+    }
+
+    void MatrixView::closeEditorsAtSlot (bool isInput, int slotIdx)
+    {
+        if (slotIdx < 0 || slotIdx >= PluginHost::kNumSlots)
+            return;
+        auto& wins = isInput ? inputEditorWindows : outputEditorWindows;
+        for (auto& row : wins)
+            row[(size_t) slotIdx].reset();
     }
 
 } // namespace dcr
