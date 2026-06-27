@@ -27,7 +27,21 @@ namespace dcr
             bool wantOutput);
         ~DeviceWorker() override;
 
-        // Open the device + allocate rings/SRCs + pre-fill the output ring.  Does
+        // Instantiate the underlying juce::AudioIODevice.  MESSAGE THREAD ONLY:
+        // AudioIODeviceType::createDevice() reads the device-type's shared device
+        // arrays, which JUCE itself rescans on the message thread on every
+        // hardware change (CoreAudioIODeviceType::handleAsyncUpdate).  Running it
+        // off-thread races that scan and corrupts the heap.  Must be called (once)
+        // before open().  See AudioEngine::createDeviceWorkers().
+        bool createDevice();
+        // True once createDevice() succeeded (the AudioIODevice exists but may not
+        // be open yet).
+        bool hasDevice() const noexcept { return device != nullptr; }
+
+        // Open the device (device->open) + allocate rings/SRCs + pre-fill the
+        // output ring.  Runs on the reconfigure WORKER thread -- it touches only
+        // the already-created device, never the shared deviceType, so it can't
+        // race the message-thread scan.  Requires createDevice() to have run.  Does
         // NOT begin the IO callback -- call startIO() for that, AFTER the matrix
         // thread is live, so captured input isn't left to pile up unattended.
         bool open (const EngineSettings& settings);

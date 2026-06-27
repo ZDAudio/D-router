@@ -35,11 +35,15 @@ namespace dcr
     void AudioEngine::audioDeviceListChanged()
     {
         // This listener fires on the message thread from a HAL device-change
-        // notification.  A threaded reconfigure (start()) scans AND createDevice()s on
-        // `deviceType` from its worker thread, and CoreAudioIODeviceType is not
-        // thread-safe -- a concurrent scan here corrupted the heap (crash).  So skip
-        // entirely while a reconfigure is in progress (it does its own scan); the
-        // deviceScanLock below is a backstop for any residual overlap.
+        // notification, AFTER JUCE has already rescanned the device list internally
+        // (CoreAudioIODeviceType::handleAsyncUpdate -> scanForDevices -> here).  All
+        // of OUR deviceType access is now message-thread-only too (ctor,
+        // createDeviceWorkers, and the rescan below), so it can never run
+        // concurrently with JUCE's internal scan -- that is the actual fix for the
+        // old heap corruption (a worker-thread scan used to race this one).  During a
+        // reconfigure we still skip our redundant rescan + onDeviceListChanged: the
+        // reconfigure already staged a fresh device list, and re-entering
+        // applyDeviceSelection mid-flight would just be rejected anyway.
         if (deviceReconfigInProgress.load (std::memory_order_acquire))
             return;
         if (deviceType != nullptr)
@@ -119,6 +123,36 @@ namespace dcr
         return false;
     }
 
+    bool AudioEngine::createDeviceWorkers (const std::vector<DeviceSpec>& devices)
+    {
+        // MESSAGE THREAD ONLY.  Together with the ctor and the message-thread
+        // device-change listener, this is the ONLY code that touches `deviceType`.
+        // JUCE rescans the device list from its OWN AsyncUpdater on the message
+        // thread on every hardware change (CoreAudioIODeviceType::handleAsyncUpdate
+        // -> scanForDevices), and that internal scan cannot take our lock.  The only
+        // way to stop it racing ours is to keep ALL our deviceType access on the same
+        // (message) thread, where it can never run concurrently with JUCE's scan.
+        // start() then only OPENS the devices we stage here, on the worker thread,
+        // without touching deviceType.  This is the fix for the realloc double-free
+        // (SIGABRT) in scanForDevices observed under reconfigure + hotplug.
+        JUCE_ASSERT_MESSAGE_THREAD;
+        pendingWorkers.clear();
+        if (deviceType == nullptr)
+            return false;
+
+        deviceType->scanForDevices();
+        for (const auto& spec : devices)
+        {
+            auto w = std::make_unique<DeviceWorker> (*deviceType, spec.name, spec.wantInput, spec.wantOutput);
+            if (!w->createDevice())
+                juce::Logger::writeToLog ("engine.createDeviceWorkers: createDevice failed for '"
+                                          + spec.name + "' (" + w->getLastError() + ")");
+            // Keep even on failure so pendingWorkers stays index-aligned with devices.
+            pendingWorkers.push_back (std::move (w));
+        }
+        return true;
+    }
+
     bool AudioEngine::start (const std::vector<DeviceSpec>& devices,
         const std::vector<AppInputSpec>& appInputs)
     {
@@ -126,23 +160,30 @@ namespace dcr
         if (deviceType == nullptr)
             return false;
 
-        // Suppress the message-thread device-change listener for the whole of this
-        // call: we scan AND createDevice() on the (non-thread-safe) deviceType from
-        // this worker thread, and a concurrent listener scan corrupts the heap.  RAII
-        // so the flag clears on every exit path (the abort returns below included).
+        // Devices were instantiated on the MESSAGE THREAD by createDeviceWorkers().
+        // This call runs on the reconfigure WORKER thread and must NOT touch the
+        // non-thread-safe deviceType at all -- it only opens the pre-created devices.
+        // Bail if the message-thread step was skipped, rather than silently starting
+        // with no devices.
+        if (pendingWorkers.size() != devices.size())
+        {
+            juce::Logger::writeToLog ("engine.start: ABORTED -- createDeviceWorkers() was not "
+                                      "called for this selection ("
+                                      + juce::String ((int) pendingWorkers.size()) + " staged vs "
+                                      + juce::String ((int) devices.size()) + " requested)");
+            pendingWorkers.clear();
+            return false;
+        }
+
+        // Flag the reconfigure window so the message-thread device-change listener
+        // skips its own (now-redundant) rescan + onDeviceListChanged while we tear
+        // down / rebuild.  RAII clears it on every exit path.
         deviceReconfigInProgress.store (true, std::memory_order_release);
         struct ScanGuard
         {
             std::atomic<bool>& f;
             ~ScanGuard() { f.store (false, std::memory_order_release); }
         } scanGuard { deviceReconfigInProgress };
-
-        // Runs on the reconfigure WORKER thread.  Lock as a backstop so it can't realloc
-        // the device array even if a listener scan slips past the flag above.
-        {
-            const juce::ScopedLock sl (deviceScanLock);
-            deviceType->scanForDevices();
-        }
 
         // ---- Diagnostic preamble --------------------------------------------
         {
@@ -171,9 +212,19 @@ namespace dcr
         static constexpr int kDeviceOpenRetryMs = 100; // wait between tries
 
         int totalIns = 0, totalOuts = 0;
-        for (const auto& spec : devices)
+        for (size_t di = 0; di < devices.size(); ++di)
         {
-            auto w = std::make_unique<DeviceWorker> (*deviceType, spec.name, spec.wantInput, spec.wantOutput);
+            const auto& spec = devices[di];
+            // Worker + AudioIODevice were created on the message thread
+            // (createDeviceWorkers).  Take ownership here on the worker thread.
+            auto w = std::move (pendingWorkers[di]);
+            if (w == nullptr || !w->hasDevice())
+            {
+                juce::Logger::writeToLog ("engine.start: skipping '" + spec.name
+                                          + "' -- device not created on message thread ("
+                                          + (w != nullptr ? w->getLastError() : juce::String ("null worker")) + ")");
+                continue;
+            }
 
             // Open with a short bounded retry.  A device can transiently fail to
             // open while CoreAudio is still releasing it -- notably right after an
@@ -183,7 +234,8 @@ namespace dcr
             // Without the retry, adding a Soft-In source intermittently leaves the
             // output device unopened and it vanishes from the matrix.  This runs on
             // the reconfigure worker thread (never the audio thread), so the short
-            // sleep between attempts is safe.
+            // sleep between attempts is safe.  open() re-attempts device->open() on
+            // the SAME (already-created) wrapper -- it never re-creates the device.
             bool opened = w->open (settings);
             for (int attempt = 1; !opened && attempt < kDeviceOpenAttempts; ++attempt)
             {
@@ -225,6 +277,9 @@ namespace dcr
             deviceInfo.push_back (info);
             workers.push_back (std::move (w));
         }
+        // Any staged workers not opened above (createDevice/open failures) are
+        // dropped here; we own the survivors in `workers` now.
+        pendingWorkers.clear();
 
         // Output device names D-Router is opening this session -- handed to each
         // app-tap worker so it won't anchor its capture aggregate to a (non-built-in)
