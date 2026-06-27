@@ -1240,6 +1240,20 @@ namespace dcr
             reconfigThread.join();
 
         auto specs = std::move (newSpecs);
+
+        // Instantiate the AudioIODevices NOW, on the message thread, BEFORE handing
+        // the reconfigure to the worker thread.  scanForDevices() + createDevice()
+        // touch the non-thread-safe deviceType, which JUCE ALSO rescans on the
+        // message thread on every hardware change -- doing it on the worker thread
+        // (as the old engine.start did) raced that internal scan and corrupted the
+        // heap (SIGABRT in CoreAudioIODeviceType::scanForDevices, seen under
+        // reconfigure + hotplug / app-tap aggregate teardown).  The worker thread
+        // below only OPENS these pre-created devices, never touching deviceType.
+        // Cost: the (usually fast) scan runs on the message thread; the slow
+        // device->open() + setup stays on the worker thread, so the UI stays
+        // responsive behind the "Reconfiguring..." overlay.
+        engine.createDeviceWorkers (specs);
+
         reconfigThread = std::thread ([this, specs, preserved, preserveChains, appInputs = currentAppInputs] {
             // Graceful fade-out before tearing the engine down.  Ramp the MASTER
             // output gain to silence (the matrix smooths it over ~5*tau), then

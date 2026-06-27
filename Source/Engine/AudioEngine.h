@@ -109,8 +109,20 @@ namespace dcr
         // Used to default blockSelfLoop on in the device dialog.
         static bool isLikelyVirtualDevice (const juce::String& name);
 
+        // Instantiate the juce::AudioIODevice for each spec.  MESSAGE THREAD ONLY:
+        // this scans + createDevice()s on the non-thread-safe `deviceType`, the same
+        // object JUCE rescans on the message thread on every hardware change.  MUST
+        // be called (on the message thread) before start() -- start() then only
+        // opens the pre-created devices on the worker thread, never touching
+        // deviceType.  This is the fix for the device-scan heap corruption: a single
+        // thread owns all deviceType access, so JUCE's internal scan can never run
+        // concurrently with ours.  Returns false only if there is no device type.
+        bool createDeviceWorkers (const std::vector<DeviceSpec>& devices);
+
         // (Re)start the engine with the given devices (and optional app-audio
-        // capture sources). Returns true if all opened.
+        // capture sources). Returns true if all opened.  REQUIRES a matching
+        // createDeviceWorkers(devices) call on the message thread first; runs on the
+        // reconfigure worker thread and opens those pre-created devices.
         bool start (const std::vector<DeviceSpec>& devices,
             const std::vector<AppInputSpec>& appInputs);
         bool start (const std::vector<DeviceSpec>& devices) { return start (devices, {}); }
@@ -288,24 +300,33 @@ namespace dcr
         std::vector<int> computePerOutputPluginLatencySamples() const;
 
         std::unique_ptr<juce::AudioIODeviceType> deviceType;
-        // Serialises ALL access to `deviceType` (scanForDevices / getDeviceNames).
-        // juce::CoreAudioIODeviceType is NOT thread-safe: the message-thread
-        // device-change listener (audioDeviceListChanged -> scanForDevices) can fire
-        // while a threaded reconfigure (applyDeviceSelection -> start -> scanForDevices)
-        // is running -- e.g. tearing down an app-tap aggregate fires a HAL device-change
-        // notification mid-reconfigure -- and two concurrent scans realloc the same
-        // device array -> heap corruption / abort.  Re-entrant (a scan that re-notifies
-        // on the same thread won't self-deadlock).
+        // juce::CoreAudioIODeviceType is NOT thread-safe AND rescans itself on the
+        // message thread (its own AsyncUpdater) on every hardware change.  The fix
+        // for the historic heap corruption is structural: ALL of our deviceType
+        // access (ctor, audioDeviceListChanged, createDeviceWorkers, getDeviceNames)
+        // runs on the MESSAGE THREAD, so it can never run concurrently with JUCE's
+        // internal scan.  start() (worker thread) only OPENS pre-created devices and
+        // never touches deviceType.  This lock is now belt-and-suspenders for the
+        // message-thread accessors (a no-op when there's no contender); kept rather
+        // than removed so any future off-thread caller still can't realloc the
+        // device array mid-scan.  Re-entrant (a scan that re-notifies on the same
+        // thread won't self-deadlock).
         mutable juce::CriticalSection deviceScanLock;
-        // True while start() is scanning + opening devices on the reconfigure worker
-        // thread.  The message-thread device-change listener checks this and skips its
-        // own scan during that window: the reconfigure both scans AND createDevice()s
-        // on `deviceType`, none of which is thread-safe, so a concurrent listener scan
-        // (fired by e.g. an app-tap aggregate teardown) corrupts the heap.
+        // True while a reconfigure is tearing down / rebuilding the engine on the
+        // worker thread.  The message-thread device-change listener checks this and
+        // skips its own redundant rescan + onDeviceListChanged during that window
+        // (the reconfigure already staged a fresh device list via
+        // createDeviceWorkers).  No longer a heap-safety guard -- that is now
+        // provided by message-thread confinement above -- just churn avoidance.
         std::atomic<bool> deviceReconfigInProgress { false };
         EngineSettings settings;
 
         std::vector<std::unique_ptr<DeviceWorker>> workers;
+        // Devices created on the message thread by createDeviceWorkers(), waiting to
+        // be opened by start() on the worker thread.  Aligned 1:1 with the DeviceSpec
+        // list passed to both calls (a failed createDevice leaves hasDevice()==false
+        // in its slot).  Consumed (moved out / cleared) by start().
+        std::vector<std::unique_ptr<DeviceWorker>> pendingWorkers;
         std::vector<std::unique_ptr<AppAudioWorker>> appWorkers;
         std::vector<AppInputSpec> appInputSpecs; // remembered across start()
         std::vector<std::unique_ptr<PluginHost>> pluginHosts; // one per output channel

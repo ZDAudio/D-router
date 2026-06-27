@@ -23,22 +23,39 @@ namespace dcr
 
     DeviceWorker::~DeviceWorker() { close(); }
 
-    bool DeviceWorker::open (const EngineSettings& settings)
+    bool DeviceWorker::createDevice()
     {
+        // MESSAGE THREAD ONLY (see header).  CoreAudioIODeviceType::createDevice()
+        // reads the device-type's shared, non-thread-safe device arrays -- the same
+        // ones JUCE rescans on the message thread on a hardware change.  Confining
+        // this to the message thread is what serialises it against that scan.
+        JUCE_ASSERT_MESSAGE_THREAD;
         close();
-        engineRate = settings.engineSampleRate;
-        engineBlockSamples = settings.engineBlockSize;
-        const double engineSampleRate = settings.engineSampleRate;
-        const int engineBlockSize = settings.engineBlockSize;
-
-        juce::String inName = wantsInput ? requestedName : juce::String {};
-        juce::String outName = wantsOutput ? requestedName : juce::String {};
+        const juce::String inName = wantsInput ? requestedName : juce::String {};
+        const juce::String outName = wantsOutput ? requestedName : juce::String {};
         device.reset (deviceType.createDevice (outName, inName));
         if (device == nullptr)
         {
             lastError = "createDevice failed for " + requestedName;
             return false;
         }
+        return true;
+    }
+
+    bool DeviceWorker::open (const EngineSettings& settings)
+    {
+        // The device must already exist -- createDevice() ran on the message thread.
+        // open() (worker thread) never touches the shared deviceType, so it can't
+        // race the message-thread device-list scan that used to corrupt the heap.
+        if (device == nullptr)
+        {
+            lastError = "open() before createDevice() for " + requestedName;
+            return false;
+        }
+        engineRate = settings.engineSampleRate;
+        engineBlockSamples = settings.engineBlockSize;
+        const double engineSampleRate = settings.engineSampleRate;
+        const int engineBlockSize = settings.engineBlockSize;
 
         // Build channel bitmasks: all-on for whichever direction we want.
         auto inputChannels = device->getInputChannelNames();
@@ -79,7 +96,12 @@ namespace dcr
         if (err.isNotEmpty())
         {
             lastError = err;
-            device.reset();
+            // Keep the (created) wrapper alive: this is the transient "HAL still
+            // releasing the physical device" failure the caller retries with a
+            // bounded sleep (see AudioEngine::start).  Recreating the device would
+            // need the message thread, so we re-attempt device->open() on the same
+            // wrapper instead.  No rings were allocated yet (that's below), so
+            // there's nothing to tear down here.
             return false;
         }
 
