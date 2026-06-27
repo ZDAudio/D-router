@@ -584,6 +584,18 @@ namespace dcr
         const double blockPeriodSec = (double) blockSize / juce::jmax (1.0, sampleRate);
         setRealtimeSchedule (blockPeriodSec);
 
+        // Flush-to-zero / denormals-are-zero for this thread's entire lifetime.
+        // The mix math on this thread generates subnormals every block: the
+        // per-output fader smoothing (cur += (tgt - cur) * coeff) asymptotes
+        // toward its target, so the difference decays into the denormal range
+        // and parks there for any fader/trim held at a non-trivial gain; the
+        // input gain ramps and crosspoint accumulation do the same.  On Intel a
+        // single denormal op triggers the ~100x FPU stall -- cheap insurance to
+        // keep the whole drain loop out of it.  (Builtin plugins set their own
+        // ScopedNoDenormals; this covers OUR arithmetic, not theirs.)  RAII:
+        // stays engaged until run() returns.
+        const juce::ScopedNoDenormals noDenormals;
+
         // Event-driven: block on inputReady (signalled by each input device
         // callback after it writes a fresh block) instead of sleep-polling.  The
         // wait has a timeout fallback so a missed/coalesced signal still makes
