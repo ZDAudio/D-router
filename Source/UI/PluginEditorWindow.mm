@@ -1,6 +1,7 @@
 #include "UI/PluginEditorWindow.h"
 
 #if JUCE_MAC
+#import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
 #endif
 
@@ -55,6 +56,37 @@ juce::AudioProcessorEditor* createEditorDefensively(juce::AudioPluginInstance& p
     }
 #endif
 }
+
+// Hosts a fixed-size plugin editor and scales it with an AffineTransform so the
+// window can be freely resized while the plugin's native aspect ratio is kept.
+// The editor keeps its natural logical bounds; only the transform changes.  We
+// do NOT own the editor (PluginEditorWindow's unique_ptr does); destroying the
+// editor first is safe because Component's dtor removes it from us.
+class ScaledEditorHolder : public juce::Component
+{
+   public:
+    ScaledEditorHolder(juce::AudioProcessorEditor& e, int nW, int nH)
+        : editor(e), natW(juce::jmax(1, nW)), natH(juce::jmax(1, nH))
+    {
+        setInterceptsMouseClicks(false, true);
+        addAndMakeVisible(editor);
+        editor.setTopLeftPosition(0, 0);
+        setSize(natW, natH);
+    }
+
+    void resized() override
+    {
+        // Aspect ratio is locked by the window constrainer, so width drives the
+        // scale and height follows.
+        const double s = (double)getWidth() / (double)natW;
+        editor.setTransform(juce::AffineTransform::scale((float)s));
+        editor.setBounds(0, 0, natW, natH);
+    }
+
+   private:
+    juce::AudioProcessorEditor& editor;
+    int natW, natH;
+};
 } // namespace
 
 void PluginEditorWindow::ParameterLink::audioProcessorParameterChanged(
@@ -141,15 +173,18 @@ PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& p,
         // though the first one (no plugin attached yet) was fine.
         //
         // Trick instead: leave setResizable(true) from the ctor preamble
-        // and use setResizeLimits to express "this plugin's editor can /
-        // can't be resized".  setResizeLimits doesn't touch the desktop.
-        setContentNonOwned(ed, true); // resizes window to editor's natural size
-
+        // and express resize policy through the window's existing default
+        // constrainer (setResizeLimits / getConstrainer()) -- those do not
+        // touch the desktop.  setConstrainer() WOULD (it re-runs
+        // setResizable), so we never swap the constrainer pointer.
         const int natW = juce::jmax(1, ed->getWidth());
         const int natH = juce::jmax(1, ed->getHeight());
 
         if (ed->isResizable())
         {
+            // Plugin manages its own resizing -- host it directly and honour
+            // its own constrainer (unchanged behaviour).
+            setContentNonOwned(ed, true); // resizes window to editor's natural size
             if (auto* c = ed->getConstrainer())
             {
                 const int minW = juce::jmax(1, c->getMinimumWidth());
@@ -167,10 +202,17 @@ PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& p,
         }
         else
         {
-            // Fixed-size plugin: lock the window to the natural size by
-            // setting min == max.  No setResizable(false) call -- it
-            // would addToDesktop again.
-            setResizeLimits(natW, natH, natW, natH);
+            // Fixed-size plugin: wrap it in a scaling holder so the user can
+            // resize the window with the native aspect ratio locked.  The
+            // plugin can't relayout, so we scale its view via AffineTransform.
+            editorHolder = std::make_unique<ScaledEditorHolder>(*ed, natW, natH);
+            setContentNonOwned(editorHolder.get(), true);
+
+            const int minW = juce::jmax(1, juce::roundToInt(natW * 0.4));
+            const int minH = juce::jmax(1, juce::roundToInt(natH * 0.4));
+            setResizeLimits(minW, minH, natW * 3, natH * 3);
+            if (auto* c = getConstrainer())
+                c->setFixedAspectRatio((double)natW / (double)natH);
         }
         centreWithSize(getWidth(), getHeight());
     };
@@ -189,6 +231,19 @@ PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& p,
     }
 #else
     installEditor(editor.get());
+#endif
+
+#if JUCE_MAC
+    // Some hosts/plugins leave the window with a full-size content view, which
+    // lets the plugin's top row slide under the native title bar.  Clear that
+    // style so JUCE's content sits fully below the title bar.
+    if (auto* peer = getPeer())
+        if (auto* nsv = (NSView*)peer->getNativeHandle())
+            if (NSWindow* win = [nsv window])
+            {
+                win.styleMask &= ~NSWindowStyleMaskFullSizeContentView;
+                win.titlebarAppearsTransparent = NO;
+            }
 #endif
 }
 
@@ -214,8 +269,9 @@ PluginEditorWindow::~PluginEditorWindow()
     // that kills every audio route.
     @try
     {
-        clearContentComponent(); // detach the (live) editor from the window
-        editor.reset();          // then destroy it
+        clearContentComponent(); // detach the (live) editor/holder from the window
+        editorHolder.reset();    // drop the holder (editor is still alive here)
+        editor.reset();          // then destroy the editor itself
     }
     @catch (NSException* ex)
     {
@@ -225,6 +281,7 @@ PluginEditorWindow::~PluginEditorWindow()
     }
 #else
     clearContentComponent();
+    editorHolder.reset();
     editor.reset();
 #endif
 }

@@ -53,6 +53,11 @@ namespace dcr
         std::unique_ptr<juce::AudioProcessorEditor> editor;
         std::function<void()> onClose;
         std::unique_ptr<ParameterLink> paramLink;
+
+        // Fixed-size plugins are wrapped in a holder that scales the editor via
+        // an AffineTransform so the window can be resized with the plugin's
+        // native aspect ratio locked.  Null for self-resizing plugins.
+        std::unique_ptr<juce::Component> editorHolder;
     };
 
 } // namespace dcr
