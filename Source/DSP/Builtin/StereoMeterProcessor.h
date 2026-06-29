@@ -50,6 +50,9 @@ namespace dcr::builtin
             l.add (std::make_unique<juce::AudioParameterInt> (juce::ParameterID { "trailDepth", 1 }, "Trail", 1, 30, 10));
             l.add (std::make_unique<P> (juce::ParameterID { "trailDecay", 1 }, "Trail fade", R (0.50f, 0.97f, 0.01f), 0.80f));
             l.add (std::make_unique<P> (juce::ParameterID { "stemAmount", 1 }, "Stems", R (0.0f, 1.0f, 0.01f), 0.0f));
+            // View mode: 0 = 3D orbit (default), 1 = Front (pan x freq, flat),
+            // 2 = RTA (freq x level, parallel projection).
+            l.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "viewMode", 1 }, "View", juce::StringArray { "3D", "Front", "RTA" }, 0));
             return l;
         }
 

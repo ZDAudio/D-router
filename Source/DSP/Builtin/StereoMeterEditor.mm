@@ -68,6 +68,18 @@ matrix_float4x4 perspective(float fovy, float aspect, float n, float f)
     return m;
 }
 
+// Parallel (orthographic) projection for the 2D Front / RTA modes -- maps the
+// box [l,r]x[b,t]x[n,f] straight to clip space with no perspective divide.
+matrix_float4x4 ortho(float l, float r, float b, float t, float n, float f)
+{
+    matrix_float4x4 m = matrix_identity_float4x4;
+    m.columns[0] = (simd_float4){2.0f / (r - l), 0, 0, 0};
+    m.columns[1] = (simd_float4){0, 2.0f / (t - b), 0, 0};
+    m.columns[2] = (simd_float4){0, 0, 1.0f / (n - f), 0};
+    m.columns[3] = (simd_float4){-(r + l) / (r - l), -(t + b) / (t - b), n / (n - f), 1};
+    return m;
+}
+
 matrix_float4x4 lookAt(simd_float3 eye, simd_float3 centre, simd_float3 up)
 {
     const simd_float3 fwd = simd_normalize(centre - eye);
@@ -176,6 +188,8 @@ fragment float4 label_fs(TLOut in [[stage_in]],
 @property (nonatomic) float camYaw;
 @property (nonatomic) float camPitch;
 @property (nonatomic) float camDist;
+@property (nonatomic) int viewMode;    // 0=3D 1=Front 2=RTA
+@property (nonatomic) float orthoZoom; // 2D zoom factor
 @end
 
 @implementation DCRScatterMTKView
@@ -186,6 +200,8 @@ fragment float4 label_fs(TLOut in [[stage_in]],
         _camYaw = 0.6f;
         _camPitch = -0.35f;
         _camDist = 3.6f;
+        _viewMode = 0;
+        _orthoZoom = 1.0f;
     }
     return self;
 }
@@ -199,6 +215,8 @@ fragment float4 label_fs(TLOut in [[stage_in]],
 }
 - (void)mouseDragged:(NSEvent*)e
 {
+    if (_viewMode != 0)
+        return;                         // orbit only in 3D; the 2D views are fixed parallel projections
     _camYaw -= (float)e.deltaX * 0.01f; // drag right → scene rotates right
     _camPitch += (float)e.deltaY * 0.01f;
     const float lim = 1.5f;
@@ -207,8 +225,16 @@ fragment float4 label_fs(TLOut in [[stage_in]],
 }
 - (void)scrollWheel:(NSEvent*)e
 {
-    _camDist *= (1.0f - (float)e.scrollingDeltaY * 0.02f);
-    _camDist = std::max(1.4f, std::min(12.0f, _camDist));
+    if (_viewMode == 0)
+    {
+        _camDist *= (1.0f - (float)e.scrollingDeltaY * 0.02f);
+        _camDist = std::max(1.4f, std::min(12.0f, _camDist));
+    }
+    else
+    {
+        _orthoZoom *= (1.0f + (float)e.scrollingDeltaY * 0.02f);
+        _orthoZoom = std::max(0.4f, std::min(3.0f, _orthoZoom));
+    }
     [self setNeedsDisplay:YES];
 }
 @end
@@ -219,7 +245,7 @@ fragment float4 label_fs(TLOut in [[stage_in]],
 - (void)pushPoints:(const PointVertex*)pts count:(NSUInteger)count;
 - (void)setStems:(const LineVertex*)lines count:(NSUInteger)count;
 - (void)setTrailDepth:(int)depth decay:(float)decay;
-- (void)buildFreqAxisWithNyquist:(double)nyquist;
+- (void)buildAxisForMode:(int)mode nyquist:(double)nyquist floorDb:(float)floorDb ceilDb:(float)ceilDb;
 - (void)setAxisOpacity:(float)opacity;
 @end
 
@@ -243,7 +269,8 @@ fragment float4 label_fs(TLOut in [[stage_in]],
     NSUInteger _freqAxisCount;
     id<MTLBuffer> _labelQuadBuf;
     id<MTLTexture> _labelTex[kMaxLabels];
-    float _labelY[kMaxLabels];
+    float _labelAX[kMaxLabels];
+    float _labelAY[kMaxLabels];
     float _labelAspect[kMaxLabels];
     int _labelCount;
     float _axisOpacity;
@@ -369,7 +396,7 @@ fragment float4 label_fs(TLOut in [[stage_in]],
     _axisOpacity = std::max(0.0f, std::min(1.0f, opacity));
 }
 
-- (void)buildFreqAxisWithNyquist:(double)nyquist
+- (void)buildAxisForMode:(int)mode nyquist:(double)nyquist floorDb:(float)floorDb ceilDb:(float)ceilDb
 {
     struct Tick
     {
@@ -389,20 +416,26 @@ fragment float4 label_fs(TLOut in [[stage_in]],
     const float col[4] = {0.0f, 1.0f, 0.82f, 0.7f}; // theme cyan; alpha scaled by axisOpacity at draw
     std::vector<LineVertex> lv;
     _labelCount = 0;
-    for (auto& t : ticks)
+
+    auto addLabel = [&](const juce::String& text, float ax, float ay)
     {
-        if (t.hz >= (float)nyquist)
-            continue;
-        const float yN =
-            2.0f * dcr::builtin::freqToNorm(t.hz, 20.0f, (float)nyquist) - 1.0f;
-        const bool major = (t.label != nullptr);
-        const float len = major ? 0.16f : 0.08f;
+        if (_labelCount >= kMaxLabels)
+            return;
+        float aspect = 1.0f;
+        _labelTex[_labelCount] = makeLabelTexture(_device, text, aspect);
+        _labelAX[_labelCount] = ax;
+        _labelAY[_labelCount] = ay;
+        _labelAspect[_labelCount] = aspect;
+        ++_labelCount;
+    };
+    auto addTick = [&](float x0, float y0, float x1, float y1)
+    {
         LineVertex a, b;
-        a.pos[0] = kFreqAxisX;
-        a.pos[1] = yN;
+        a.pos[0] = x0;
+        a.pos[1] = y0;
         a.pos[2] = 0.0f;
-        b.pos[0] = kFreqAxisX + len;
-        b.pos[1] = yN;
+        b.pos[0] = x1;
+        b.pos[1] = y1;
         b.pos[2] = 0.0f;
         for (int k = 0; k < 4; ++k)
         {
@@ -411,16 +444,43 @@ fragment float4 label_fs(TLOut in [[stage_in]],
         }
         lv.push_back(a);
         lv.push_back(b);
-        if (major && _labelCount < kMaxLabels)
+    };
+
+    if (mode == 2) // RTA: frequency on the horizontal axis, level on the vertical.
+    {
+        for (auto& t : ticks)
         {
-            float aspect = 1.0f;
-            _labelTex[_labelCount] =
-                makeLabelTexture(_device, juce::String(t.label), aspect);
-            _labelY[_labelCount] = yN;
-            _labelAspect[_labelCount] = aspect;
-            ++_labelCount;
+            if (t.hz >= (float)nyquist)
+                continue;
+            const float xN = 2.0f * dcr::builtin::freqToNorm(t.hz, 20.0f, (float)nyquist) - 1.0f;
+            const bool major = (t.label != nullptr);
+            const float len = major ? 0.16f : 0.08f;
+            addTick(xN, -1.0f, xN, -1.0f + len);
+            if (major)
+                addLabel(juce::String(t.label), xN, -1.08f);
+        }
+        // Vertical dB scale: ceiling (top), midpoint, floor (bottom).
+        const float midDb = 0.5f * (floorDb + ceilDb);
+        addLabel(juce::String(juce::roundToInt(ceilDb)), -1.12f, 1.0f);
+        addLabel(juce::String(juce::roundToInt(midDb)), -1.12f, 0.0f);
+        addLabel(juce::String(juce::roundToInt(floorDb)), -1.12f, -1.0f);
+        addTick(-1.0f, 0.0f, -0.92f, 0.0f); // mid gridline stub
+    }
+    else // 3D / Front: frequency on the vertical axis at the left edge.
+    {
+        for (auto& t : ticks)
+        {
+            if (t.hz >= (float)nyquist)
+                continue;
+            const float yN = 2.0f * dcr::builtin::freqToNorm(t.hz, 20.0f, (float)nyquist) - 1.0f;
+            const bool major = (t.label != nullptr);
+            const float len = major ? 0.16f : 0.08f;
+            addTick(kFreqAxisX, yN, kFreqAxisX + len, yN);
+            if (major)
+                addLabel(juce::String(t.label), kFreqAxisX - 0.14f, yN);
         }
     }
+
     _freqAxisCount = lv.size();
     _freqAxisBuf = lv.empty() ? nil
                               : [_device newBufferWithBytes:lv.data()
@@ -443,19 +503,31 @@ fragment float4 label_fs(TLOut in [[stage_in]],
     const CGSize ds = view.drawableSize;
     const float aspect = ds.height > 0 ? (float)(ds.width / ds.height) : 1.0f;
 
-    const simd_float3 target = {0, 0, kZScale * 0.4f};
-    const simd_float3 dir = {std::cos(sv.camPitch) * std::sin(sv.camYaw),
-                             std::sin(sv.camPitch),
-                             std::cos(sv.camPitch) * std::cos(sv.camYaw)};
-    const simd_float3 eye = target + sv.camDist * dir;
-    const simd_float3 camFwd = simd_normalize(target - eye);
-    const simd_float3 camRight =
-        simd_normalize(simd_cross(camFwd, (simd_float3){0, 1, 0}));
-    const simd_float3 camUp = simd_cross(camRight, camFwd);
-
+    simd_float3 camRight, camUp;
     Uniforms u;
-    u.mvp = matrix_multiply(perspective(1.0f, aspect, 0.05f, 100.0f),
-                            lookAt(eye, target, (simd_float3){0, 1, 0}));
+    if (sv.viewMode == 0)
+    {
+        const simd_float3 target = {0, 0, kZScale * 0.4f};
+        const simd_float3 dir = {std::cos(sv.camPitch) * std::sin(sv.camYaw),
+                                 std::sin(sv.camPitch),
+                                 std::cos(sv.camPitch) * std::cos(sv.camYaw)};
+        const simd_float3 eye = target + sv.camDist * dir;
+        const simd_float3 camFwd = simd_normalize(target - eye);
+        camRight = simd_normalize(simd_cross(camFwd, (simd_float3){0, 1, 0}));
+        camUp = simd_cross(camRight, camFwd);
+        u.mvp = matrix_multiply(perspective(1.0f, aspect, 0.05f, 100.0f),
+                                lookAt(eye, target, (simd_float3){0, 1, 0}));
+    }
+    else
+    {
+        // 2D parallel projection, fixed front-on camera (looking down -Z).
+        const float z = sv.orthoZoom > 0.0f ? sv.orthoZoom : 1.0f;
+        const float halfH = 1.25f / z;
+        const float halfW = halfH * aspect;
+        u.mvp = ortho(-halfW, halfW, -halfH, halfH, -10.0f, 10.0f);
+        camRight = (simd_float3){1, 0, 0};
+        camUp = (simd_float3){0, 1, 0};
+    }
     const CGFloat bw = view.bounds.size.width;
     u.pixelScale = bw > 0 ? (float)(ds.width / bw) : 2.0f;
     u.alphaMul = 1.0f;
@@ -511,7 +583,7 @@ fragment float4 label_fs(TLOut in [[stage_in]],
         {
             const float hh = kLabelHalfH;
             const float hw = hh * _labelAspect[i];
-            const simd_float3 anchor = {kFreqAxisX - 0.14f, _labelY[i], 0.0f};
+            const simd_float3 anchor = {_labelAX[i], _labelAY[i], 0.0f};
             auto setc = [&](int j, float sx, float sy, float uu, float vv)
             {
                 const simd_float3 p = anchor + camRight * (sx * hw) + camUp * (sy * hh);
@@ -591,7 +663,7 @@ class StereoControls : public juce::Component
             addAndMakeVisible(labels[i]);
             atts[i] = std::make_unique<Attach>(s, defs[i].id, sliders[i]);
         }
-        legend.setText("X = Pan (L <-> R)   Y = Frequency\nZ = Level   colour = phase (red anti / green in)\nDrag = orbit   Scroll = zoom",
+        legend.setText("3D: X=Pan Y=Freq Z=Level (drag = orbit)\nFront: Pan x Freq    RTA: Freq x Level\ncolour = phase (red anti / green in)   scroll = zoom",
                        juce::dontSendNotification);
         legend.setJustificationType(juce::Justification::topLeft);
         legend.setFont(juce::FontOptions(10.0f));
@@ -605,6 +677,33 @@ class StereoControls : public juce::Component
         { proc.saveUserDefault(); };
         resetBtn.onClick = [this]
         { proc.resetToFactory(); };
+
+        // View-mode selector: 3 segmented buttons bound to the "viewMode" choice.
+        viewParam = dynamic_cast<juce::AudioParameterChoice*>(s.getParameter("viewMode"));
+        static const char* segNames[3] = {"3D", "Front", "RTA"};
+        for (int i = 0; i < 3; ++i)
+        {
+            seg[i].setButtonText(segNames[i]);
+            seg[i].setClickingTogglesState(true);
+            seg[i].setRadioGroupId(9201);
+            seg[i].setConnectedEdges(((i > 0) ? juce::Button::ConnectedOnLeft : 0) | ((i < 2) ? juce::Button::ConnectedOnRight : 0));
+            addAndMakeVisible(seg[i]);
+            seg[i].onClick = [this, i]
+            {
+                if (viewParam != nullptr)
+                    *viewParam = i;
+            };
+        }
+        syncViewSeg();
+    }
+
+    // Keep the segmented buttons in sync with the parameter (e.g. after a
+    // snapshot restore or Reset). Called from the editor's 60 Hz timer.
+    void syncViewSeg()
+    {
+        const int idx = viewParam != nullptr ? viewParam->getIndex() : 0;
+        for (int i = 0; i < 3; ++i)
+            seg[i].setToggleState(i == idx, juce::dontSendNotification);
     }
 
     void paint(juce::Graphics& g) override
@@ -620,6 +719,10 @@ class StereoControls : public juce::Component
         auto top = full.removeFromTop(24);
         saveBtn.setBounds(top.removeFromLeft(top.getWidth() / 2).reduced(2, 0));
         resetBtn.setBounds(top.reduced(2, 0));
+        full.removeFromTop(6);
+        auto segRow = full.removeFromTop(22);
+        for (int i = 0; i < 3; ++i)
+            seg[i].setBounds(segRow.removeFromLeft(segRow.getWidth() / (3 - i)));
         full.removeFromTop(6);
         auto r = full;
         legend.setBounds(r.removeFromBottom(84));
@@ -637,6 +740,8 @@ class StereoControls : public juce::Component
     using Attach = juce::AudioProcessorValueTreeState::SliderAttachment;
     StereoMeterProcessor& proc;
     juce::TextButton saveBtn, resetBtn;
+    juce::TextButton seg[3];
+    juce::AudioParameterChoice* viewParam = nullptr;
     juce::Slider sliders[kN];
     juce::Label labels[kN];
     juce::Label legend;
@@ -652,6 +757,8 @@ struct StereoMeterEditor::Impl : private juce::Timer
     std::vector<PointVertex> pts;
     std::vector<LineVertex> stems;
     float nyquistHz = 24000.0f;
+    int lastViewMode = -1;
+    float lastFloor = 1.0f, lastCeil = 1.0f;
 
     id<MTLDevice> device = nil;
     DCRScatterMTKView* view = nil;
@@ -677,7 +784,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         view.enableSetNeedsDisplay = YES;
         renderer = [[DCRScatterRenderer alloc] initWithDevice:device view:view];
         view.delegate = renderer;
-        [renderer buildFreqAxisWithNyquist:(double)nyquistHz];
+        [renderer buildAxisForMode:0 nyquist:(double)nyquistHz floorDb:-60.0f ceilDb:0.0f];
 
         nsView.setView((__bridge void*)view);
         controls = std::make_unique<StereoControls>(p);
@@ -748,8 +855,21 @@ struct StereoMeterEditor::Impl : private juce::Timer
         const int pTrailDepth = (int)s.getRawParameterValue("trailDepth")->load();
         const float pTrailDecay = s.getRawParameterValue("trailDecay")->load();
         const float pStemAmount = s.getRawParameterValue("stemAmount")->load();
+        const int pView = (int)s.getRawParameterValue("viewMode")->load();
         analyzer.setIntensityRange(pFloor, pCeil);
         analyzer.setSmoothing(pSmooth);
+
+        // Push the view mode to the Metal view, keep the selector synced, and
+        // rebuild the axis when the mode (or, in RTA, the dB window) changes.
+        view.viewMode = pView;
+        controls->syncViewSeg();
+        if (pView != lastViewMode || (pView == 2 && (pFloor != lastFloor || pCeil != lastCeil)))
+        {
+            [renderer buildAxisForMode:pView nyquist:(double)nyquistHz floorDb:pFloor ceilDb:pCeil];
+            lastViewMode = pView;
+            lastFloor = pFloor;
+            lastCeil = pCeil;
+        }
 
         analyzer.process(winL.data(), winR.data(), frame);
 
@@ -790,9 +910,24 @@ struct StereoMeterEditor::Impl : private juce::Timer
             }
 
             PointVertex pv;
-            pv.pos[0] = pan;
-            pv.pos[1] = yN;
-            pv.pos[2] = z;
+            if (pView == 2) // RTA: X = freq, Y = level
+            {
+                pv.pos[0] = yN;
+                pv.pos[1] = 2.0f * it - 1.0f;
+                pv.pos[2] = 0.0f;
+            }
+            else if (pView == 1) // Front: X = pan, Y = freq (flat)
+            {
+                pv.pos[0] = pan;
+                pv.pos[1] = yN;
+                pv.pos[2] = 0.0f;
+            }
+            else // 3D
+            {
+                pv.pos[0] = pan;
+                pv.pos[1] = yN;
+                pv.pos[2] = z;
+            }
             pv.color[0] = r;
             pv.color[1] = gg;
             pv.color[2] = b;
@@ -800,7 +935,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
             pv.size = pPointMin + it * (pPointMax - pPointMin);
             pts.push_back(pv);
 
-            if (wantStems)
+            if (wantStems && pView == 0) // stems only meaningful in the 3D view
             {
                 const float sa = pStemAmount * it;
                 LineVertex lo, hi;
