@@ -643,6 +643,7 @@ class StereoControls : public juce::Component
             {"ceilDb", "Ceiling (dB)"},
             {"highLift", "High lift"},
             {"liftPivot", "Lift pivot"},
+            {"liftKnee", "Smooth"},
             {"pointMin", "Min size"},
             {"pointMax", "Max size"},
             {"heightScale", "Height"},
@@ -736,7 +737,7 @@ class StereoControls : public juce::Component
     }
 
    private:
-    static constexpr int kN = 13;
+    static constexpr int kN = 14;
     using Attach = juce::AudioProcessorValueTreeState::SliderAttachment;
     StereoMeterProcessor& proc;
     juce::TextButton saveBtn, resetBtn;
@@ -847,6 +848,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
         const float pCeil = s.getRawParameterValue("ceilDb")->load();
         const float pHighLift = s.getRawParameterValue("highLift")->load();
         const float pLiftPivot = s.getRawParameterValue("liftPivot")->load();
+        const float pLiftKnee = s.getRawParameterValue("liftKnee")->load();
         const float pPointMin = s.getRawParameterValue("pointMin")->load();
         const float pPointMax = s.getRawParameterValue("pointMax")->load();
         const float pHeight = s.getRawParameterValue("heightScale")->load();
@@ -884,7 +886,7 @@ struct StereoMeterEditor::Impl : private juce::Timer
             const float intensity = frame.ints[(size_t)i];
             const float freqNorm = N > 1 ? (float)i / (float)(N - 1) : 0.0f; // 0 low → 1 high (Y axis)
             // HF tilt: lift only true highs (flat below the pivot) so bass/mids stay put.
-            const float gain = dcr::builtin::highLiftGain(frame.freqs[(size_t)i], pLiftPivot, nyquistHz, pHighLift);
+            const float gain = dcr::builtin::highLiftGain(frame.freqs[(size_t)i], pLiftPivot, nyquistHz, pHighLift, pLiftKnee);
             const float it = std::min(1.0f, intensity * gain);
             if (it <= 0.01f)
                 continue; // gate silence

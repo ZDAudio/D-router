@@ -744,6 +744,29 @@ namespace
         CHECK (g20k <= 1.0f + 0.5f * dcr::builtin::kHighLiftMax + 1e-4f);
     }
 
+    void test_stereometer_high_lift_knee()
+    {
+        using dcr::builtin::highLiftGain;
+        const float nyq = 24000.0f, pivot = 2000.0f, str = 0.5f;
+        // knee == 0 reproduces the hard knee (flat at/below the pivot).
+        CHECK (std::abs (highLiftGain (1000.0f, pivot, nyq, str, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (2000.0f, pivot, nyq, str, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (8000.0f, pivot, nyq, str, 0.0f)
+                         - highLiftGain (8000.0f, pivot, nyq, str))
+               < 1e-5f); // default arg == hard knee
+        // knee > 0 rounds the corner: a touch of lift AT and just BELOW the pivot.
+        CHECK (highLiftGain (2000.0f, pivot, nyq, str, 0.5f) > 1.0f);
+        CHECK (highLiftGain (1500.0f, pivot, nyq, str, 0.5f) > 1.0f);
+        // still monotonic in frequency with a knee.
+        CHECK (highLiftGain (3000.0f, pivot, nyq, str, 0.5f)
+               < highLiftGain (12000.0f, pivot, nyq, str, 0.5f));
+        // and never exceeds the hard ceiling 1 + strength*kHighLiftMax.
+        CHECK (highLiftGain (20000.0f, pivot, nyq, str, 1.0f)
+               <= 1.0f + str * dcr::builtin::kHighLiftMax + 1e-4f);
+        // strength 0 -> no lift regardless of knee.
+        CHECK (std::abs (highLiftGain (8000.0f, pivot, nyq, 0.0f, 0.8f) - 1.0f) < 1e-5f);
+    }
+
     void test_stereometer_db_to_norm_y()
     {
         using dcr::builtin::dbToNormY;
@@ -1151,6 +1174,7 @@ int main()
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
+    test_stereometer_high_lift_knee();
     test_stereometer_db_to_norm_y();
     test_recorder_naming();
     test_recorder_channel_count();

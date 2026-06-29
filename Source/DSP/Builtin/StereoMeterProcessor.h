@@ -41,6 +41,9 @@ namespace dcr::builtin
                 pivotRange.setSkewForCentre (1500.0f);
                 l.add (std::make_unique<P> (juce::ParameterID { "liftPivot", 1 }, "Lift pivot", pivotRange, 2000.0f, A().withLabel ("Hz")));
             }
+            // Knee smoothing for the HF tilt: 0 = hard corner at the pivot,
+            // higher rounds it (StereoMeterMath::highLiftGain softplus).
+            l.add (std::make_unique<P> (juce::ParameterID { "liftKnee", 1 }, "Smooth", R (0.0f, 1.0f, 0.01f), 0.3f));
             l.add (std::make_unique<P> (juce::ParameterID { "pointMin", 1 }, "Min size", R (1.0f, 16.0f, 0.5f), 4.0f));
             l.add (std::make_unique<P> (juce::ParameterID { "pointMax", 1 }, "Max size", R (8.0f, 60.0f, 0.5f), 30.0f));
             l.add (std::make_unique<P> (juce::ParameterID { "heightScale", 1 }, "Height", R (0.3f, 2.5f, 0.01f), 1.0f));
