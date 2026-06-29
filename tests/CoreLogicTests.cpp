@@ -744,6 +744,20 @@ namespace
         CHECK (g20k <= 1.0f + 0.5f * dcr::builtin::kHighLiftMax + 1e-4f);
     }
 
+    void test_stereometer_db_to_norm_y()
+    {
+        using dcr::builtin::dbToNormY;
+        // ceiling -> +1 (top), floor -> -1 (bottom), midpoint -> 0.
+        CHECK (std::abs (dbToNormY (0.0f, -60.0f, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (dbToNormY (-60.0f, -60.0f, 0.0f) - (-1.0f)) < 1e-5f);
+        CHECK (std::abs (dbToNormY (-30.0f, -60.0f, 0.0f) - 0.0f) < 1e-5f);
+        // clamps outside the window.
+        CHECK (dbToNormY (10.0f, -60.0f, 0.0f) == 1.0f);
+        CHECK (dbToNormY (-90.0f, -60.0f, 0.0f) == -1.0f);
+        // degenerate range stays finite (no divide-by-zero).
+        CHECK (dbToNormY (-30.0f, -30.0f, -30.0f) == -1.0f);
+    }
+
     // Spectral node-curve preset restore is an untrusted surface: a hand-edited or
     // corrupt blob can carry NaN/Inf or a wild value, which would latch into the
     // per-bin smoother and poison the FFT output with NaN forever.  sanitizeNodeDb
@@ -1137,6 +1151,7 @@ int main()
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
+    test_stereometer_db_to_norm_y();
     test_recorder_naming();
     test_recorder_channel_count();
 

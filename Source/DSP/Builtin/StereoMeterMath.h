@@ -34,4 +34,16 @@ namespace dcr::builtin
         return 1.0f + strength * tc * kHighLiftMax;
     }
 
+    // Map a dB value within [floorDb, ceilDb] to a vertical screen coordinate in
+    // [-1, 1] (floor -> -1 bottom, ceil -> +1 top), clamped.  Used by the RTA
+    // (side) view's level axis.  JUCE-free so it links into the test target.
+    inline float dbToNormY (float db, float floorDb, float ceilDb) noexcept
+    {
+        if (ceilDb <= floorDb)
+            return -1.0f;
+        const float t = (db - floorDb) / (ceilDb - floorDb);
+        const float tc = std::min (1.0f, std::max (0.0f, t));
+        return 2.0f * tc - 1.0f;
+    }
+
 } // namespace dcr::builtin
