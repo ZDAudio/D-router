@@ -3,6 +3,7 @@
 #if JUCE_MAC
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
 #endif
 
 namespace dcr
@@ -57,11 +58,19 @@ juce::AudioProcessorEditor* createEditorDefensively(juce::AudioPluginInstance& p
 #endif
 }
 
-// Hosts a fixed-size plugin editor and scales it with an AffineTransform so the
-// window can be freely resized while the plugin's native aspect ratio is kept.
-// The editor keeps its natural logical bounds; only the transform changes.  We
-// do NOT own the editor (PluginEditorWindow's unique_ptr does); destroying the
-// editor first is safe because Component's dtor removes it from us.
+// Hosts a fixed-size plugin editor and scales it so the window can be freely
+// resized with the plugin's native aspect ratio kept.
+//
+// We deliberately do NOT apply a juce::AffineTransform to the editor: for an
+// NSView-backed AU/VST editor that makes JUCE resize the plugin's NSView frame,
+// and a fixed-size plugin then just draws at its native size into the corner of
+// a bigger frame -- the rest renders blank/white.  Instead we keep the editor
+// at its natural logical size (centred) and scale the plugin's *CALayer* about
+// its centre, which scales the already-rendered content (the standard host
+// "GUI zoom" technique that works regardless of plugin cooperation).
+//
+// We do NOT own the editor (PluginEditorWindow's unique_ptr does); destroying
+// the editor first is safe because Component's dtor removes it from us.
 class ScaledEditorHolder : public juce::Component
 {
    public:
@@ -70,20 +79,60 @@ class ScaledEditorHolder : public juce::Component
     {
         setInterceptsMouseClicks(false, true);
         addAndMakeVisible(editor);
-        editor.setTopLeftPosition(0, 0);
         setSize(natW, natH);
     }
 
     void resized() override
     {
+        // Keep the editor at its natural logical size, centred in the holder.
+        // The plugin's NSView is happiest (and renders) at its native size.
+        editor.setBounds((getWidth() - natW) / 2, (getHeight() - natH) / 2, natW, natH);
+
         // Aspect ratio is locked by the window constrainer, so width drives the
-        // scale and height follows.
-        const double s = (double)getWidth() / (double)natW;
-        editor.setTransform(juce::AffineTransform::scale((float)s));
-        editor.setBounds(0, 0, natW, natH);
+        // scale; scale the plugin's layer about its centre to fill the holder.
+        const float s = (float)getWidth() / (float)natW;
+        applyHostedLayerScale(s);
     }
 
    private:
+#if JUCE_MAC
+    // Find the plugin's heavyweight NSView (the largest direct subview of the
+    // window's content view -- our holder/editor are lightweight, so the only
+    // real subview is the plugin's) and scale its layer about its centre.
+    void applyHostedLayerScale(float s)
+    {
+        auto* peer = getPeer();
+        if (peer == nullptr)
+            return;
+        NSView* content = (NSView*)peer->getNativeHandle();
+        if (content == nil)
+            return;
+
+        NSView* best = nil;
+        CGFloat bestArea = 0.0;
+        for (NSView* sub in [content subviews])
+        {
+            const CGFloat area = sub.frame.size.width * sub.frame.size.height;
+            if (area > bestArea)
+            {
+                bestArea = area;
+                best = sub;
+            }
+        }
+        if (best == nil)
+            return;
+
+        best.wantsLayer = YES;
+        if (CALayer* layer = best.layer)
+        {
+            layer.anchorPoint = CGPointMake(0.5, 0.5); // scale about centre
+            layer.affineTransform = CGAffineTransformMakeScale(s, s);
+        }
+    }
+#else
+    void applyHostedLayerScale(float) {}
+#endif
+
     juce::AudioProcessorEditor& editor;
     int natW, natH;
 };
