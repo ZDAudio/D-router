@@ -61,13 +61,17 @@ juce::AudioProcessorEditor* createEditorDefensively(juce::AudioPluginInstance& p
 // Hosts a fixed-size plugin editor and scales it so the window can be freely
 // resized with the plugin's native aspect ratio kept.
 //
-// We deliberately do NOT apply a juce::AffineTransform to the editor: for an
-// NSView-backed AU/VST editor that makes JUCE resize the plugin's NSView frame,
-// and a fixed-size plugin then just draws at its native size into the corner of
-// a bigger frame -- the rest renders blank/white.  Instead we keep the editor
-// at its natural logical size (centred) and scale the plugin's *CALayer* about
-// its centre, which scales the already-rendered content (the standard host
-// "GUI zoom" technique that works regardless of plugin cooperation).
+// Scaling an arbitrary hosted AU/VST view from the host is genuinely awkward.
+// Two approaches that DON'T work here: a juce::AffineTransform on the editor
+// (JUCE resizes the plugin's NSView frame, the plugin still draws at its native
+// size -> blank/white margins), and a CALayer transform (mis-positions / clips).
+//
+// What we do instead is the classic AppKit content-zoom: let the editor (and so
+// the plugin's NSView frame) fill the holder, then set the plugin view's
+// `bounds` back to the natural size.  A view whose bounds are smaller than its
+// frame draws its content scaled up to fill the frame -- without us touching the
+// plugin's own layout.  (Layer/Metal-backed views may ignore this; then they
+// simply stay at natural size in the corner -- best effort, verified per plugin.)
 //
 // We do NOT own the editor (PluginEditorWindow's unique_ptr does); destroying
 // the editor first is safe because Component's dtor removes it from us.
@@ -84,22 +88,20 @@ class ScaledEditorHolder : public juce::Component
 
     void resized() override
     {
-        // Keep the editor at its natural logical size, centred in the holder.
-        // The plugin's NSView is happiest (and renders) at its native size.
-        editor.setBounds((getWidth() - natW) / 2, (getHeight() - natH) / 2, natW, natH);
-
-        // Aspect ratio is locked by the window constrainer, so width drives the
-        // scale; scale the plugin's layer about its centre to fill the holder.
-        const float s = (float)getWidth() / (float)natW;
-        applyHostedLayerScale(s);
+        // Editor fills the holder, so JUCE sizes the plugin's NSView frame to the
+        // scaled size...
+        editor.setBounds(0, 0, getWidth(), getHeight());
+        // ...then we shrink the plugin view's bounds back to natural so its
+        // content scales up to fill that frame.
+        applyHostedContentScale();
     }
 
    private:
 #if JUCE_MAC
     // Find the plugin's heavyweight NSView (the largest direct subview of the
     // window's content view -- our holder/editor are lightweight, so the only
-    // real subview is the plugin's) and scale its layer about its centre.
-    void applyHostedLayerScale(float s)
+    // real subview is the plugin's) and set its bounds to the natural size.
+    void applyHostedContentScale()
     {
         auto* peer = getPeer();
         if (peer == nullptr)
@@ -122,15 +124,12 @@ class ScaledEditorHolder : public juce::Component
         if (best == nil)
             return;
 
-        best.wantsLayer = YES;
-        if (CALayer* layer = best.layer)
-        {
-            layer.anchorPoint = CGPointMake(0.5, 0.5); // scale about centre
-            layer.affineTransform = CGAffineTransformMakeScale(s, s);
-        }
+        // bounds (natural) < frame (scaled) => content draws scaled to fill.
+        [best setBoundsSize:NSMakeSize((CGFloat)natW, (CGFloat)natH)];
+        [best setNeedsDisplay:YES];
     }
 #else
-    void applyHostedLayerScale(float) {}
+    void applyHostedContentScale() {}
 #endif
 
     juce::AudioProcessorEditor& editor;
