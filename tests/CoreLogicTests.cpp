@@ -744,6 +744,43 @@ namespace
         CHECK (g20k <= 1.0f + 0.5f * dcr::builtin::kHighLiftMax + 1e-4f);
     }
 
+    void test_stereometer_high_lift_knee()
+    {
+        using dcr::builtin::highLiftGain;
+        const float nyq = 24000.0f, pivot = 2000.0f, str = 0.5f;
+        // knee == 0 reproduces the hard knee (flat at/below the pivot).
+        CHECK (std::abs (highLiftGain (1000.0f, pivot, nyq, str, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (2000.0f, pivot, nyq, str, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (highLiftGain (8000.0f, pivot, nyq, str, 0.0f)
+                         - highLiftGain (8000.0f, pivot, nyq, str))
+               < 1e-5f); // default arg == hard knee
+        // knee > 0 rounds the corner: a touch of lift AT and just BELOW the pivot.
+        CHECK (highLiftGain (2000.0f, pivot, nyq, str, 0.5f) > 1.0f);
+        CHECK (highLiftGain (1500.0f, pivot, nyq, str, 0.5f) > 1.0f);
+        // still monotonic in frequency with a knee.
+        CHECK (highLiftGain (3000.0f, pivot, nyq, str, 0.5f)
+               < highLiftGain (12000.0f, pivot, nyq, str, 0.5f));
+        // and never exceeds the hard ceiling 1 + strength*kHighLiftMax.
+        CHECK (highLiftGain (20000.0f, pivot, nyq, str, 1.0f)
+               <= 1.0f + str * dcr::builtin::kHighLiftMax + 1e-4f);
+        // strength 0 -> no lift regardless of knee.
+        CHECK (std::abs (highLiftGain (8000.0f, pivot, nyq, 0.0f, 0.8f) - 1.0f) < 1e-5f);
+    }
+
+    void test_stereometer_db_to_norm_y()
+    {
+        using dcr::builtin::dbToNormY;
+        // ceiling -> +1 (top), floor -> -1 (bottom), midpoint -> 0.
+        CHECK (std::abs (dbToNormY (0.0f, -60.0f, 0.0f) - 1.0f) < 1e-5f);
+        CHECK (std::abs (dbToNormY (-60.0f, -60.0f, 0.0f) - (-1.0f)) < 1e-5f);
+        CHECK (std::abs (dbToNormY (-30.0f, -60.0f, 0.0f) - 0.0f) < 1e-5f);
+        // clamps outside the window.
+        CHECK (dbToNormY (10.0f, -60.0f, 0.0f) == 1.0f);
+        CHECK (dbToNormY (-90.0f, -60.0f, 0.0f) == -1.0f);
+        // degenerate range stays finite (no divide-by-zero).
+        CHECK (dbToNormY (-30.0f, -30.0f, -30.0f) == -1.0f);
+    }
+
     // Spectral node-curve preset restore is an untrusted surface: a hand-edited or
     // corrupt blob can carry NaN/Inf or a wild value, which would latch into the
     // per-bin smoother and poison the FFT output with NaN forever.  sanitizeNodeDb
@@ -1137,6 +1174,8 @@ int main()
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
+    test_stereometer_high_lift_knee();
+    test_stereometer_db_to_norm_y();
     test_recorder_naming();
     test_recorder_channel_count();
 
