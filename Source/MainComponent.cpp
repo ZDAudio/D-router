@@ -212,6 +212,12 @@ namespace dcr
         audioSetupTabBtn.onClick = [this] { switchTab (AudioSetupTab); };
         statusTabBtn.onClick = [this] { switchTab (StatusTab); };
 
+        // Rail tabs draw a small line-icon before their label (see LookAndFeel).
+        matrixTabBtn.getProperties().set ("railIcon", "matrix");
+        groupsTabBtn.getProperties().set ("railIcon", "groups");
+        audioSetupTabBtn.getProperties().set ("railIcon", "setup");
+        statusTabBtn.getProperties().set ("railIcon", "monitor");
+
         addAndMakeVisible (matrixTabBtn);
         addAndMakeVisible (groupsTabBtn);
         addAndMakeVisible (audioSetupTabBtn);
