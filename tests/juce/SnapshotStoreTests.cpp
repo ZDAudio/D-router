@@ -56,6 +56,33 @@ struct SnapshotStoreTests : juce::UnitTest
             expect (r.outputGroups[0].muted);
         }
 
+        beginTest ("group plugin chain round-trips groupName + slots (derived-group preservation)");
+        {
+            // A derived (DeviceAuto / SoftIn) group is rebuilt every engine start,
+            // so its FX chain must be keyed by the group's stable NAME, not its
+            // index.  Verify groupName survives the round-trip alongside the slots.
+            Snapshot s;
+            Snapshot::GroupChain gc;
+            gc.groupIdx = 2;
+            gc.isInput = false;
+            gc.groupName = "BlackHole 2ch"; // DeviceAuto group, keyed by device name
+            gc.slots.resize (3);
+            gc.slots[1].descriptionXml = "<PLUGIN name='Reverb'/>";
+            gc.slots[1].stateB64 = "QUJD";
+            gc.slots[1].bypassed = true;
+            s.groupChains.push_back (gc);
+
+            auto r = SnapshotStore::fromValueTree (SnapshotStore::toValueTree (s));
+            expectEquals ((int) r.groupChains.size(), 1);
+            expectEquals (r.groupChains[0].groupName, juce::String ("BlackHole 2ch"));
+            expectEquals (r.groupChains[0].groupIdx, 2);
+            expect (!r.groupChains[0].isInput);
+            expect ((int) r.groupChains[0].slots.size() > 1);
+            expectEquals (r.groupChains[0].slots[1].descriptionXml,
+                juce::String ("<PLUGIN name='Reverb'/>"));
+            expect (r.groupChains[0].slots[1].bypassed);
+        }
+
         beginTest ("app-audio (Soft-In) sources round-trip (bundle id, name, mute, channels)");
         {
             Snapshot s;

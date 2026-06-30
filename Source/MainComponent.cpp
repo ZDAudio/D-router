@@ -1284,12 +1284,20 @@ namespace dcr
             // CoreAudio device-hotplug callback can trigger mid-reconfigure.
             engine.stopProcessor();
             std::vector<Snapshot::ChannelChain> harvestedChains;
+            std::vector<Snapshot::GroupChain> harvestedGroupChains;
             if (preserveChains)
             {
                 harvestedChains = harvestChannelChains();
+                // DERIVED groups (DeviceAuto / SoftIn) are torn down + rebuilt empty by
+                // engine.start() below, so their FX must be harvested here (matrix
+                // thread already stopped) and re-installed by name after the rebuild.
+                // Regular groups survive in place, so derivedOnly=true skips them.
+                harvestedGroupChains = harvestGroupChains (/*derivedOnly*/ true);
                 juce::Logger::writeToLog ("applyDeviceSelection: preserved "
                                           + juce::String ((int) harvestedChains.size())
-                                          + " channel FX chain(s) across restart");
+                                          + " channel + "
+                                          + juce::String ((int) harvestedGroupChains.size())
+                                          + " derived-group FX chain(s) across restart");
             }
 
             reconfig.advance (ReconfigurationController::Phase::Rebuilding);
@@ -1298,7 +1306,7 @@ namespace dcr
 
             auto alive = aliveToken;
             juce::MessageManager::callAsync (
-                [this, alive, specs, preserved, started, preserveChains, chainsToRestore = std::move (harvestedChains)]() mutable {
+                [this, alive, specs, preserved, started, preserveChains, chainsToRestore = std::move (harvestedChains), groupChainsToRestore = std::move (harvestedGroupChains)]() mutable {
                     if (!alive->load (std::memory_order_acquire))
                         return;
                     auto& pendingSnap = reconfig.snapshot(); // single owner; message-thread only
@@ -1316,11 +1324,14 @@ namespace dcr
                     // Settings-apply (non-snapshot) path: publish the chains the worker
                     // harvested after stopProcessor into pendingSnap NOW, on the message
                     // thread, so the drain below re-instantiates them.  Doing it here
-                    // (not in the worker) keeps pendingSnap single-threaded.  groupChains
-                    // stays empty -- group plugin objects survive the restart in-place.
+                    // (not in the worker) keeps pendingSnap single-threaded.  Regular
+                    // group plugins survive the restart in-place; only DERIVED group
+                    // chains (rebuilt empty by engine.start) need re-installing, matched
+                    // back to the rebuilt groups by name in restorePluginChainsAsync.
                     if (preserveChains)
                     {
                         pendingSnap.channelChains = std::move (chainsToRestore);
+                        pendingSnap.groupChains = std::move (groupChainsToRestore);
                         pendingSnap.valid = true;
                     }
 
@@ -1647,6 +1658,19 @@ namespace dcr
             return juce::AudioChannelSet::stereo();
         }
 
+        // Find a group by name within a manager (either direction).  Used to match a
+        // derived (DeviceAuto / SoftIn) group's preserved FX chain back to the freshly
+        // rebuilt group after an engine restart, where its index is not stable but its
+        // name (the device / app source name) is.  Returns -1 if not found.
+        template <typename Mgr>
+        int findGroupIndexByName (Mgr& mgr, const juce::String& name)
+        {
+            for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
+                if (const auto* g = mgr.getGroup (gi); g != nullptr && g->name == name)
+                    return gi;
+            return -1;
+        }
+
         Snapshot::PluginSlotState gatherPluginSlot (juce::AudioPluginInstance* p, bool bypassed)
         {
             Snapshot::PluginSlotState ps;
@@ -1701,6 +1725,66 @@ namespace dcr
         for (int ch = 0; ch < nOut; ++ch)
             gatherChain (engineRef.getPluginHost (ch), ch, false);
         return chains;
+    }
+
+    std::vector<Snapshot::GroupChain> MainComponent::harvestGroupChains (bool derivedOnly) const
+    {
+        // Same getStateInformation() race rule as harvestChannelChains -- stop the
+        // matrix processor before calling.  A DERIVED group (DeviceAuto over a stereo
+        // output device, SoftIn over an app source) is erased + rebuilt on every
+        // engine start, so its plugins would vanish on a Settings change unless we
+        // harvest them here and re-install after the rebuild.  They are matched back
+        // by NAME (groupName), not index.  Regular groups survive a restart in place,
+        // so the settings-change path passes derivedOnly=true to skip them; the
+        // snapshot-save path passes false to persist everything.
+        std::vector<Snapshot::GroupChain> chains;
+        auto gather = [&] (auto& mgr, bool isInput) {
+            for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
+            {
+                auto* g = mgr.getGroup (gi);
+                if (g == nullptr)
+                    continue;
+                const bool derived = g->kind.load (std::memory_order_relaxed) != OutputGroup::Kind::Regular;
+                if (derivedOnly && !derived)
+                    continue;
+                Snapshot::GroupChain gc;
+                gc.groupIdx = gi;
+                gc.isInput = isInput;
+                // Only derived groups need name-keyed restore; leaving Regular groups'
+                // name empty keeps their existing deterministic-index restore path.
+                gc.groupName = derived ? g->name : juce::String();
+                gc.slots.resize (g->pluginSlots.size());
+                bool any = false;
+                for (size_t sl = 0; sl < g->pluginSlots.size(); ++sl)
+                    if (auto& host = g->pluginSlots[sl])
+                    {
+                        gc.slots[sl] = gatherPluginSlot (host->getPlugin(), host->isBypassed());
+                        if (!gc.slots[sl].isEmpty())
+                            any = true;
+                    }
+                if (any)
+                    chains.push_back (std::move (gc));
+            }
+        };
+        auto& engineRef = const_cast<AudioEngine&> (engine);
+        gather (engineRef.getGroupManager(), false);
+        gather (engineRef.getInputGroupManager(), true);
+        return chains;
+    }
+
+    OutputGroup* MainComponent::resolveGroupForRestore (bool isInput, const juce::String& name, int idx)
+    {
+        // Derived chains carry a name and are matched against the rebuilt groups;
+        // Regular chains (empty name) keep using the deterministic restored index.
+        if (isInput)
+        {
+            auto& m = engine.getInputGroupManager();
+            const int gi = name.isNotEmpty() ? findGroupIndexByName (m, name) : idx;
+            return m.getGroup (gi);
+        }
+        auto& m = engine.getGroupManager();
+        const int gi = name.isNotEmpty() ? findGroupIndexByName (m, name) : idx;
+        return m.getGroup (gi);
     }
 
     Snapshot MainComponent::gatherCurrentSnapshot() const
@@ -1767,34 +1851,11 @@ namespace dcr
         s.channelChains = harvestChannelChains();
 
         // ===== Plugin chains: per-group ==========================================
-        auto gatherGroupChains = [&] (auto& mgr, bool isInput, std::vector<Snapshot::GroupChain>& out) {
-            for (int gi = 0; gi < mgr.getNumGroups(); ++gi)
-            {
-                auto* g = mgr.getGroup (gi);
-                if (g == nullptr)
-                    continue;
-                if (g->kind.load (std::memory_order_relaxed) != OutputGroup::Kind::Regular)
-                    continue; // SoftIn / DeviceAuto are derived -- not persisted (see gatherFromManager)
-                Snapshot::GroupChain gc;
-                gc.groupIdx = gi;
-                gc.isInput = isInput;
-                gc.slots.resize (g->pluginSlots.size());
-                bool any = false;
-                for (size_t sl = 0; sl < g->pluginSlots.size(); ++sl)
-                {
-                    if (auto& host = g->pluginSlots[sl])
-                    {
-                        gc.slots[sl] = gatherPluginSlot (host->getPlugin(), host->isBypassed());
-                        if (!gc.slots[sl].isEmpty())
-                            any = true;
-                    }
-                }
-                if (any)
-                    out.push_back (std::move (gc));
-            }
-        };
-        gatherGroupChains (const_cast<AudioEngine&> (engine).getGroupManager(), false, s.groupChains);
-        gatherGroupChains (const_cast<AudioEngine&> (engine).getInputGroupManager(), true, s.groupChains);
+        // Persist EVERY group's chain (derivedOnly=false).  Regular groups are keyed
+        // by index (restored deterministically by applySnapshot); derived groups
+        // (DeviceAuto / SoftIn) are keyed by name so they re-attach to whichever
+        // rebuilt group has the same device / app source on load.
+        s.groupChains = harvestGroupChains (/*derivedOnly*/ false);
 
         // Matrix-view UI state: which devices are folded.  Stored as names so a
         // future device ordering change doesn't silently shift the mapping.
@@ -1929,9 +1990,10 @@ namespace dcr
         {
             // channelSet is captured at queue time -- this lets the worker
             // resolve which channels the group covers without re-looking-up the
-            // OutputGroup pointer until just before the install.
-            OutputGroup* g = gc.isInput ? engine.getInputGroupManager().getGroup (gc.groupIdx)
-                                        : engine.getGroupManager().getGroup (gc.groupIdx);
+            // OutputGroup pointer until just before the install.  A derived group's
+            // chain carries a name and is matched to the rebuilt group by name; a
+            // Regular chain (empty name) uses the deterministic restored index.
+            OutputGroup* g = resolveGroupForRestore (gc.isInput, gc.groupName, gc.groupIdx);
             if (g == nullptr)
                 continue;
 
@@ -1950,6 +2012,7 @@ namespace dcr
                 job.kind = PendingPluginLoad::Kind::GroupSlot;
                 job.isInputGroup = gc.isInput;
                 job.groupIdx = gc.groupIdx;
+                job.groupName = gc.groupName;
                 job.channelSet = g->channelSet;
                 pluginLoadQueue.push_back (std::move (job));
             }
@@ -2046,9 +2109,9 @@ namespace dcr
                 }
                 else // GroupSlot
                 {
-                    auto* g = j.isInputGroup
-                                  ? engine.getInputGroupManager().getGroup (j.groupIdx)
-                                  : engine.getGroupManager().getGroup (j.groupIdx);
+                    // Re-resolve at install time: a derived group is matched by name
+                    // (its rebuilt index is not stable), a Regular group by index.
+                    auto* g = resolveGroupForRestore (j.isInputGroup, j.groupName, j.groupIdx);
                     if (g != nullptr
                         && j.slotIdx >= 0
                         && j.slotIdx < (int) g->pluginSlots.size())

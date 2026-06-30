@@ -96,6 +96,18 @@ namespace dcr
         // getStateInformation() on every AU, so the caller MUST ensure the matrix
         // processor is stopped first (see applyDeviceSelection's worker thread).
         std::vector<Snapshot::ChannelChain> harvestChannelChains() const;
+        // Per-group FX harvest.  Like harvestChannelChains, calls getStateInformation
+        // on every group AU, so the matrix processor MUST be stopped first.  When
+        // derivedOnly is true, only DERIVED groups (DeviceAuto / SoftIn, rebuilt each
+        // engine start) are harvested -- used by the settings-change preserve path,
+        // where Regular groups survive in place and re-harvesting them would
+        // double-load.  When false (snapshot save), every group is harvested; derived
+        // groups carry a groupName so restore can match them back after rebuild.
+        std::vector<Snapshot::GroupChain> harvestGroupChains (bool derivedOnly) const;
+        // Resolve the live group a restored chain targets.  Derived chains carry a
+        // non-empty name and are matched by (direction, name) against the rebuilt
+        // groups; Regular chains (empty name) use the deterministic index.
+        OutputGroup* resolveGroupForRestore (bool isInput, const juce::String& name, int idx);
         void applySnapshot (const Snapshot& s);
         void saveSnapshotInteractive();
         void loadSnapshotInteractive();

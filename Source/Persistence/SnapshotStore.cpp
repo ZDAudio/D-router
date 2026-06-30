@@ -56,6 +56,7 @@ namespace dcr
         static const juce::Identifier slot ("slot");
         static const juce::Identifier globalIdx ("globalIdx");
         static const juce::Identifier groupIdx ("groupIdx");
+        static const juce::Identifier groupName ("groupName");
         static const juce::Identifier isInput ("isInput");
         static const juce::Identifier slotIdx ("slotIdx");
         static const juce::Identifier descXml ("descXml");
@@ -232,6 +233,7 @@ namespace dcr
                 continue;
             juce::ValueTree gv (ids::chain);
             gv.setProperty (ids::groupIdx, g.groupIdx, nullptr);
+            gv.setProperty (ids::groupName, g.groupName, nullptr);
             gv.setProperty (ids::isInput, g.isInput, nullptr);
             for (size_t i = 0; i < g.slots.size(); ++i)
                 writeSlot (gv, (int) i, g.slots[i]);
@@ -408,6 +410,7 @@ namespace dcr
                 continue;
             Snapshot::GroupChain g;
             g.groupIdx = (int) gv.getProperty (ids::groupIdx, -1);
+            g.groupName = gv.getProperty (ids::groupName).toString();
             g.isInput = (bool) gv.getProperty (ids::isInput, false);
             if (g.groupIdx < 0)
                 continue;

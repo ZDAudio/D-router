@@ -66,6 +66,13 @@ namespace dcr
         {
             int groupIdx = 0;
             bool isInput = false;
+            // Stable key for DERIVED groups (DeviceAuto over a stereo output device,
+            // SoftIn over an app-audio source).  Those groups are erased and rebuilt
+            // from scratch on every engine start, so their index is not stable across
+            // a restart -- the chain must be matched back to the rebuilt group by
+            // name.  Empty for Regular (user-created) groups, which keep using the
+            // deterministic groupIdx restored by applySnapshot.
+            juce::String groupName;
             std::vector<PluginSlotState> slots; // size = OutputGroup::kNumPluginSlots
         };
         std::vector<ChannelChain> channelChains;
