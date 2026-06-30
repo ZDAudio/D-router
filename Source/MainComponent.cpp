@@ -984,22 +984,23 @@ namespace dcr
 
         r.removeFromTop (6);
 
-        // Tab navigation row -- FlexBox keeps three buttons centered and equal
-        // width regardless of how wide the window is.
+        // Left navigation rail: the four page tabs stacked vertically down the
+        // left edge, replacing the old centered horizontal tab row.  This frees
+        // the full window width for the matrix / panels and keeps navigation
+        // persistently visible as a sidebar.  The rail sits below the top toolbar
+        // for now; promoting it to a full-height sidebar with the brand mark is
+        // part of the separate top-bar pass.
         {
-            auto tabRect = r.removeFromTop (28);
-            juce::FlexBox fb;
-            fb.flexDirection = juce::FlexBox::Direction::row;
-            fb.justifyContent = juce::FlexBox::JustifyContent::center;
-            fb.alignContent = juce::FlexBox::AlignContent::stretch;
-            fb.items.add (juce::FlexItem (matrixTabBtn).withFlex (1.0f).withMinWidth (90.0f).withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 0)));
-            fb.items.add (juce::FlexItem (groupsTabBtn).withFlex (1.0f).withMinWidth (90.0f).withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 2)));
-            fb.items.add (juce::FlexItem (audioSetupTabBtn).withFlex (1.0f).withMinWidth (90.0f).withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 2, 0, 2)));
-            fb.items.add (juce::FlexItem (statusTabBtn).withFlex (1.0f).withMinWidth (90.0f).withMaxWidth (220.0f).withMargin (juce::FlexItem::Margin (0, 0, 0, 2)));
-            fb.performLayout (tabRect);
+            const int kTabRailWidth = 150;
+            const int kTabHeight = 46;
+            auto rail = r.removeFromLeft (kTabRailWidth);
+            r.removeFromLeft (10); // gap between the rail and the content area
+            for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            {
+                b->setBounds (rail.removeFromTop (kTabHeight));
+                rail.removeFromTop (4);
+            }
         }
-
-        r.removeFromTop (8);
 
         // Position active component in viewport space r
         if (currentTab == RoutingTab)
