@@ -103,6 +103,10 @@ namespace dcr
             // For GroupSlot.
             bool isInputGroup = false;
             int groupIdx = -1;
+            // When non-empty, the target group is resolved by name at install time
+            // (DERIVED DeviceAuto / SoftIn groups are rebuilt each start, so their
+            // index is not stable across the restart); empty -> use groupIdx.
+            juce::String groupName;
             juce::AudioChannelSet channelSet { juce::AudioChannelSet::stereo() };
         };
 
