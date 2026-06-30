@@ -570,8 +570,8 @@ namespace dcr
 
         // Left navigation rail: a slightly raised panel with a hairline divider,
         // so the sidebar reads as a distinct region from the content area.  The
-        // geometry mirrors resized() (full height, kRailW wide, kEdge inset).
-        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (kRailW);
+        // geometry mirrors resized() (full height, railWidthPx wide, kEdge inset).
+        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (railWidthPx);
         g.setColour (juce::Colour::fromRGB (20, 20, 24));
         g.fillRect (rail);
         g.setColour (juce::Colour::fromRGB (44, 44, 50));
@@ -1025,18 +1025,35 @@ namespace dcr
 
         auto full = getLocalBounds().reduced (kEdge);
 
+        // Below this width the UI goes compact: the rail collapses to an
+        // icon-only strip and the toolbar drops its captions + shrinks buttons,
+        // so nothing clips on a narrow window.
+        const bool compact = getWidth() < 760;
+
         // ---- Left navigation rail (full height) -----------------------------
-        // Brand mark on top, then the four page tabs stacked below it.  The
-        // rail's raised background + right-hand divider are drawn in paint();
-        // here we just place the widgets inside it with a little padding.
-        auto rail = full.removeFromLeft (kRailW).reduced (10, 2);
-        full.removeFromLeft (12); // gap between rail and content column
+        // Brand mark on top (wide only), then the four page tabs stacked below.
+        // The rail's raised background + divider are drawn in paint() using
+        // railWidthPx, kept in sync here.
+        railWidthPx = compact ? 56 : kRailW;
+        auto rail = full.removeFromLeft (railWidthPx).reduced (compact ? 5 : 10, 2);
+        full.removeFromLeft (compact ? 8 : 12); // gap between rail and content column
+
+        title.setVisible (!compact); // brand label doesn't fit the icon-only rail
+        for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            b->getProperties().set ("railCompact", compact);
         {
-            auto brand = rail.removeFromTop (28);
-            if (zdFace.isVisible())
-                zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
-            title.setBounds (brand);
-            rail.removeFromTop (16);
+            if (!compact)
+            {
+                auto brand = rail.removeFromTop (28);
+                if (zdFace.isVisible())
+                    zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
+                title.setBounds (brand);
+                rail.removeFromTop (16);
+            }
+            else
+            {
+                rail.removeFromTop (8);
+            }
 
             const int kTabHeight = 46;
             for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
@@ -1050,19 +1067,25 @@ namespace dcr
         // Two grouped zones under small captions -- SOURCES & SETUP on the left,
         // SESSION (save/load/logs) on the right -- then PANIC standing alone on
         // the far right, deliberately isolated so it is never mis-clicked.
-        auto caption = full.removeFromTop (12);
+        // Compact: drop the captions and shrink the buttons so they don't clip.
+        const int srcW = compact ? 62 : 90; // sources/setup button width
+        const int sesW = compact ? 52 : 70; // session button width
+        const int srcGap = compact ? 3 : 4;
+        const int isoGap = compact ? 8 : 16; // PANIC isolation gap
+
+        sourcesSectionLabel.setVisible (!compact);
+        sessionSectionLabel.setVisible (!compact);
+        auto caption = full.removeFromTop (compact ? 0 : 12);
         auto top = full.removeFromTop (30);
 
         // Left zone: sources + setup.
         auto leftZone = top;
         sourcesSectionLabel.setBounds (caption.getX(), caption.getY(), 4 * 90 + 3 * 4, 12);
-        devicesButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        softwareButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        groupsButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        settingsButton.setBounds (leftZone.removeFromLeft (90));
+        for (auto* b : { &devicesButton, &softwareButton, &groupsButton, &settingsButton })
+        {
+            b->setBounds (leftZone.removeFromLeft (srcW));
+            leftZone.removeFromLeft (srcGap);
+        }
 
         // Right zone: PANIC (far right), [RESET], then the SESSION group.
         stopButton.setBounds (top.removeFromRight (66));
@@ -1071,12 +1094,12 @@ namespace dcr
             top.removeFromRight (6);
             resetButton.setBounds (top.removeFromRight (60));
         }
-        top.removeFromRight (16); // gap isolating PANIC from the session group
-        logsButton.setBounds (top.removeFromRight (70));
-        top.removeFromRight (4);
-        loadButton.setBounds (top.removeFromRight (70));
-        top.removeFromRight (4);
-        saveButton.setBounds (top.removeFromRight (70));
+        top.removeFromRight (isoGap); // gap isolating PANIC from the session group
+        logsButton.setBounds (top.removeFromRight (sesW));
+        top.removeFromRight (srcGap);
+        loadButton.setBounds (top.removeFromRight (sesW));
+        top.removeFromRight (srcGap);
+        saveButton.setBounds (top.removeFromRight (sesW));
         sessionSectionLabel.setBounds (saveButton.getX(), caption.getY(), 3 * 70 + 2 * 4, 12);
 
         full.removeFromTop (8);

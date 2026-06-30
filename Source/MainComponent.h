@@ -308,6 +308,11 @@ namespace dcr
         };
         SplitView audioSetupView;
 
+        // Current left-rail width (px).  Collapses to an icon-only strip when the
+        // window is narrow; shared between resized() (layout) and paint() (rail
+        // background) so they stay in sync.
+        int railWidthPx = 168;
+
         // Full-window overlay shown during startup splash + matrix rebuilds.
         LoadingOverlay loadingOverlay;
 
