@@ -17,11 +17,14 @@ namespace dcr::builtin
         explicit DeEsserEditor (DeEsserProcessor& proc)
             : juce::AudioProcessorEditor (proc), de (proc)
         {
+            // GenericAudioProcessorEditor caps its OWN height at 400 px and
+            // scrolls internally, so we host it directly (no extra viewport) and
+            // give the window enough height that every control shows without
+            // scrolling.  The editor is freely resizable; shrinking it lets the
+            // generic editor's own scrollbar take over.
             generic = std::make_unique<juce::GenericAudioProcessorEditor> (de);
-            viewport.setViewedComponent (generic.get(), false);
-            viewport.setScrollBarsShown (true, false);
-            addAndMakeVisible (viewport);
-            setSize (460, 380);
+            addAndMakeVisible (*generic);
+            setSize (480, topHeight + 500); // band view + the full ~15-control set
             startTimerHz (24);
         }
 
@@ -33,8 +36,7 @@ namespace dcr::builtin
             topArea = r.removeFromTop (topHeight);
             meterArea = topArea.removeFromRight (54).reduced (6);
             bandArea = topArea.reduced (8);
-            viewport.setBounds (r);
-            generic->setSize (r.getWidth() - 10, juce::jmax (generic->getHeight(), 5 * 26 + 30));
+            generic->setBounds (r); // fills the area below the band view; self-scrolls if short
         }
 
         void paint (juce::Graphics& g) override
@@ -45,7 +47,10 @@ namespace dcr::builtin
         }
 
     private:
-        void timerCallback() override { repaint (topArea); }
+        // Repaint the whole top strip (band + meter).  Note: the member topArea
+        // is shrunk in resized() to exclude meterArea, so repainting topArea
+        // alone leaves the GR meter frozen -- cover the full strip explicitly.
+        void timerCallback() override { repaint (0, 0, getWidth(), topHeight); }
 
         float getParam (const juce::String& id) const
         {
@@ -56,9 +61,9 @@ namespace dcr::builtin
 
         static float xForFreq (float f, juce::Rectangle<int> a)
         {
-            return juce::jmap (std::log10 (juce::jlimit (2000.0f, 16000.0f, f)),
+            return juce::jmap (std::log10 (juce::jlimit (2000.0f, 20000.0f, f)),
                 std::log10 (2000.0f),
-                std::log10 (16000.0f),
+                std::log10 (20000.0f),
                 (float) a.getX(),
                 (float) a.getRight());
         }
@@ -70,7 +75,7 @@ namespace dcr::builtin
 
             // freq grid + labels
             g.setFont (juce::FontOptions (10.0f));
-            for (float f : { 2000.0f, 4000.0f, 6000.0f, 8000.0f, 12000.0f, 16000.0f })
+            for (float f : { 2000.0f, 4000.0f, 6000.0f, 8000.0f, 12000.0f, 16000.0f, 20000.0f })
             {
                 const float x = xForFreq (f, bandArea);
                 g.setColour (juce::Colour::fromRGB (40, 40, 48));
@@ -79,11 +84,40 @@ namespace dcr::builtin
                 g.drawText (juce::String (f / 1000.0f, 0) + "k", (int) x + 2, bandArea.getBottom() - 13, 30, 12, juce::Justification::topLeft);
             }
 
-            // crossover marker (highpass corner of the de-ess band)
-            const float fx = xForFreq (getParam ("freq"), bandArea);
+            // Detection band = [HP, LP] side-chain edges.  Wideband ducks the
+            // whole signal (faint full-width tint); Split ducks only above HP.
+            // Listen auditions the band.
+            const float fhp = getParam ("hp");
+            const float flp = getParam ("lp");
+            const bool wide = getParam ("mode") > 0.5f;
+            const bool pro = getParam ("quality") > 0.5f;
+            const bool listen = getParam ("listen") > 0.5f;
+            const float regTop = (float) bandArea.getY();
+            const float regH = (float) bandArea.getHeight() * 0.62f; // above the level bar
+            const float xhp = xForFreq (fhp, bandArea);
+            const float xlp = xForFreq (flp, bandArea);
+
+            if (wide)
+            {
+                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 28)); // whole signal
+                g.fillRect ((float) bandArea.getX(), regTop, (float) bandArea.getWidth(), regH);
+            }
+            g.setColour (juce::Colour::fromRGBA (0, 200, 220, 70)); // detection band
+            g.fillRect (xhp, regTop, juce::jmax (1.0f, xlp - xhp), regH);
+            // band edge markers
             g.setColour (juce::Colour::fromRGB (0, 200, 220));
-            g.fillRect ((float) fx - 1.0f, (float) bandArea.getY(), 2.0f, (float) bandArea.getHeight());
-            g.fillRect ((float) fx, (float) bandArea.getY(), (float) (bandArea.getRight() - fx), 6.0f); // band region tab
+            g.fillRect (xhp - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
+            g.fillRect (xlp - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
+
+            // mode / listen caption, top-left of the band
+            g.setColour (juce::Colour::fromRGB (110, 190, 205));
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (juce::String (pro ? "PRO - SPECTRAL" : (wide ? "WIDEBAND" : "SPLIT")) + (listen ? "  -  LISTEN" : ""),
+                bandArea.getX() + 4,
+                bandArea.getY() + 2,
+                bandArea.getWidth() - 8,
+                12,
+                juce::Justification::topLeft);
 
             // sibilance level bar (horizontal, mapped -60..0 dB across width) +
             // threshold tick.
@@ -124,7 +158,6 @@ namespace dcr::builtin
 
         DeEsserProcessor& de;
         std::unique_ptr<juce::GenericAudioProcessorEditor> generic;
-        juce::Viewport viewport;
         juce::Rectangle<int> topArea, bandArea, meterArea;
     };
 
