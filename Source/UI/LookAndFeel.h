@@ -42,6 +42,10 @@ namespace dcr
         void drawTextEditorOutline (juce::Graphics& g, int width, int height, juce::TextEditor& textEditor) override;
 
     private:
+        // Draw a small flat line-icon (matrix grid / layers / sliders / pulse)
+        // for a left-rail tab.  `id` is the button's "railIcon" property.
+        void drawRailIcon (juce::Graphics& g, juce::Rectangle<float> area, const juce::String& id, juce::Colour colour);
+
         juce::Colour accentColor { 0xFF00FFD2 };
         juce::Colour warningColor { 0xFFFFCC00 };
         juce::Colour criticalColor { 0xFFFF3B30 };

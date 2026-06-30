@@ -102,9 +102,27 @@ namespace dcr
 
     void LookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool /*shouldDrawButtonAsHighlighted*/, bool /*shouldDrawButtonAsDown*/)
     {
+        const auto textColour = button.findColour (button.getToggleState() ? juce::TextButton::textColourOnId
+                                                                           : juce::TextButton::textColourOffId);
+
+        // Left-rail tabs: a small line-icon on the left, label after it.  Gated
+        // on the "railIcon" property so every other TextButton is unaffected.
+        if (button.getProperties().contains ("railIcon"))
+        {
+            auto b = button.getLocalBounds().reduced (14, 0);
+            const float iconSz = 18.0f;
+            auto iconArea = b.removeFromLeft ((int) iconSz);
+            const auto iconColour = button.getToggleState() ? accentColor : textColour;
+            drawRailIcon (g, iconArea.toFloat().withSizeKeepingCentre (iconSz, iconSz), button.getProperties()["railIcon"].toString(), iconColour);
+            b.removeFromLeft (12); // gap between icon and label
+            g.setFont (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), 11.0f, juce::Font::bold));
+            g.setColour (textColour);
+            g.drawText (button.getButtonText().toUpperCase(), b, juce::Justification::centredLeft, true);
+            return;
+        }
+
         g.setFont (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), 10.5f, juce::Font::bold));
-        g.setColour (button.findColour (button.getToggleState() ? juce::TextButton::textColourOnId
-                                                                : juce::TextButton::textColourOffId));
+        g.setColour (textColour);
 
         // Draw all-caps text for an industrial engineering feel
         juce::String text = button.getButtonText();
@@ -120,6 +138,51 @@ namespace dcr
         }
 
         g.drawText (text, button.getLocalBounds(), juce::Justification::centred, true);
+    }
+
+    void LookAndFeel::drawRailIcon (juce::Graphics& g, juce::Rectangle<float> a, const juce::String& id, juce::Colour colour)
+    {
+        g.setColour (colour);
+        const float x = a.getX(), y = a.getY(), w = a.getWidth(), h = a.getHeight();
+
+        if (id == "matrix") // 3x3 crosspoint grid
+        {
+            const float cell = w / 3.0f;
+            const float d = cell * 0.5f;
+            for (int row = 0; row < 3; ++row)
+                for (int col = 0; col < 3; ++col)
+                    g.fillRect (x + col * cell + (cell - d) * 0.5f,
+                        y + row * cell + (cell - d) * 0.5f,
+                        d,
+                        d);
+        }
+        else if (id == "groups") // 3 stacked layer bars
+        {
+            const float bh = h * 0.2f;
+            const float gap = (h - 3.0f * bh) * 0.5f;
+            for (int i = 0; i < 3; ++i)
+                g.fillRoundedRectangle (x, y + i * (bh + gap), w, bh, 1.0f);
+        }
+        else if (id == "setup") // two channel sliders
+        {
+            const float t1 = x + w * 0.3f, t2 = x + w * 0.7f;
+            g.drawLine (t1, y, t1, y + h, 1.4f);
+            g.drawLine (t2, y, t2, y + h, 1.4f);
+            const float hw = w * 0.18f, hh = 3.0f;
+            g.fillRoundedRectangle (t1 - hw, y + h * 0.58f - hh * 0.5f, hw * 2.0f, hh, 1.0f);
+            g.fillRoundedRectangle (t2 - hw, y + h * 0.28f - hh * 0.5f, hw * 2.0f, hh, 1.0f);
+        }
+        else if (id == "monitor") // pulse / activity trace
+        {
+            juce::Path p;
+            p.startNewSubPath (x, y + h * 0.6f);
+            p.lineTo (x + w * 0.28f, y + h * 0.6f);
+            p.lineTo (x + w * 0.42f, y + h * 0.18f);
+            p.lineTo (x + w * 0.56f, y + h * 0.86f);
+            p.lineTo (x + w * 0.7f, y + h * 0.5f);
+            p.lineTo (x + w, y + h * 0.5f);
+            g.strokePath (p, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
     }
 
     void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle, juce::Slider& slider)
