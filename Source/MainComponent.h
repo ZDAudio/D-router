@@ -249,6 +249,10 @@ namespace dcr
         juce::Label sourcesSectionLabel { {}, "SOURCES & SETUP" };
         juce::Label sessionSectionLabel { {}, "SESSION" };
 
+        // Loud full-width alert shown only while panic is engaged, so a held-audio
+        // state is impossible to miss.  Hidden otherwise.
+        juce::Label panicBanner { {}, "ALL AUDIO MUTED   \xe2\x80\x94   click PANIC to restore, or RESET to restart the engine" };
+
         // Top Navigation Tabs
         enum Tab { RoutingTab,
             GroupsTab,

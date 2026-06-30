@@ -134,6 +134,15 @@ namespace dcr
         loadButton.onClick = [this] { loadSnapshotInteractive(); };
         stopButton.onClick = [this] { if (panic.isActive()) panicRelease(); else panicActivate(); };
         stopButton.setTooltip ("Mute every input and output.  Click again to restore the prior state.");
+        stopButton.setName ("panic"); // LookAndFeel renders this one red (deep red armed, bright red engaged)
+
+        // Loud engaged-state banner (red, full width below the toolbar).
+        panicBanner.setJustificationType (juce::Justification::centred);
+        panicBanner.setColour (juce::Label::backgroundColourId, juce::Colour::fromRGB (170, 30, 30));
+        panicBanner.setColour (juce::Label::textColourId, juce::Colours::white);
+        panicBanner.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        panicBanner.setInterceptsMouseClicks (false, false);
+        addChildComponent (panicBanner); // shown only while engaged
 
         // RESET: restore pre-panic mutes, then preserve-state engine restart.
         // Only visible while panic is engaged.
@@ -1043,6 +1052,13 @@ namespace dcr
         full.removeFromTop (8);
         auto r = full; // content area for the active tab
 
+        // Engaged-panic banner: a loud red strip across the top of the content.
+        if (panicBanner.isVisible())
+        {
+            panicBanner.setBounds (r.removeFromTop (28));
+            r.removeFromTop (6);
+        }
+
         // Position active component in viewport space r
         if (currentTab == RoutingTab)
         {
@@ -1148,18 +1164,16 @@ namespace dcr
     void MainComponent::updatePanicButtonAppearance()
     {
         const bool active = panic.isActive();
-        // Bright red when active so the user always knows panic is engaged.
-        stopButton.setButtonText (active ? "PANIC*" : "PANIC");
-        stopButton.setColour (juce::TextButton::buttonColourId,
-            active ? juce::Colour::fromRGB (180, 30, 30)
-                   : juce::Colour::fromRGB (50, 50, 56));
-        stopButton.setColour (juce::TextButton::buttonOnColourId,
-            active ? juce::Colour::fromRGB (180, 30, 30)
-                   : juce::Colour::fromRGB (50, 50, 56));
+        // The LookAndFeel reads this to render PANIC bright red when engaged.
+        stopButton.setButtonText (active ? "PANIC" : "PANIC");
+        stopButton.getProperties().set ("panicEngaged", active);
         stopButton.repaint();
 
+        // The loud full-width banner appears only while engaged.
+        panicBanner.setVisible (active);
+
         // RESET appears beside PANIC only while panic is engaged.  Re-run the
-        // toolbar layout so the button slides in/out without leaving a gap.
+        // toolbar layout so the button (and banner) slide in/out cleanly.
         if (resetButton.isVisible() != active)
         {
             resetButton.setVisible (active);

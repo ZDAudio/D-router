@@ -66,6 +66,18 @@ namespace dcr
             else if (shouldDrawButtonAsHighlighted)
                 baseColor = baseColor.brighter (0.15f);
         }
+        else if (button.getName() == "panic")
+        {
+            // Safety control: always red so it reads as PANIC at a glance.  Deep
+            // red when armed (idle), bright saturated red when engaged.
+            const bool engaged = (bool) button.getProperties().getWithDefault ("panicEngaged", false);
+            baseColor = engaged ? juce::Colour::fromRGB (210, 40, 40)
+                                : juce::Colour::fromRGB (104, 38, 42);
+            if (shouldDrawButtonAsDown)
+                baseColor = baseColor.darker (0.20f);
+            else if (shouldDrawButtonAsHighlighted)
+                baseColor = baseColor.brighter (0.14f);
+        }
         else if (shouldDrawButtonAsDown)
             baseColor = juce::Colour::fromRGB (16, 16, 20);
         else if (shouldDrawButtonAsHighlighted)
