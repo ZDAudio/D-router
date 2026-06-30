@@ -354,6 +354,9 @@ namespace dcr
         audioPopOutBtn.setTooltip ("Open Audio Setup in its own window.");
         addChildComponent (audioPopOutBtn);
 
+        // Drives the animated rail collapse/expand (see resized / stepRailAnimation).
+        railAnim.fn = [this] { stepRailAnimation(); };
+
         // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
         engine.setSettings (SettingsStore::load());
         customLookAndFeel.applyTheme (engine.getSettings());
@@ -1018,6 +1021,22 @@ namespace dcr
 #endif
     }
 
+    void MainComponent::stepRailAnimation()
+    {
+        const int diff = railTargetW - railWidthPx;
+        if (std::abs (diff) <= 2)
+        {
+            railWidthPx = railTargetW;
+            railAnim.stopTimer();
+        }
+        else
+        {
+            railWidthPx += (int) std::lround (diff * 0.30); // ~10-frame ease @ 60 Hz
+        }
+        resized();
+        repaint(); // rail background lives in paint() -- follow the animated width
+    }
+
     void MainComponent::resized()
     {
         // Loading overlay always covers the entire window.
@@ -1025,16 +1044,19 @@ namespace dcr
 
         auto full = getLocalBounds().reduced (kEdge);
 
-        // Below this width the UI goes compact: the rail collapses to an
-        // icon-only strip and the toolbar drops its captions + shrinks buttons,
-        // so nothing clips on a narrow window.
-        const bool compact = getWidth() < 760;
+        // Below ~760 px the UI goes compact.  railWidthPx eases toward the target
+        // (56 narrow / 168 wide); the discrete bits (rail icons, toolbar captions
+        // + button widths) swap once the animated rail passes the midpoint, so
+        // the whole thing morphs instead of snapping.
+        railTargetW = (getWidth() < 760) ? 56 : kRailW;
+        if (railWidthPx != railTargetW && !railAnim.isTimerRunning())
+            railAnim.startTimerHz (60);
+        const bool compact = railWidthPx < (56 + kRailW) / 2;
 
         // ---- Left navigation rail (full height) -----------------------------
         // Brand mark on top (wide only), then the four page tabs stacked below.
-        // The rail's raised background + divider are drawn in paint() using
-        // railWidthPx, kept in sync here.
-        railWidthPx = compact ? 56 : kRailW;
+        // The rail's raised background + divider are drawn in paint() using the
+        // live railWidthPx, kept in sync here.
         auto rail = full.removeFromLeft (railWidthPx).reduced (compact ? 5 : 10, 2);
         full.removeFromLeft (compact ? 8 : 12); // gap between rail and content column
 

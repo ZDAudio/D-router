@@ -308,10 +308,25 @@ namespace dcr
         };
         SplitView audioSetupView;
 
-        // Current left-rail width (px).  Collapses to an icon-only strip when the
-        // window is narrow; shared between resized() (layout) and paint() (rail
-        // background) so they stay in sync.
+        // Left-rail width (px).  Eases between wide (168) and the icon-only strip
+        // (56) so the compact transition is animated rather than snapping.
+        // railWidthPx is the live (animated) value shared by resized() + paint();
+        // railTargetW is where it's heading (chosen by the width threshold).
+        // The icon/label swap is keyed off the live width, so the rail visibly
+        // morphs.  A small Timer drives the ease and re-lays-out each frame.
         int railWidthPx = 168;
+        int railTargetW = 168;
+        struct CallbackTimer : juce::Timer
+        {
+            std::function<void()> fn;
+            void timerCallback() override
+            {
+                if (fn)
+                    fn();
+            }
+        };
+        CallbackTimer railAnim;
+        void stepRailAnimation();
 
         // Full-window overlay shown during startup splash + matrix rebuilds.
         LoadingOverlay loadingOverlay;
