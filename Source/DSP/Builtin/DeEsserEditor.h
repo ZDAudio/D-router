@@ -21,7 +21,7 @@ namespace dcr::builtin
             viewport.setViewedComponent (generic.get(), false);
             viewport.setScrollBarsShown (true, false);
             addAndMakeVisible (viewport);
-            setSize (460, 380);
+            setSize (480, 600); // tall enough for the full control set (band view + ~15 params)
             startTimerHz (24);
         }
 
@@ -88,6 +88,7 @@ namespace dcr::builtin
             const float fhp = getParam ("hp");
             const float flp = getParam ("lp");
             const bool wide = getParam ("mode") > 0.5f;
+            const bool pro = getParam ("quality") > 0.5f;
             const bool listen = getParam ("listen") > 0.5f;
             const float regTop = (float) bandArea.getY();
             const float regH = (float) bandArea.getHeight() * 0.62f; // above the level bar
@@ -109,7 +110,7 @@ namespace dcr::builtin
             // mode / listen caption, top-left of the band
             g.setColour (juce::Colour::fromRGB (110, 190, 205));
             g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
-            g.drawText (juce::String (wide ? "WIDEBAND" : "SPLIT") + (listen ? "  -  LISTEN" : ""),
+            g.drawText (juce::String (pro ? "PRO - SPECTRAL" : (wide ? "WIDEBAND" : "SPLIT")) + (listen ? "  -  LISTEN" : ""),
                 bandArea.getX() + 4,
                 bandArea.getY() + 2,
                 bandArea.getWidth() - 8,

@@ -1223,6 +1223,11 @@ namespace dcr::builtin
                 juce::ParameterID { "stereo", 1 }, "Stereo", juce::StringArray { "Linked", "Mid", "Side" }, 0));
             l.add (std::make_unique<juce::AudioParameterBool> (
                 juce::ParameterID { "auto", 1 }, "Auto", false));
+            // Quality engine: Eco = full-band IIR (cheap, zero added latency);
+            // Pro = spectral STFT per-frequency (transparent, higher CPU + one
+            // FFT frame of latency).
+            l.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { "quality", 1 }, "Quality", juce::StringArray { "Eco", "Pro" }, 0));
             l.add (std::make_unique<juce::AudioParameterBool> (
                 juce::ParameterID { "listen", 1 }, "Listen", false));
             return l;
@@ -1257,7 +1262,35 @@ namespace dcr::builtin
             grReadout.store (0.0f, std::memory_order_relaxed);
             bandLevel.store (-100.0f, std::memory_order_relaxed);
 
-            setLatencySamples ((int) std::lround (param ("lookahead") * 0.001 * sr));
+            // ---- Pro (spectral STFT) engine state -----------------------------
+            window.assign ((size_t) kFftSize, 0.0f);
+            double sumSq = 0.0;
+            for (int i = 0; i < kFftSize; ++i)
+            {
+                window[(size_t) i] = 0.5f - 0.5f * std::cos (2.0 * juce::MathConstants<double>::pi * i / (kFftSize - 1));
+                sumSq += (double) window[(size_t) i] * window[(size_t) i];
+            }
+            normScale = (float) ((double) kHopSize / juce::jmax (1.0e-9, sumSq));
+            fftData.assign ((size_t) (kFftSize * 2), 0.0f);
+            specMags.assign ((size_t) kNumBins, 0.0f);
+            specEnv.assign ((size_t) kNumBins, 0.0f);
+            for (int ch = 0; ch < kWork; ++ch)
+            {
+                sp[ch].inputFifo.assign ((size_t) kFftSize, 0.0f);
+                sp[ch].outputFifo.assign ((size_t) kFftSize, 0.0f);
+                sp[ch].binGain.assign ((size_t) kNumBins, 1.0f);
+                sp[ch].dryFifo.assign ((size_t) kFftSize, 0.0f); // align dry for mix
+                sp[ch].fifoIndex = 0;
+                sp[ch].hopCounter = 0;
+                sp[ch].dryIdx = 0;
+            }
+
+            // Latency depends on the active engine: Eco = look-ahead samples,
+            // Pro = one FFT frame.  Read once here (non-RT); switching live
+            // updates the sound immediately, PDC re-reads on engine restart.
+            const bool pro = param ("quality") > 0.5f;
+            setLatencySamples (pro ? kFftSize
+                                   : (int) std::lround (param ("lookahead") * 0.001 * sr));
         }
 
         void processDsp (juce::AudioBuffer<float>& buffer) override
@@ -1266,6 +1299,11 @@ namespace dcr::builtin
             const int nch = buffer.getNumChannels();
             if (nch == 0)
                 return;
+            if (param ("quality") > 0.5f)
+            {
+                processSpectral (buffer); // Pro engine
+                return;
+            }
             const bool stereo = (nch >= 2);
 
             const float hp = juce::jlimit (2000.0f, 18000.0f, param ("hp"));
@@ -1425,6 +1463,132 @@ namespace dcr::builtin
             grReadout.store (blockMinGr, std::memory_order_relaxed);
         }
 
+        // ---- Pro engine: spectral STFT per-frequency de-essing ----------------
+        // For each FFT frame, only the bins inside [HP, LP] that poke above the
+        // local spectral envelope get attenuated (reusing the same soft-knee
+        // curve as Eco, per bin).  Far more transparent than a whole-band duck;
+        // costs an FFT per hop + one frame of latency.  Stereo/Split/look-ahead
+        // are Eco-only and ignored here.
+        void processSpectral (juce::AudioBuffer<float>& buffer)
+        {
+            const int ns = buffer.getNumSamples();
+            const int nch = juce::jmin (buffer.getNumChannels(), kWork);
+
+            const float hp = juce::jlimit (2000.0f, 18000.0f, param ("hp"));
+            const float lp = juce::jlimit (hp + 100.0f, 20000.0f, param ("lp"));
+            const float mix = juce::jlimit (0.0f, 1.0f, param ("mix") * 0.01f);
+            const bool listen = param ("listen") > 0.5f;
+            const double frameRate = dspSampleRate / (double) kHopSize;
+            cfg.thr = param ("threshold");
+            cfg.ratio = juce::jmax (1.0f, param ("ratio"));
+            cfg.knee = juce::jmax (0.0f, param ("knee"));
+            cfg.range = juce::jmin (0.0f, param ("range"));
+            cfg.att = std::exp (-1.0f / (float) (juce::jmax (0.1f, param ("attack")) * 0.001 * frameRate));
+            cfg.rel = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("release")) * 0.001 * frameRate));
+            cfg.listen = listen;
+            const double binHz = dspSampleRate / (double) kFftSize;
+            cfg.kLo = juce::jlimit (1, kNumBins - 1, (int) std::lround (hp / binHz));
+            cfg.kHi = juce::jlimit (cfg.kLo, kNumBins - 1, (int) std::lround (lp / binHz));
+
+            for (int ch = 0; ch < nch; ++ch)
+            {
+                auto& cs = sp[ch];
+                float* x = buffer.getWritePointer (ch);
+                for (int i = 0; i < ns; ++i)
+                {
+                    const float in = x[i];
+                    cs.inputFifo[(size_t) cs.fifoIndex] = in;
+                    const float wet = cs.outputFifo[(size_t) cs.fifoIndex];
+                    cs.outputFifo[(size_t) cs.fifoIndex] = 0.0f;
+
+                    const float dryD = cs.dryFifo[(size_t) cs.dryIdx]; // fftSize-delayed
+                    cs.dryFifo[(size_t) cs.dryIdx] = in;
+                    if (++cs.dryIdx >= kFftSize)
+                        cs.dryIdx = 0;
+
+                    x[i] = listen ? wet : (dryD * (1.0f - mix) + wet * mix);
+
+                    if (++cs.fifoIndex >= kFftSize)
+                        cs.fifoIndex = 0;
+                    if (++cs.hopCounter >= kHopSize)
+                    {
+                        cs.hopCounter = 0;
+                        processSpectralFrame (ch);
+                    }
+                }
+            }
+        }
+
+        void processSpectralFrame (int ch)
+        {
+            auto& cs = sp[(size_t) ch];
+            const int idx = cs.fifoIndex;
+            std::fill (fftData.begin(), fftData.end(), 0.0f);
+            for (int i = 0; i < kFftSize; ++i)
+                fftData[(size_t) i] = cs.inputFifo[(size_t) ((idx + i) % kFftSize)] * window[(size_t) i];
+
+            fft.performRealOnlyForwardTransform (fftData.data());
+            for (int k = 0; k < kNumBins; ++k)
+            {
+                const float re = fftData[(size_t) (2 * k)];
+                const float im = fftData[(size_t) (2 * k + 1)];
+                specMags[(size_t) k] = std::sqrt (re * re + im * im);
+            }
+            logSmooth (specMags.data(), specEnv.data(), kNumBins, 6.0f); // local envelope
+
+            float frameMaxDb = -100.0f, frameMinGr = 0.0f;
+            for (int k = 0; k < kNumBins; ++k)
+            {
+                float target = 1.0f;
+                if (k >= cfg.kLo && k <= cfg.kHi)
+                {
+                    const float binDb = dcr::deess::gainToDb (specMags[(size_t) k], -120.0f);
+                    const float envDb = dcr::deess::gainToDb (specEnv[(size_t) k], -120.0f);
+                    const float effThr = envDb + (cfg.thr + 30.0f); // above the local envelope
+                    const float grDb = dcr::deess::gainReductionDb (binDb, effThr, cfg.ratio, cfg.knee, cfg.range);
+                    target = dcr::deess::dbToGain (grDb);
+                    frameMaxDb = juce::jmax (frameMaxDb, binDb);
+                    frameMinGr = juce::jmin (frameMinGr, grDb);
+                }
+                float& g = cs.binGain[(size_t) k];
+                const float c = (target < g) ? cfg.att : cfg.rel;
+                g = c * g + (1.0f - c) * target;
+                const float applied = cfg.listen
+                                          ? ((k >= cfg.kLo && k <= cfg.kHi) ? (1.0f - g) : 0.0f)
+                                          : g;
+                fftData[(size_t) (2 * k)] *= applied;
+                fftData[(size_t) (2 * k + 1)] *= applied;
+            }
+
+            fft.performRealOnlyInverseTransform (fftData.data());
+            for (int i = 0; i < kFftSize; ++i)
+                cs.outputFifo[(size_t) ((idx + i) % kFftSize)] += fftData[(size_t) i] * window[(size_t) i] * normScale;
+
+            bandLevel.store (frameMaxDb, std::memory_order_relaxed);
+            grReadout.store (frameMinGr, std::memory_order_relaxed);
+        }
+
+        // Zero-phase log-frequency smoother (forward+backward one-pole, window
+        // widening with frequency) -- gives the per-bin "local average" the
+        // spectral de-esser compares each bin against.
+        static void logSmooth (const float* src, float* dst, int n, float strength)
+        {
+            float run = src[0];
+            for (int k = 0; k < n; ++k)
+            {
+                const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
+                run += a * (src[k] - run);
+                dst[k] = run;
+            }
+            run = dst[n - 1];
+            for (int k = n - 1; k >= 0; --k)
+            {
+                const float a = juce::jlimit (0.02f, 1.0f, strength / (float) (k + 1));
+                run += a * (dst[k] - run);
+                dst[k] = run;
+            }
+        }
+
     private:
         static constexpr int kWork = 2; // max work streams (stereo, or 1 for M/S)
         juce::dsp::IIR::Filter<float> hpDet[kWork], lpDet[kWork];
@@ -1433,6 +1597,29 @@ namespace dcr::builtin
         float curBand[kWork] { 0.0f, 0.0f };
         int maxLaSamples = 1, delayWrite = 0;
         float env = 0.0f, grGain = 1.0f, autoEnv = 0.0f, lastHp = -1.0f, lastLp = -1.0f;
+
+        // Pro (spectral) engine.
+        static constexpr int kFftOrder = 9;
+        static constexpr int kFftSize = 1 << kFftOrder; // 512 (~10.7 ms latency @ 48k)
+        static constexpr int kHopSize = kFftSize / 4; // 4x overlap
+        static constexpr int kNumBins = kFftSize / 2 + 1;
+        struct SpecChan
+        {
+            std::vector<float> inputFifo, outputFifo, binGain, dryFifo;
+            int fifoIndex = 0, hopCounter = 0, dryIdx = 0;
+        };
+        struct SpecCfg
+        {
+            float thr = -30.0f, ratio = 4.0f, knee = 6.0f, range = -12.0f, att = 0.0f, rel = 0.0f;
+            int kLo = 1, kHi = 2;
+            bool listen = false;
+        };
+        juce::dsp::FFT fft { kFftOrder };
+        std::vector<float> window, fftData, specMags, specEnv;
+        float normScale = 1.0f;
+        SpecChan sp[kWork];
+        SpecCfg cfg;
+
         std::atomic<float> grReadout { 0.0f };
         std::atomic<float> bandLevel { -100.0f };
     };
