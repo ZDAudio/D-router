@@ -1117,7 +1117,7 @@ namespace dcr
         {
             // Header strip carries the pop-out button (no overlap with the grid).
             auto hdr = r.removeFromTop (24);
-            matrixPopOutBtn.setBounds (hdr.removeFromRight (96).withSizeKeepingCentre (96, 22));
+            matrixPopOutBtn.setBounds (hdr.removeFromRight (40).withSizeKeepingCentre (40, 22));
             r.removeFromTop (4);
             if (matrixHost.isDetached())
                 matrixPlaceholder.setBounds (r);
@@ -1144,7 +1144,7 @@ namespace dcr
         else if (currentTab == AudioSetupTab)
         {
             auto hdr = r.removeFromTop (24);
-            audioPopOutBtn.setBounds (hdr.removeFromRight (96).withSizeKeepingCentre (96, 22));
+            audioPopOutBtn.setBounds (hdr.removeFromRight (40).withSizeKeepingCentre (40, 22));
             r.removeFromTop (4);
             // audioSetupView stacks input (top) + output (bottom) device panels.
             if (audioHost.isDetached())
@@ -2439,12 +2439,12 @@ namespace dcr
         matrixView.setVisible (matrixHost.isDetached() || routing);
         matrixPlaceholder.setVisible (routing && matrixHost.isDetached());
         matrixPopOutBtn.setVisible (routing);
-        matrixPopOutBtn.setButtonText (matrixHost.isDetached() ? "Re-dock  \xe2\x86\x99" : "Pop out  \xe2\x86\x97");
+        matrixPopOutBtn.setButtonText (matrixHost.isDetached() ? "<-" : "->");
 
         audioSetupView.setVisible (audioHost.isDetached() || audioSetup);
         audioPlaceholder.setVisible (audioSetup && audioHost.isDetached());
         audioPopOutBtn.setVisible (audioSetup);
-        audioPopOutBtn.setButtonText (audioHost.isDetached() ? "Re-dock  \xe2\x86\x99" : "Pop out  \xe2\x86\x97");
+        audioPopOutBtn.setButtonText (audioHost.isDetached() ? "<-" : "->");
 
         if (audioSetup)
         {

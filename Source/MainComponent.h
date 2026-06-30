@@ -275,8 +275,8 @@ namespace dcr
         // Setup), placed in a header strip above the content so they never
         // overlap the panel.  Groups / Engine Monitor carry their own in-panel
         // button instead.
-        juce::TextButton matrixPopOutBtn { "Pop out  \xe2\x86\x97" };
-        juce::TextButton audioPopOutBtn { "Pop out  \xe2\x86\x97" };
+        juce::TextButton matrixPopOutBtn { "->" };
+        juce::TextButton audioPopOutBtn { "->" };
 
         MatrixView matrixView { engine };
         OutputGroupPanel groupPanel { engine, OutputGroupPanel::Direction::Outputs };
