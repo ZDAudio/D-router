@@ -278,6 +278,25 @@ namespace dcr
 
     void SettingsDialog::addBufferSafetySection (const juce::String& tooltip)
     {
+        // ---- Row 0: Auto toggle -------------------------------------------------
+        attachInfoIcon ("Auto: size each device's ring buffers + pre-fill from the "
+                        "hardware latency it reports at open, within the Safe..Safest "
+                        "envelope.  When on, the preset and the five fields below are "
+                        "ignored.\n\nDefault: off.");
+        {
+            auto* tb = new juce::ToggleButton ("Auto ring size from device latency");
+            tb->setColour (juce::ToggleButton::textColourId, juce::Colours::lightgrey);
+            tb->setColour (juce::ToggleButton::tickColourId, juce::Colour::fromRGB (0, 255, 210));
+            tb->setToggleState (working.autoRingSize, juce::dontSendNotification);
+            tb->setBounds (leftPad + infoW + gap, nextRowY, labelW + gap + editorW, rowH - 4);
+            fieldsHolder.addAndMakeVisible (*tb);
+            toggles.add (tb);
+            autoRingToggle = tb;
+            applyActions.push_back ([this, tb] { working.autoRingSize = tb->getToggleState(); });
+            tb->onClick = [this] { updateBufferAutoEnabled(); };
+            nextRowY += rowH;
+        }
+
         // ---- Row 1: the preset slider + a state readout (incl. "Custom") --------
         attachInfoIcon (tooltip);
 
@@ -377,8 +396,22 @@ namespace dcr
             applyBufferPreset ((int) std::lround (bufferSafetySlider->getValue()));
         };
 
-        // Initial state: match the slider + readout to the loaded combo values.
+        // Initial state: match the slider + readout to the loaded combo values,
+        // and grey the manual controls if Auto is on.
         updateBufferSliderState();
+        updateBufferAutoEnabled();
+    }
+
+    void SettingsDialog::updateBufferAutoEnabled()
+    {
+        const bool manual = (autoRingToggle == nullptr) || !autoRingToggle->getToggleState();
+        if (bufferSafetySlider != nullptr)
+            bufferSafetySlider->setEnabled (manual);
+        if (bufferSafetyStateLabel != nullptr)
+            bufferSafetyStateLabel->setEnabled (manual);
+        for (auto* cb : ringCombos)
+            if (cb != nullptr)
+                cb->setEnabled (manual);
     }
 
     void SettingsDialog::applyBufferPreset (int level)

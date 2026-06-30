@@ -83,6 +83,9 @@ namespace dcr
         std::array<juce::ComboBox*, 5> ringCombos {};
         std::array<std::vector<int>, 5> ringValues {};
         bool syncingBuffers = false; // guards the two-way update
+        juce::OwnedArray<juce::ToggleButton> toggles;
+        juce::ToggleButton* autoRingToggle = nullptr; // "Auto ring size from device latency"
+        void updateBufferAutoEnabled(); // greys the preset + manual fields when Auto is on
         juce::OwnedArray<juce::Label> sectionHeads;
         juce::OwnedArray<InfoIcon> infoIcons;
         juce::TooltipWindow tooltipWindow { this, 350 };

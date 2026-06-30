@@ -1,6 +1,7 @@
 #include "Engine/DeviceWorker.h"
 
 #include "Engine/DeviceRateChoice.h"
+#include "Engine/RingAutoSize.h"
 
 #include <algorithm>
 #include <cmath>
@@ -118,17 +119,41 @@ namespace dcr
         configuredBufferSize = devBuf;
         formatChanged.store (false, std::memory_order_release);
 
-        // Ring sizing comes from settings.  No magic constants here.
-        // Per-channel cap so a misconfigured multiplier (very large engineBlock x
-        // very large mult, or a huge ratio between device and engine rates) can't
+        // Ring sizing.  Two modes:
+        //   - fixed multipliers from settings (default), or
+        //   - auto: derived per-device from the hardware latency THIS device
+        //     reports (settings.autoRingSize) -- see RingAutoSize.h.
+        // Per-channel cap so a misconfigured multiplier / huge rate ratio can't
         // request a gigabyte ring and crash the app with std::bad_alloc.
         static constexpr size_t kMaxRingSamplesPerChannel = 256 * 1024; // ~1 MB / ch
-        size_t inRingSize = (size_t) std::max (
-            settings.inputRingMultEng * engineBlockSize,
-            (int) std::ceil ((double) settings.inputRingMultDev * devBuf * engineSampleRate / devSr));
-        size_t outRingSize = (size_t) std::max (
-            settings.outputRingMultEng * engineBlockSize,
-            (int) std::ceil ((double) settings.outputRingMultDev * devBuf * engineSampleRate / devSr));
+        size_t inRingSize, outRingSize;
+        int effPrefillBlocks = settings.outputPreFillBlocks;
+        if (settings.autoRingSize)
+        {
+            const int hwIn = device->getInputLatencyInSamples();
+            const int hwOut = device->getOutputLatencyInSamples();
+            const auto plan = dcr::ringauto::computeAutoRingPlan (
+                engineBlockSize, engineSampleRate, devBuf, devSr, hwIn, hwOut);
+            inRingSize = (size_t) plan.inRingSamples;
+            outRingSize = (size_t) plan.outRingSamples;
+            effPrefillBlocks = plan.prefillBlocks;
+            juce::Logger::writeToLog ("DeviceWorker '" + requestedName
+                                      + "': AUTO ring size from latency (hwIn=" + juce::String (hwIn)
+                                      + " hwOut=" + juce::String (hwOut) + " spl @ " + juce::String ((int) devSr)
+                                      + " Hz, buf=" + juce::String (devBuf) + ") -> in="
+                                      + juce::String ((juce::int64) inRingSize) + " out="
+                                      + juce::String ((juce::int64) outRingSize)
+                                      + " spl, prefill=" + juce::String (effPrefillBlocks) + " blocks");
+        }
+        else
+        {
+            inRingSize = (size_t) std::max (
+                settings.inputRingMultEng * engineBlockSize,
+                (int) std::ceil ((double) settings.inputRingMultDev * devBuf * engineSampleRate / devSr));
+            outRingSize = (size_t) std::max (
+                settings.outputRingMultEng * engineBlockSize,
+                (int) std::ceil ((double) settings.outputRingMultDev * devBuf * engineSampleRate / devSr));
+        }
         inRingSize = std::min (inRingSize, kMaxRingSamplesPerChannel);
         outRingSize = std::min (outRingSize, kMaxRingSamplesPerChannel);
 
@@ -182,9 +207,10 @@ namespace dcr
         // the OS hands us a larger block than it advertised.
         silenceScratch.assign ((size_t) juce::jmax (devBuf, engineBlockSize), 0.0f);
 
-        // Pre-fill output rings with settings.outputPreFillBlocks engine blocks
-        // of silence (clamped to ring capacity).
-        const size_t preroll = juce::jmin ((size_t) (settings.outputPreFillBlocks * engineBlockSize),
+        // Pre-fill output rings with effPrefillBlocks engine blocks of silence
+        // (clamped to ring capacity).  effPrefillBlocks is the auto-derived value
+        // in auto mode, else settings.outputPreFillBlocks.
+        const size_t preroll = juce::jmin ((size_t) (effPrefillBlocks * engineBlockSize),
             outRingSize);
         std::vector<float> silence (preroll, 0.0f);
         for (auto& r : outputRings)
