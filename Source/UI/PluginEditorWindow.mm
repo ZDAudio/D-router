@@ -228,12 +228,17 @@ PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& p,
         const int natW = juce::jmax(1, ed->getWidth());
         const int natH = juce::jmax(1, ed->getHeight());
 
-        if (ed->isResizable())
+        // Built-in editors are native JUCE components that relayout in their own
+        // resized(), so they must resize FREELY -- never aspect-locked/scaled
+        // like a fixed-size external AU NSView.  ("Internal" == our
+        // InternalPluginFormat; see BuiltinProcessor::fillInPluginDescription.)
+        const bool builtin = (plugin.getPluginDescription().pluginFormatName == "Internal");
+
+        if (ed->isResizable() || builtin)
         {
-            // Plugin manages its own resizing -- host it directly and honour
-            // its own constrainer (unchanged behaviour).
+            // Self-resizing editor -- host it directly, no aspect lock.
             setContentNonOwned(ed, true); // resizes window to editor's natural size
-            if (auto* c = ed->getConstrainer())
+            if (auto* c = (ed->isResizable() ? ed->getConstrainer() : nullptr))
             {
                 const int minW = juce::jmax(1, c->getMinimumWidth());
                 const int minH = juce::jmax(1, c->getMinimumHeight());
@@ -243,9 +248,11 @@ PluginEditorWindow::PluginEditorWindow(juce::AudioPluginInstance& p,
             }
             else
             {
-                // No explicit constrainer: pin the lower bound at the
-                // natural size, give a generous upper bound.
-                setResizeLimits(natW, natH, natW * 8, natH * 8);
+                // No explicit constrainer: generous free resize around the
+                // natural size (half .. 4x), aspect unconstrained.
+                const int minW = juce::jmax(1, juce::roundToInt(natW * 0.5));
+                const int minH = juce::jmax(1, juce::roundToInt(natH * 0.5));
+                setResizeLimits(minW, minH, natW * 4, natH * 4);
             }
         }
         else

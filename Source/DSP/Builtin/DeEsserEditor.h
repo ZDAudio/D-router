@@ -45,7 +45,10 @@ namespace dcr::builtin
         }
 
     private:
-        void timerCallback() override { repaint (topArea); }
+        // Repaint the whole top strip (band + meter).  Note: the member topArea
+        // is shrunk in resized() to exclude meterArea, so repainting topArea
+        // alone leaves the GR meter frozen -- cover the full strip explicitly.
+        void timerCallback() override { repaint (0, 0, getWidth(), topHeight); }
 
         float getParam (const juce::String& id) const
         {
@@ -79,11 +82,40 @@ namespace dcr::builtin
                 g.drawText (juce::String (f / 1000.0f, 0) + "k", (int) x + 2, bandArea.getBottom() - 13, 30, 12, juce::Justification::topLeft);
             }
 
-            // crossover marker (highpass corner of the de-ess band)
-            const float fx = xForFreq (getParam ("freq"), bandArea);
+            // Affected region depends on Mode: Split ducks a band around `freq`
+            // (band-pass detector, Q~2 -> roughly 0.78x..1.28x the centre);
+            // Wideband ducks the whole signal.  Listen auditions the band.
+            const float fc = getParam ("freq");
+            const bool wide = getParam ("mode") > 0.5f;
+            const bool listen = getParam ("listen") > 0.5f;
+            const float regTop = (float) bandArea.getY();
+            const float regH = (float) bandArea.getHeight() * 0.62f; // above the level bar
+            if (wide)
+            {
+                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 36)); // whole signal
+                g.fillRect ((float) bandArea.getX(), regTop, (float) bandArea.getWidth(), regH);
+            }
+            else
+            {
+                const float xlo = xForFreq (fc * 0.78f, bandArea);
+                const float xhi = xForFreq (fc * 1.28f, bandArea);
+                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 70));
+                g.fillRect (xlo, regTop, xhi - xlo, regH);
+            }
+            // centre marker
+            const float fx = xForFreq (fc, bandArea);
             g.setColour (juce::Colour::fromRGB (0, 200, 220));
-            g.fillRect ((float) fx - 1.0f, (float) bandArea.getY(), 2.0f, (float) bandArea.getHeight());
-            g.fillRect ((float) fx, (float) bandArea.getY(), (float) (bandArea.getRight() - fx), 6.0f); // band region tab
+            g.fillRect (fx - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
+
+            // mode / listen caption, top-left of the band
+            g.setColour (juce::Colour::fromRGB (110, 190, 205));
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (juce::String (wide ? "WIDEBAND" : "SPLIT") + (listen ? "  -  LISTEN" : ""),
+                bandArea.getX() + 4,
+                bandArea.getY() + 2,
+                bandArea.getWidth() - 8,
+                12,
+                juce::Justification::topLeft);
 
             // sibilance level bar (horizontal, mapped -60..0 dB across width) +
             // threshold tick.
