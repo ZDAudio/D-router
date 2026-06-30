@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
-project(dcorerouter VERSION 0.10.0 LANGUAGES C CXX OBJC OBJCXX)
+
+# Universal binary: one .app that runs natively on both Apple Silicon and Intel.
+# MUST be set before project() -- project() probes the compiler and creates the
+# CMAKE_OSX_ARCHITECTURES cache entry, after which a plain set(... CACHE ...)
+# can no longer change it.  No platform intrinsics live in the tree (JUCE
+# handles NEON/SSE internally; <simd/simd.h> is cross-arch), so x86_64 needs no
+# code changes -- only this.  Override for a single-arch dev build, e.g.
+#   cmake -B build -DCMAKE_OSX_ARCHITECTURES=arm64
+set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "macOS build architectures")
+
+project(dcorerouter VERSION 0.10.1 LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
