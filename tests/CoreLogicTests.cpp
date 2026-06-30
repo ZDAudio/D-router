@@ -7,6 +7,7 @@
 // staging) are intentionally NOT here -- they belong in a JUCE-linked target;
 // see the PR notes.
 
+#include "DSP/Builtin/DeEsserMath.h"
 #include "DSP/Builtin/RecorderNaming.h"
 #include "DSP/Builtin/ResonanceMath.h"
 #include "DSP/Builtin/SpectralNodeMath.h"
@@ -706,6 +707,44 @@ namespace
     }
 
     // ---------------------------------------------------------------------------
+    // DeEsserMath (soft-knee gain-reduction curve for the sibilance band).
+    // The stateful envelope/attack-release and the IIR band filter live in the
+    // processor; only the static curve is unit-tested here.
+    // ---------------------------------------------------------------------------
+    void test_deesser_gain_curve()
+    {
+        using namespace dcr::deess;
+        // Below the knee region -> no reduction.
+        CHECK (feq (gainReductionDb (-40.0f, -30.0f, 4.0f, 6.0f, -24.0f), 0.0f));
+        // Hard knee (knee = 0), well above threshold: GR = -(1-1/ratio)*over.
+        // over = 10, ratio 4 -> slope 0.75 -> -7.5 dB.
+        CHECK (feq (gainReductionDb (-20.0f, -30.0f, 4.0f, 0.0f, -24.0f), -7.5f, 1.0e-4f));
+        // ratio 1 -> no reduction ever.
+        CHECK (feq (gainReductionDb (0.0f, -30.0f, 1.0f, 0.0f, -24.0f), 0.0f));
+        // Clamped to the range ceiling: -(0.75*40) = -30 -> clamped to -12.
+        CHECK (feq (gainReductionDb (10.0f, -30.0f, 4.0f, 0.0f, -12.0f), -12.0f));
+        // Never positive.
+        CHECK (gainReductionDb (20.0f, -40.0f, 8.0f, 6.0f, -24.0f) <= 0.0f);
+        // More reduction as level rises (monotonic, below the ceiling).
+        const float lo = gainReductionDb (-25.0f, -30.0f, 4.0f, 0.0f, -24.0f); // over 5 -> -3.75
+        const float hi = gainReductionDb (-20.0f, -30.0f, 4.0f, 0.0f, -24.0f); // over 10 -> -7.5
+        CHECK (hi < lo);
+        // Soft knee is C1-continuous with the hard-knee curve at the corners.
+        const float ratio = 4.0f, knee = 12.0f, thr = -30.0f, rng = -48.0f;
+        const float upper = gainReductionDb (thr + knee * 0.5f, thr, ratio, knee, rng); // top corner
+        const float upperHard = gainReductionDb (thr + knee * 0.5f, thr, ratio, 0.0f, rng);
+        CHECK (feq (upper, upperHard, 1.0e-4f)); // knee meets the hard curve at +knee/2
+        const float lower = gainReductionDb (thr - knee * 0.5f, thr, ratio, knee, rng); // bottom corner
+        CHECK (feq (lower, 0.0f, 1.0e-4f)); // and meets 0 at -knee/2
+        // Knee centre (over = 0, knee = 12): x = 6, gr = -slope*36/24 = -0.75*1.5.
+        const float mid = gainReductionDb (thr, thr, ratio, knee, rng);
+        CHECK (feq (mid, -1.125f, 1.0e-4f));
+        // dB/linear round-trip.
+        CHECK (feq (dbToGain (0.0f), 1.0f));
+        CHECK (feq (gainToDb (dbToGain (-6.0f)), -6.0f, 1.0e-3f));
+    }
+
+    // ---------------------------------------------------------------------------
     // StereoMeterMath (HF-tilt visualization: freq-to-norm axis + high-lift gain)
     // ---------------------------------------------------------------------------
     void test_stereometer_freq_to_norm()
@@ -1171,6 +1210,8 @@ int main()
     test_resonance_node_interp();
     test_resonance_target_reduction();
     test_resonance_base_strength();
+
+    test_deesser_gain_curve();
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DSP/Builtin/DeEsserMath.h"
+
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
@@ -1193,15 +1195,25 @@ namespace dcr::builtin
         {
             APVTS::ParameterLayout l;
             l.add (std::make_unique<juce::AudioParameterFloat> (
-                juce::ParameterID { "freq", 1 }, "Frequency", juce::NormalisableRange<float> (2000.0f, 16000.0f, 1.0f, 0.5f), 6000.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
+                juce::ParameterID { "freq", 1 }, "Frequency", juce::NormalisableRange<float> (2000.0f, 16000.0f, 1.0f, 0.5f), 6500.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
             l.add (std::make_unique<juce::AudioParameterFloat> (
                 juce::ParameterID { "threshold", 1 }, "Threshold", juce::NormalisableRange<float> (-60.0f, 0.0f, 0.1f), -30.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
             l.add (std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID { "ratio", 1 }, "Ratio", juce::NormalisableRange<float> (1.0f, 10.0f, 0.1f, 0.6f), 4.0f, juce::AudioParameterFloatAttributes().withLabel (":1")));
+            l.add (std::make_unique<juce::AudioParameterFloat> (
                 juce::ParameterID { "range", 1 }, "Range", juce::NormalisableRange<float> (-24.0f, 0.0f, 0.1f), -12.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
             l.add (std::make_unique<juce::AudioParameterFloat> (
-                juce::ParameterID { "attack", 1 }, "Attack", juce::NormalisableRange<float> (0.1f, 20.0f, 0.1f, 0.5f), 2.0f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
+                juce::ParameterID { "knee", 1 }, "Knee", juce::NormalisableRange<float> (0.0f, 18.0f, 0.1f), 6.0f, juce::AudioParameterFloatAttributes().withLabel ("dB")));
             l.add (std::make_unique<juce::AudioParameterFloat> (
-                juce::ParameterID { "release", 1 }, "Release", juce::NormalisableRange<float> (5.0f, 200.0f, 1.0f, 0.5f), 60.0f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
+                juce::ParameterID { "attack", 1 }, "Attack", juce::NormalisableRange<float> (0.1f, 20.0f, 0.1f, 0.5f), 1.5f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
+            l.add (std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID { "release", 1 }, "Release", juce::NormalisableRange<float> (5.0f, 200.0f, 1.0f, 0.5f), 80.0f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
+            l.add (std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID { "lookahead", 1 }, "Lookahead", juce::NormalisableRange<float> (0.0f, 5.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel ("ms")));
+            l.add (std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { "mode", 1 }, "Mode", juce::StringArray { "Split", "Wideband" }, 0));
+            l.add (std::make_unique<juce::AudioParameterBool> (
+                juce::ParameterID { "listen", 1 }, "Listen", false));
             return l;
         }
 
@@ -1209,26 +1221,40 @@ namespace dcr::builtin
         void prepareDsp (double sr, int, int numChannels) override
         {
             dspSampleRate = sr;
-            hp.clear();
+            // One band-pass per channel: isolates the sibilance band for both
+            // detection (peak) and -- in Split mode -- the band we duck.
+            bp.clear();
             for (int i = 0; i < numChannels; ++i)
             {
                 auto f = std::make_unique<juce::dsp::IIR::Filter<float>>();
                 f->prepare ({ sr, (juce::uint32) 8192, 1 });
-                hp.push_back (std::move (f));
+                bp.push_back (std::move (f));
             }
-            highScratch.assign ((size_t) numChannels, 0.0f);
-            lowScratch.assign ((size_t) numChannels, 0.0f);
+            bandScratch.assign ((size_t) numChannels, 0.0f);
+
+            // Look-ahead delay lines (dry + band), pre-sized to the 5 ms maximum
+            // so the audio thread never allocates when the knob moves.
+            maxLaSamples = (int) std::ceil (0.005 * sr) + 1;
+            dryDelay.assign ((size_t) numChannels, std::vector<float> ((size_t) maxLaSamples, 0.0f));
+            bandDelay.assign ((size_t) numChannels, std::vector<float> ((size_t) maxLaSamples, 0.0f));
+            delayWrite = 0;
+
             env = 0.0f;
             grGain = 1.0f;
             lastFreq = -1.0f;
             grReadout.store (0.0f, std::memory_order_relaxed);
             bandLevel.store (-100.0f, std::memory_order_relaxed);
+
+            // Report the look-ahead as processing latency so PDC can align it.
+            // Read once here (non-RT); changing the knob updates the sound live,
+            // and PDC re-reads on the next engine restart.
+            setLatencySamples ((int) std::lround (param ("lookahead") * 0.001 * sr));
         }
 
         void processDsp (juce::AudioBuffer<float>& buffer) override
         {
             const int ns = buffer.getNumSamples();
-            const int nch = juce::jmin (buffer.getNumChannels(), (int) hp.size());
+            const int nch = juce::jmin (buffer.getNumChannels(), (int) bp.size());
             if (nch == 0)
                 return;
 
@@ -1236,48 +1262,71 @@ namespace dcr::builtin
             if (std::abs (freq - lastFreq) > 0.5f)
             {
                 lastFreq = freq;
-                auto co = juce::dsp::IIR::Coefficients<float>::makeHighPass (dspSampleRate, freq, 0.707f);
-                for (auto& f : hp)
+                auto co = juce::dsp::IIR::Coefficients<float>::makeBandPass (dspSampleRate, freq, kBandQ);
+                for (auto& f : bp)
                     f->coefficients = co;
             }
 
             const float threshold = param ("threshold");
+            const float ratio = juce::jmax (1.0f, param ("ratio"));
+            const float knee = juce::jmax (0.0f, param ("knee"));
             const float rangeDb = juce::jmin (0.0f, param ("range"));
-            const float ratio = 4.0f; // fixed, strong band ratio
             const float attCoeff = std::exp (-1.0f / (float) (juce::jmax (0.1f, param ("attack")) * 0.001 * dspSampleRate));
             const float relCoeff = std::exp (-1.0f / (float) (juce::jmax (1.0f, param ("release")) * 0.001 * dspSampleRate));
+            const bool wideband = param ("mode") > 0.5f;
+            const bool listen = param ("listen") > 0.5f;
+            int laSamples = (int) std::lround (param ("lookahead") * 0.001 * dspSampleRate);
+            laSamples = juce::jlimit (0, maxLaSamples - 1, laSamples);
 
             float blockMaxLevel = -100.0f, blockMinGr = 0.0f;
 
             for (int i = 0; i < ns; ++i)
             {
+                // 1) Side-chain: band-pass each channel; track the stereo-linked
+                //    peak so L/R get identical reduction (no image shift).
                 float peak = 0.0f;
                 for (int ch = 0; ch < nch; ++ch)
                 {
-                    const float x = buffer.getReadPointer (ch)[i];
-                    const float h = hp[(size_t) ch]->processSample (x);
-                    highScratch[(size_t) ch] = h;
-                    lowScratch[(size_t) ch] = x - h;
-                    peak = juce::jmax (peak, std::abs (h));
+                    const float b = bp[(size_t) ch]->processSample (buffer.getReadPointer (ch)[i]);
+                    bandScratch[(size_t) ch] = b;
+                    peak = juce::jmax (peak, std::abs (b));
                 }
 
+                // 2) Envelope follower -> soft-knee gain curve -> smoothed gain.
                 const float coeff = (peak > env) ? attCoeff : relCoeff;
                 env = coeff * env + (1.0f - coeff) * peak;
-
-                const float levelDb = juce::Decibels::gainToDecibels (env, -100.0f);
+                const float levelDb = dcr::deess::gainToDb (env, -100.0f);
                 blockMaxLevel = juce::jmax (blockMaxLevel, levelDb);
-                const float over = levelDb - threshold;
-                float grDb = over > 0.0f ? -(over * (1.0f - 1.0f / ratio)) : 0.0f;
-                grDb = juce::jmax (grDb, rangeDb); // clamp reduction
-                const float targetGain = std::pow (10.0f, grDb * 0.05f);
 
+                const float targetGain = dcr::deess::dbToGain (
+                    dcr::deess::gainReductionDb (levelDb, threshold, ratio, knee, rangeDb));
                 const float gc = (targetGain < grGain) ? attCoeff : relCoeff;
                 grGain = gc * grGain + (1.0f - gc) * targetGain;
-                blockMinGr = juce::jmin (blockMinGr, juce::Decibels::gainToDecibels (grGain, -48.0f));
+                blockMinGr = juce::jmin (blockMinGr, dcr::deess::gainToDb (grGain, -48.0f));
 
+                // 3) Apply to the (optionally look-ahead-delayed) audio.  The
+                //    gain is from the *current* detector, so reduction leads the
+                //    delayed signal by laSamples.
+                const int readIdx = (delayWrite - laSamples + maxLaSamples) % maxLaSamples;
                 for (int ch = 0; ch < nch; ++ch)
-                    buffer.getWritePointer (ch)[i] = lowScratch[(size_t) ch]
-                                                     + highScratch[(size_t) ch] * grGain;
+                {
+                    auto& dd = dryDelay[(size_t) ch];
+                    auto& bd = bandDelay[(size_t) ch];
+                    dd[(size_t) delayWrite] = buffer.getReadPointer (ch)[i];
+                    bd[(size_t) delayWrite] = bandScratch[(size_t) ch];
+                    const float dry = dd[(size_t) readIdx];
+                    const float band = bd[(size_t) readIdx];
+
+                    float out;
+                    if (listen)
+                        out = band; // audition the detection band
+                    else if (wideband)
+                        out = dry * grGain; // duck the whole signal
+                    else
+                        out = dry - (1.0f - grGain) * band; // duck only the band
+                    buffer.getWritePointer (ch)[i] = out;
+                }
+                delayWrite = (delayWrite + 1) % maxLaSamples;
             }
 
             bandLevel.store (blockMaxLevel, std::memory_order_relaxed);
@@ -1285,8 +1334,11 @@ namespace dcr::builtin
         }
 
     private:
-        std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> hp;
-        std::vector<float> highScratch, lowScratch;
+        static constexpr float kBandQ = 2.0f; // detection/duck band width
+        std::vector<std::unique_ptr<juce::dsp::IIR::Filter<float>>> bp;
+        std::vector<float> bandScratch;
+        std::vector<std::vector<float>> dryDelay, bandDelay;
+        int maxLaSamples = 1, delayWrite = 0;
         float env = 0.0f, grGain = 1.0f, lastFreq = -1.0f;
         std::atomic<float> grReadout { 0.0f };
         std::atomic<float> bandLevel { -100.0f };
