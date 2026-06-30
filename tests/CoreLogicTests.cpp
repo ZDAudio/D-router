@@ -742,6 +742,12 @@ namespace
         // dB/linear round-trip.
         CHECK (feq (dbToGain (0.0f), 1.0f));
         CHECK (feq (gainToDb (dbToGain (-6.0f)), -6.0f, 1.0e-3f));
+
+        // Auto threshold: manual mode returns the param unchanged; auto mode
+        // sits relative to the running average (default -30 param == at avg).
+        CHECK (feq (effectiveThresholdDb (-30.0f, -42.0f, false), -30.0f));
+        CHECK (feq (effectiveThresholdDb (-30.0f, -42.0f, true), -42.0f)); // offset 0
+        CHECK (feq (effectiveThresholdDb (-24.0f, -42.0f, true), -36.0f)); // +6 above avg
     }
 
     // ---------------------------------------------------------------------------

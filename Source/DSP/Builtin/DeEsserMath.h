@@ -48,6 +48,15 @@ namespace dcr::deess
         return std::max (gr, maxRed); // clamp reduction magnitude to the range
     }
 
+    // Effective threshold.  In Auto mode the threshold tracks the program: it
+    // sits relative to a slow running average of the band level, with the
+    // threshold param acting as an offset (its -30 dB default == "at the
+    // average").  In manual mode the param IS the threshold.
+    inline float effectiveThresholdDb (float thresholdParam, float autoAvgDb, bool autoOn) noexcept
+    {
+        return autoOn ? (autoAvgDb + (thresholdParam + 30.0f)) : thresholdParam;
+    }
+
     // dB <-> linear helpers so the processor and tests agree exactly.
     inline float dbToGain (float db) noexcept { return std::pow (10.0f, db * 0.05f); }
 

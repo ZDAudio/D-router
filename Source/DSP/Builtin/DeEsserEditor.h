@@ -59,9 +59,9 @@ namespace dcr::builtin
 
         static float xForFreq (float f, juce::Rectangle<int> a)
         {
-            return juce::jmap (std::log10 (juce::jlimit (2000.0f, 16000.0f, f)),
+            return juce::jmap (std::log10 (juce::jlimit (2000.0f, 20000.0f, f)),
                 std::log10 (2000.0f),
-                std::log10 (16000.0f),
+                std::log10 (20000.0f),
                 (float) a.getX(),
                 (float) a.getRight());
         }
@@ -73,7 +73,7 @@ namespace dcr::builtin
 
             // freq grid + labels
             g.setFont (juce::FontOptions (10.0f));
-            for (float f : { 2000.0f, 4000.0f, 6000.0f, 8000.0f, 12000.0f, 16000.0f })
+            for (float f : { 2000.0f, 4000.0f, 6000.0f, 8000.0f, 12000.0f, 16000.0f, 20000.0f })
             {
                 const float x = xForFreq (f, bandArea);
                 g.setColour (juce::Colour::fromRGB (40, 40, 48));
@@ -82,30 +82,29 @@ namespace dcr::builtin
                 g.drawText (juce::String (f / 1000.0f, 0) + "k", (int) x + 2, bandArea.getBottom() - 13, 30, 12, juce::Justification::topLeft);
             }
 
-            // Affected region depends on Mode: Split ducks a band around `freq`
-            // (band-pass detector, Q~2 -> roughly 0.78x..1.28x the centre);
-            // Wideband ducks the whole signal.  Listen auditions the band.
-            const float fc = getParam ("freq");
+            // Detection band = [HP, LP] side-chain edges.  Wideband ducks the
+            // whole signal (faint full-width tint); Split ducks only above HP.
+            // Listen auditions the band.
+            const float fhp = getParam ("hp");
+            const float flp = getParam ("lp");
             const bool wide = getParam ("mode") > 0.5f;
             const bool listen = getParam ("listen") > 0.5f;
             const float regTop = (float) bandArea.getY();
             const float regH = (float) bandArea.getHeight() * 0.62f; // above the level bar
+            const float xhp = xForFreq (fhp, bandArea);
+            const float xlp = xForFreq (flp, bandArea);
+
             if (wide)
             {
-                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 36)); // whole signal
+                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 28)); // whole signal
                 g.fillRect ((float) bandArea.getX(), regTop, (float) bandArea.getWidth(), regH);
             }
-            else
-            {
-                const float xlo = xForFreq (fc * 0.78f, bandArea);
-                const float xhi = xForFreq (fc * 1.28f, bandArea);
-                g.setColour (juce::Colour::fromRGBA (0, 200, 220, 70));
-                g.fillRect (xlo, regTop, xhi - xlo, regH);
-            }
-            // centre marker
-            const float fx = xForFreq (fc, bandArea);
+            g.setColour (juce::Colour::fromRGBA (0, 200, 220, 70)); // detection band
+            g.fillRect (xhp, regTop, juce::jmax (1.0f, xlp - xhp), regH);
+            // band edge markers
             g.setColour (juce::Colour::fromRGB (0, 200, 220));
-            g.fillRect (fx - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
+            g.fillRect (xhp - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
+            g.fillRect (xlp - 1.0f, regTop, 2.0f, (float) bandArea.getHeight());
 
             // mode / listen caption, top-left of the band
             g.setColour (juce::Colour::fromRGB (110, 190, 205));
