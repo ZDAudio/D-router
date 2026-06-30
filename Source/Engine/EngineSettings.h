@@ -32,6 +32,12 @@ namespace dcr
         //  short-term drift.  Capped to outRing/4 internally.
         int outputPreFillBlocks = 8;
 
+        //  When true, each device's ring sizes + pre-fill are derived from the
+        //  hardware latency THAT device reports at open (see RingAutoSize.h),
+        //  ignoring the five multipliers above.  Stays within the Safe..Safest
+        //  envelope.  Opt-in; off keeps the fixed multipliers.
+        bool autoRingSize = false;
+
         // ===== Sample rate converter (AudioToolbox AudioConverter) ===============
         //  Quality:    0 = Min   0x20 = Low   0x40 = Medium   0x60 = High   0x7F = Max
         //  Complexity: 'line' = Linear   'norm' = Normal   'mast' = Mastering   'minp' = MinPhase

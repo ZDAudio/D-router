@@ -17,6 +17,7 @@ namespace dcr
         const juce::Identifier outputRingMultEng ("outputRingMultEng");
         const juce::Identifier outputRingMultDev ("outputRingMultDev");
         const juce::Identifier outputPreFillBlocks ("outputPreFillBlocks");
+        const juce::Identifier autoRingSize ("autoRingSize");
         const juce::Identifier srcQuality ("srcQuality");
         const juce::Identifier srcComplexity ("srcComplexity");
         const juce::Identifier matrixThreadSleepMicros ("matrixThreadSleepMicros");
@@ -69,6 +70,7 @@ namespace dcr
         s.outputRingMultEng = (int) t.getProperty (outputRingMultEng, s.outputRingMultEng);
         s.outputRingMultDev = (int) t.getProperty (outputRingMultDev, s.outputRingMultDev);
         s.outputPreFillBlocks = (int) t.getProperty (outputPreFillBlocks, s.outputPreFillBlocks);
+        s.autoRingSize = (bool) t.getProperty (autoRingSize, s.autoRingSize);
         s.srcQuality = (unsigned int) (int) t.getProperty (srcQuality, (int) s.srcQuality);
         s.srcComplexity = (unsigned int) (int) t.getProperty (srcComplexity, (int) s.srcComplexity);
         s.matrixThreadSleepMicros = (int) t.getProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros);
@@ -120,6 +122,7 @@ namespace dcr
         t.setProperty (outputRingMultEng, s.outputRingMultEng, nullptr);
         t.setProperty (outputRingMultDev, s.outputRingMultDev, nullptr);
         t.setProperty (outputPreFillBlocks, s.outputPreFillBlocks, nullptr);
+        t.setProperty (autoRingSize, s.autoRingSize, nullptr);
         t.setProperty (srcQuality, (int) s.srcQuality, nullptr);
         t.setProperty (srcComplexity, (int) s.srcComplexity, nullptr);
         t.setProperty (matrixThreadSleepMicros, s.matrixThreadSleepMicros, nullptr);

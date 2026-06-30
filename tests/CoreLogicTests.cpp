@@ -18,6 +18,7 @@
 #include "Engine/MatrixInputPlan.h"
 #include "Engine/PdcDelayLine.h"
 #include "Engine/PdcPlan.h"
+#include "Engine/RingAutoSize.h"
 #include "Engine/RingBuffer.h"
 #include "Routing/GroupGain.h"
 #include "Routing/PanicController.h"
@@ -751,6 +752,40 @@ namespace
     }
 
     // ---------------------------------------------------------------------------
+    // RingAutoSize (per-device ring sizing from hardware latency, Safe..Safest).
+    // ---------------------------------------------------------------------------
+    void test_ring_auto_size()
+    {
+        using namespace dcr::ringauto;
+
+        // Zero hardware latency -> exactly the "Safe" preset (Eng 3/6, Dev 4/8,
+        // prefill 8).  48k engine == 48k device, 128-sample buffer.
+        auto safe = computeAutoRingPlan (128, 48000.0, 128, 48000.0, 0, 0);
+        CHECK (safe.inRingSamples == 512); // max(3*128, 4*128)
+        CHECK (safe.outRingSamples == 1024); // max(6*128, 8*128)
+        CHECK (safe.prefillBlocks == 8);
+
+        // Moderate latency: hwIn 256 (slack 2), hwOut 512 (slack 4).
+        auto mid = computeAutoRingPlan (128, 48000.0, 128, 48000.0, 256, 512);
+        CHECK (mid.inRingSamples == 768); // inEng 4, inDev 6 -> max(512, 768)
+        CHECK (mid.outRingSamples == 1536); // outEng 10, outDev 12 -> max(1280, 1536)
+        CHECK (mid.prefillBlocks == 10); // ceil(512/128)+6
+        // Auto never drops below the Safe floor and never exceeds Safest.
+        CHECK (mid.inRingSamples >= safe.inRingSamples);
+        CHECK (mid.outRingSamples >= safe.outRingSamples);
+
+        // Huge latency clamps to the Safest envelope (Dev 12, Eng 12) + prefill 32.
+        auto hi = computeAutoRingPlan (128, 48000.0, 128, 48000.0, 4096, 4096);
+        CHECK (hi.outRingSamples == 1536); // max(12*128, 12*128)
+        CHECK (hi.prefillBlocks == 32);
+
+        // Sample-rate conversion widens the device-buffer branch by engineSr/devSr.
+        auto src = computeAutoRingPlan (128, 48000.0, 128, 44100.0, 0, 0);
+        CHECK (src.outRingSamples == (int) std::ceil (8.0 * 128.0 * 48000.0 / 44100.0)); // 1115
+        CHECK (src.outRingSamples > safe.outRingSamples);
+    }
+
+    // ---------------------------------------------------------------------------
     // StereoMeterMath (HF-tilt visualization: freq-to-norm axis + high-lift gain)
     // ---------------------------------------------------------------------------
     void test_stereometer_freq_to_norm()
@@ -1218,6 +1253,8 @@ int main()
     test_resonance_base_strength();
 
     test_deesser_gain_curve();
+
+    test_ring_auto_size();
 
     test_stereometer_freq_to_norm();
     test_stereometer_high_lift_gain();
