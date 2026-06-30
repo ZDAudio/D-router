@@ -111,7 +111,9 @@ namespace dcr
                 setUsingNativeTitleBar (true);
                 setContentOwned (new MainComponent(), true);
                 setResizable (true, true);
-                setResizeLimits (760, 620, 4096, 2400);
+                // Min width lets the layout reach its compact mode (rail -> icons,
+                // toolbar captions dropped + buttons shrunk below ~760 px wide).
+                setResizeLimits (600, 560, 4096, 2400);
                 centreWithSize (getWidth(), getHeight());
                 setVisible (true);
             }

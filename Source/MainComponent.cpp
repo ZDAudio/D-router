@@ -134,6 +134,15 @@ namespace dcr
         loadButton.onClick = [this] { loadSnapshotInteractive(); };
         stopButton.onClick = [this] { if (panic.isActive()) panicRelease(); else panicActivate(); };
         stopButton.setTooltip ("Mute every input and output.  Click again to restore the prior state.");
+        stopButton.setName ("panic"); // LookAndFeel renders this one red (deep red armed, bright red engaged)
+
+        // Loud engaged-state banner (red, full width below the toolbar).
+        panicBanner.setJustificationType (juce::Justification::centred);
+        panicBanner.setColour (juce::Label::backgroundColourId, juce::Colour::fromRGB (170, 30, 30));
+        panicBanner.setColour (juce::Label::textColourId, juce::Colours::white);
+        panicBanner.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        panicBanner.setInterceptsMouseClicks (false, false);
+        addChildComponent (panicBanner); // shown only while engaged
 
         // RESET: restore pre-panic mutes, then preserve-state engine restart.
         // Only visible while panic is engaged.
@@ -264,9 +273,13 @@ namespace dcr
         inputGroupsPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         addChildComponent (inputGroupsPlaceholder);
 
-        // AUDIO SETUP tab panels (hidden until that tab is selected).
-        addChildComponent (inputDeviceVolPanel);
-        addChildComponent (outputDeviceVolPanel);
+        // AUDIO SETUP tab: the two device panels live inside audioSetupView so
+        // the whole tab pops out as a single window.
+        audioSetupView.top = &inputDeviceVolPanel;
+        audioSetupView.bottom = &outputDeviceVolPanel;
+        audioSetupView.addAndMakeVisible (inputDeviceVolPanel);
+        audioSetupView.addAndMakeVisible (outputDeviceVolPanel);
+        addChildComponent (audioSetupView);
 
         addChildComponent (matrixView);
 
@@ -314,6 +327,32 @@ namespace dcr
         statusHost.setPanelDetached = [this] (bool d) { statusPanel.setDetached (d); };
         statusHost.onChanged = [this] { switchTab (currentTab); };
         statusPanel.onPopOutRequested = [this] { statusHost.toggle(); };
+
+        // Matrix Routing + Audio Setup detachable views.  Unlike Groups / Engine
+        // Monitor (which carry an in-panel pop-out button), these single-panel
+        // views get a MainComponent-owned button in a header strip (see resized)
+        // and a "detached" placeholder, mirroring the statusHost wiring.
+        auto setupPlaceholder = [this] (juce::Label& l, const juce::String& name) {
+            l.setText (name + " DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+            l.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
+            l.setJustificationType (juce::Justification::centred);
+            l.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+            addChildComponent (l);
+        };
+        setupPlaceholder (matrixPlaceholder, "MATRIX ROUTING");
+        setupPlaceholder (audioPlaceholder, "AUDIO SETUP");
+
+        matrixHost.windowSize = [] { return juce::Point<int> { 1000, 640 }; };
+        matrixHost.onChanged = [this] { switchTab (currentTab); };
+        matrixPopOutBtn.onClick = [this] { matrixHost.toggle(); };
+        matrixPopOutBtn.setTooltip ("Open Matrix Routing in its own window.");
+        addChildComponent (matrixPopOutBtn);
+
+        audioHost.windowSize = [] { return juce::Point<int> { 860, 560 }; };
+        audioHost.onChanged = [this] { switchTab (currentTab); };
+        audioPopOutBtn.onClick = [this] { audioHost.toggle(); };
+        audioPopOutBtn.setTooltip ("Open Audio Setup in its own window.");
+        addChildComponent (audioPopOutBtn);
 
         // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
         engine.setSettings (SettingsStore::load());
@@ -531,8 +570,8 @@ namespace dcr
 
         // Left navigation rail: a slightly raised panel with a hairline divider,
         // so the sidebar reads as a distinct region from the content area.  The
-        // geometry mirrors resized() (full height, kRailW wide, kEdge inset).
-        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (kRailW);
+        // geometry mirrors resized() (full height, railWidthPx wide, kEdge inset).
+        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (railWidthPx);
         g.setColour (juce::Colour::fromRGB (20, 20, 24));
         g.fillRect (rail);
         g.setColour (juce::Colour::fromRGB (44, 44, 50));
@@ -986,18 +1025,35 @@ namespace dcr
 
         auto full = getLocalBounds().reduced (kEdge);
 
+        // Below this width the UI goes compact: the rail collapses to an
+        // icon-only strip and the toolbar drops its captions + shrinks buttons,
+        // so nothing clips on a narrow window.
+        const bool compact = getWidth() < 760;
+
         // ---- Left navigation rail (full height) -----------------------------
-        // Brand mark on top, then the four page tabs stacked below it.  The
-        // rail's raised background + right-hand divider are drawn in paint();
-        // here we just place the widgets inside it with a little padding.
-        auto rail = full.removeFromLeft (kRailW).reduced (10, 2);
-        full.removeFromLeft (12); // gap between rail and content column
+        // Brand mark on top (wide only), then the four page tabs stacked below.
+        // The rail's raised background + divider are drawn in paint() using
+        // railWidthPx, kept in sync here.
+        railWidthPx = compact ? 56 : kRailW;
+        auto rail = full.removeFromLeft (railWidthPx).reduced (compact ? 5 : 10, 2);
+        full.removeFromLeft (compact ? 8 : 12); // gap between rail and content column
+
+        title.setVisible (!compact); // brand label doesn't fit the icon-only rail
+        for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            b->getProperties().set ("railCompact", compact);
         {
-            auto brand = rail.removeFromTop (28);
-            if (zdFace.isVisible())
-                zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
-            title.setBounds (brand);
-            rail.removeFromTop (16);
+            if (!compact)
+            {
+                auto brand = rail.removeFromTop (28);
+                if (zdFace.isVisible())
+                    zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
+                title.setBounds (brand);
+                rail.removeFromTop (16);
+            }
+            else
+            {
+                rail.removeFromTop (8);
+            }
 
             const int kTabHeight = 46;
             for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
@@ -1011,19 +1067,25 @@ namespace dcr
         // Two grouped zones under small captions -- SOURCES & SETUP on the left,
         // SESSION (save/load/logs) on the right -- then PANIC standing alone on
         // the far right, deliberately isolated so it is never mis-clicked.
-        auto caption = full.removeFromTop (12);
+        // Compact: drop the captions and shrink the buttons so they don't clip.
+        const int srcW = compact ? 62 : 90; // sources/setup button width
+        const int sesW = compact ? 52 : 70; // session button width
+        const int srcGap = compact ? 3 : 4;
+        const int isoGap = compact ? 8 : 16; // PANIC isolation gap
+
+        sourcesSectionLabel.setVisible (!compact);
+        sessionSectionLabel.setVisible (!compact);
+        auto caption = full.removeFromTop (compact ? 0 : 12);
         auto top = full.removeFromTop (30);
 
         // Left zone: sources + setup.
         auto leftZone = top;
         sourcesSectionLabel.setBounds (caption.getX(), caption.getY(), 4 * 90 + 3 * 4, 12);
-        devicesButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        softwareButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        groupsButton.setBounds (leftZone.removeFromLeft (90));
-        leftZone.removeFromLeft (4);
-        settingsButton.setBounds (leftZone.removeFromLeft (90));
+        for (auto* b : { &devicesButton, &softwareButton, &groupsButton, &settingsButton })
+        {
+            b->setBounds (leftZone.removeFromLeft (srcW));
+            leftZone.removeFromLeft (srcGap);
+        }
 
         // Right zone: PANIC (far right), [RESET], then the SESSION group.
         stopButton.setBounds (top.removeFromRight (66));
@@ -1032,21 +1094,35 @@ namespace dcr
             top.removeFromRight (6);
             resetButton.setBounds (top.removeFromRight (60));
         }
-        top.removeFromRight (16); // gap isolating PANIC from the session group
-        logsButton.setBounds (top.removeFromRight (70));
-        top.removeFromRight (4);
-        loadButton.setBounds (top.removeFromRight (70));
-        top.removeFromRight (4);
-        saveButton.setBounds (top.removeFromRight (70));
+        top.removeFromRight (isoGap); // gap isolating PANIC from the session group
+        logsButton.setBounds (top.removeFromRight (sesW));
+        top.removeFromRight (srcGap);
+        loadButton.setBounds (top.removeFromRight (sesW));
+        top.removeFromRight (srcGap);
+        saveButton.setBounds (top.removeFromRight (sesW));
         sessionSectionLabel.setBounds (saveButton.getX(), caption.getY(), 3 * 70 + 2 * 4, 12);
 
         full.removeFromTop (8);
         auto r = full; // content area for the active tab
 
+        // Engaged-panic banner: a loud red strip across the top of the content.
+        if (panicBanner.isVisible())
+        {
+            panicBanner.setBounds (r.removeFromTop (28));
+            r.removeFromTop (6);
+        }
+
         // Position active component in viewport space r
         if (currentTab == RoutingTab)
         {
-            matrixView.setBounds (r);
+            // Header strip carries the pop-out button (no overlap with the grid).
+            auto hdr = r.removeFromTop (24);
+            matrixPopOutBtn.setBounds (hdr.removeFromRight (40).withSizeKeepingCentre (40, 22));
+            r.removeFromTop (4);
+            if (matrixHost.isDetached())
+                matrixPlaceholder.setBounds (r);
+            else
+                matrixView.setBounds (r);
         }
         else if (currentTab == GroupsTab)
         {
@@ -1067,11 +1143,14 @@ namespace dcr
         }
         else if (currentTab == AudioSetupTab)
         {
-            // Top half: INPUT DEVICES  /  Bottom half: OUTPUT DEVICES
-            auto topHalf = r.removeFromTop (r.getHeight() / 2);
-            r.removeFromTop (6);
-            inputDeviceVolPanel.setBounds (topHalf);
-            outputDeviceVolPanel.setBounds (r);
+            auto hdr = r.removeFromTop (24);
+            audioPopOutBtn.setBounds (hdr.removeFromRight (40).withSizeKeepingCentre (40, 22));
+            r.removeFromTop (4);
+            // audioSetupView stacks input (top) + output (bottom) device panels.
+            if (audioHost.isDetached())
+                audioPlaceholder.setBounds (r);
+            else
+                audioSetupView.setBounds (r);
         }
         else if (currentTab == StatusTab)
         {
@@ -1148,18 +1227,16 @@ namespace dcr
     void MainComponent::updatePanicButtonAppearance()
     {
         const bool active = panic.isActive();
-        // Bright red when active so the user always knows panic is engaged.
-        stopButton.setButtonText (active ? "PANIC*" : "PANIC");
-        stopButton.setColour (juce::TextButton::buttonColourId,
-            active ? juce::Colour::fromRGB (180, 30, 30)
-                   : juce::Colour::fromRGB (50, 50, 56));
-        stopButton.setColour (juce::TextButton::buttonOnColourId,
-            active ? juce::Colour::fromRGB (180, 30, 30)
-                   : juce::Colour::fromRGB (50, 50, 56));
+        // The LookAndFeel reads this to render PANIC bright red when engaged.
+        stopButton.setButtonText (active ? "PANIC" : "PANIC");
+        stopButton.getProperties().set ("panicEngaged", active);
         stopButton.repaint();
 
+        // The loud full-width banner appears only while engaged.
+        panicBanner.setVisible (active);
+
         // RESET appears beside PANIC only while panic is engaged.  Re-run the
-        // toolbar layout so the button slides in/out without leaving a gap.
+        // toolbar layout so the button (and banner) slide in/out cleanly.
         if (resetButton.isVisible() != active)
         {
             resetButton.setVisible (active);
@@ -2353,11 +2430,22 @@ namespace dcr
         audioSetupTabBtn.setToggleState (currentTab == AudioSetupTab, juce::dontSendNotification);
         statusTabBtn.setToggleState (currentTab == StatusTab, juce::dontSendNotification);
 
-        matrixView.setVisible (currentTab == RoutingTab);
-
+        const bool routing = (currentTab == RoutingTab);
         const bool audioSetup = (currentTab == AudioSetupTab);
-        inputDeviceVolPanel.setVisible (audioSetup);
-        outputDeviceVolPanel.setVisible (audioSetup);
+
+        // Matrix + Audio Setup are single-panel detachable views.  When detached
+        // the panel lives in its floating window (keep it visible); on its own
+        // tab a placeholder + the pop-out button show in the main window.
+        matrixView.setVisible (matrixHost.isDetached() || routing);
+        matrixPlaceholder.setVisible (routing && matrixHost.isDetached());
+        matrixPopOutBtn.setVisible (routing);
+        matrixPopOutBtn.setButtonText (matrixHost.isDetached() ? "<-" : "->");
+
+        audioSetupView.setVisible (audioHost.isDetached() || audioSetup);
+        audioPlaceholder.setVisible (audioSetup && audioHost.isDetached());
+        audioPopOutBtn.setVisible (audioSetup);
+        audioPopOutBtn.setButtonText (audioHost.isDetached() ? "<-" : "->");
+
         if (audioSetup)
         {
             // Refresh strips from the current device list every time the tab opens,

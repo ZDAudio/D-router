@@ -66,6 +66,18 @@ namespace dcr
             else if (shouldDrawButtonAsHighlighted)
                 baseColor = baseColor.brighter (0.15f);
         }
+        else if (button.getName() == "panic")
+        {
+            // Safety control: always red so it reads as PANIC at a glance.  Deep
+            // red when armed (idle), bright saturated red when engaged.
+            const bool engaged = (bool) button.getProperties().getWithDefault ("panicEngaged", false);
+            baseColor = engaged ? juce::Colour::fromRGB (210, 40, 40)
+                                : juce::Colour::fromRGB (104, 38, 42);
+            if (shouldDrawButtonAsDown)
+                baseColor = baseColor.darker (0.20f);
+            else if (shouldDrawButtonAsHighlighted)
+                baseColor = baseColor.brighter (0.14f);
+        }
         else if (shouldDrawButtonAsDown)
             baseColor = juce::Colour::fromRGB (16, 16, 20);
         else if (shouldDrawButtonAsHighlighted)
@@ -109,11 +121,20 @@ namespace dcr
         // on the "railIcon" property so every other TextButton is unaffected.
         if (button.getProperties().contains ("railIcon"))
         {
-            auto b = button.getLocalBounds().reduced (14, 0);
             const float iconSz = 18.0f;
-            auto iconArea = b.removeFromLeft ((int) iconSz);
             const auto iconColour = button.getToggleState() ? accentColor : textColour;
-            drawRailIcon (g, iconArea.toFloat().withSizeKeepingCentre (iconSz, iconSz), button.getProperties()["railIcon"].toString(), iconColour);
+            const auto iconId = button.getProperties()["railIcon"].toString();
+
+            // Compact (narrow window): centre the icon only, no label.
+            if ((bool) button.getProperties().getWithDefault ("railCompact", false))
+            {
+                drawRailIcon (g, button.getLocalBounds().toFloat().withSizeKeepingCentre (iconSz, iconSz), iconId, iconColour);
+                return;
+            }
+
+            auto b = button.getLocalBounds().reduced (14, 0);
+            auto iconArea = b.removeFromLeft ((int) iconSz);
+            drawRailIcon (g, iconArea.toFloat().withSizeKeepingCentre (iconSz, iconSz), iconId, iconColour);
             b.removeFromLeft (12); // gap between icon and label
             g.setFont (juce::FontOptions (juce::Font::getDefaultSansSerifFontName(), 11.0f, juce::Font::bold));
             g.setColour (textColour);
