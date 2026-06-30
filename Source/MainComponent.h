@@ -268,6 +268,15 @@ namespace dcr
         juce::Label groupsPlaceholder;
         juce::Label inputGroupsPlaceholder;
         juce::Label statusPlaceholder;
+        juce::Label matrixPlaceholder;
+        juce::Label audioPlaceholder;
+
+        // Pop-out triggers for the single-panel detachable views (Matrix + Audio
+        // Setup), placed in a header strip above the content so they never
+        // overlap the panel.  Groups / Engine Monitor carry their own in-panel
+        // button instead.
+        juce::TextButton matrixPopOutBtn { "Pop out  \xe2\x86\x97" };
+        juce::TextButton audioPopOutBtn { "Pop out  \xe2\x86\x97" };
 
         MatrixView matrixView { engine };
         OutputGroupPanel groupPanel { engine, OutputGroupPanel::Direction::Outputs };
@@ -275,9 +284,29 @@ namespace dcr
         StatusPanel statusPanel { engine };
 
         // AUDIO SETUP tab: per-device hardware volume/mute, inputs top / outputs
-        // bottom (mirrors the IN / OUT GROUPS split).  Non-detachable -> no PanelHost.
+        // bottom (mirrors the IN / OUT GROUPS split).  The two panels live inside
+        // audioSetupView so the whole tab detaches as one floating window.
         DeviceVolumePanel inputDeviceVolPanel { engine, DeviceVolumePanel::Direction::Inputs };
         DeviceVolumePanel outputDeviceVolPanel { engine, DeviceVolumePanel::Direction::Outputs };
+
+        // Tiny container that stacks two child components (top half / bottom half)
+        // -- used so Audio Setup's two device panels move together when detached.
+        struct SplitView : juce::Component
+        {
+            juce::Component* top = nullptr;
+            juce::Component* bottom = nullptr;
+            void resized() override
+            {
+                auto r = getLocalBounds();
+                auto t = r.removeFromTop (r.getHeight() / 2);
+                r.removeFromTop (6);
+                if (top != nullptr)
+                    top->setBounds (t);
+                if (bottom != nullptr)
+                    bottom->setBounds (r);
+            }
+        };
+        SplitView audioSetupView;
 
         // Full-window overlay shown during startup splash + matrix rebuilds.
         LoadingOverlay loadingOverlay;
@@ -287,6 +316,8 @@ namespace dcr
         PanelHost groupHost { *this, groupPanel, "Output groups" };
         PanelHost inputGroupHost { *this, inputGroupPanel, "Input groups" };
         PanelHost statusHost { *this, statusPanel, "Engine status" };
+        PanelHost matrixHost { *this, matrixView, "Matrix routing" };
+        PanelHost audioHost { *this, audioSetupView, "Audio setup" };
 
         void switchTab (Tab newTab);
         static int cards_default_width();

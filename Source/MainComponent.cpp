@@ -273,9 +273,13 @@ namespace dcr
         inputGroupsPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         addChildComponent (inputGroupsPlaceholder);
 
-        // AUDIO SETUP tab panels (hidden until that tab is selected).
-        addChildComponent (inputDeviceVolPanel);
-        addChildComponent (outputDeviceVolPanel);
+        // AUDIO SETUP tab: the two device panels live inside audioSetupView so
+        // the whole tab pops out as a single window.
+        audioSetupView.top = &inputDeviceVolPanel;
+        audioSetupView.bottom = &outputDeviceVolPanel;
+        audioSetupView.addAndMakeVisible (inputDeviceVolPanel);
+        audioSetupView.addAndMakeVisible (outputDeviceVolPanel);
+        addChildComponent (audioSetupView);
 
         addChildComponent (matrixView);
 
@@ -323,6 +327,32 @@ namespace dcr
         statusHost.setPanelDetached = [this] (bool d) { statusPanel.setDetached (d); };
         statusHost.onChanged = [this] { switchTab (currentTab); };
         statusPanel.onPopOutRequested = [this] { statusHost.toggle(); };
+
+        // Matrix Routing + Audio Setup detachable views.  Unlike Groups / Engine
+        // Monitor (which carry an in-panel pop-out button), these single-panel
+        // views get a MainComponent-owned button in a header strip (see resized)
+        // and a "detached" placeholder, mirroring the statusHost wiring.
+        auto setupPlaceholder = [this] (juce::Label& l, const juce::String& name) {
+            l.setText (name + " DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+            l.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
+            l.setJustificationType (juce::Justification::centred);
+            l.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
+            addChildComponent (l);
+        };
+        setupPlaceholder (matrixPlaceholder, "MATRIX ROUTING");
+        setupPlaceholder (audioPlaceholder, "AUDIO SETUP");
+
+        matrixHost.windowSize = [] { return juce::Point<int> { 1000, 640 }; };
+        matrixHost.onChanged = [this] { switchTab (currentTab); };
+        matrixPopOutBtn.onClick = [this] { matrixHost.toggle(); };
+        matrixPopOutBtn.setTooltip ("Open Matrix Routing in its own window.");
+        addChildComponent (matrixPopOutBtn);
+
+        audioHost.windowSize = [] { return juce::Point<int> { 860, 560 }; };
+        audioHost.onChanged = [this] { switchTab (currentTab); };
+        audioPopOutBtn.onClick = [this] { audioHost.toggle(); };
+        audioPopOutBtn.setTooltip ("Open Audio Setup in its own window.");
+        addChildComponent (audioPopOutBtn);
 
         // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
         engine.setSettings (SettingsStore::load());
@@ -1062,7 +1092,14 @@ namespace dcr
         // Position active component in viewport space r
         if (currentTab == RoutingTab)
         {
-            matrixView.setBounds (r);
+            // Header strip carries the pop-out button (no overlap with the grid).
+            auto hdr = r.removeFromTop (24);
+            matrixPopOutBtn.setBounds (hdr.removeFromRight (96).withSizeKeepingCentre (96, 22));
+            r.removeFromTop (4);
+            if (matrixHost.isDetached())
+                matrixPlaceholder.setBounds (r);
+            else
+                matrixView.setBounds (r);
         }
         else if (currentTab == GroupsTab)
         {
@@ -1083,11 +1120,14 @@ namespace dcr
         }
         else if (currentTab == AudioSetupTab)
         {
-            // Top half: INPUT DEVICES  /  Bottom half: OUTPUT DEVICES
-            auto topHalf = r.removeFromTop (r.getHeight() / 2);
-            r.removeFromTop (6);
-            inputDeviceVolPanel.setBounds (topHalf);
-            outputDeviceVolPanel.setBounds (r);
+            auto hdr = r.removeFromTop (24);
+            audioPopOutBtn.setBounds (hdr.removeFromRight (96).withSizeKeepingCentre (96, 22));
+            r.removeFromTop (4);
+            // audioSetupView stacks input (top) + output (bottom) device panels.
+            if (audioHost.isDetached())
+                audioPlaceholder.setBounds (r);
+            else
+                audioSetupView.setBounds (r);
         }
         else if (currentTab == StatusTab)
         {
@@ -2367,11 +2407,22 @@ namespace dcr
         audioSetupTabBtn.setToggleState (currentTab == AudioSetupTab, juce::dontSendNotification);
         statusTabBtn.setToggleState (currentTab == StatusTab, juce::dontSendNotification);
 
-        matrixView.setVisible (currentTab == RoutingTab);
-
+        const bool routing = (currentTab == RoutingTab);
         const bool audioSetup = (currentTab == AudioSetupTab);
-        inputDeviceVolPanel.setVisible (audioSetup);
-        outputDeviceVolPanel.setVisible (audioSetup);
+
+        // Matrix + Audio Setup are single-panel detachable views.  When detached
+        // the panel lives in its floating window (keep it visible); on its own
+        // tab a placeholder + the pop-out button show in the main window.
+        matrixView.setVisible (matrixHost.isDetached() || routing);
+        matrixPlaceholder.setVisible (routing && matrixHost.isDetached());
+        matrixPopOutBtn.setVisible (routing);
+        matrixPopOutBtn.setButtonText (matrixHost.isDetached() ? "Re-dock  \xe2\x86\x99" : "Pop out  \xe2\x86\x97");
+
+        audioSetupView.setVisible (audioHost.isDetached() || audioSetup);
+        audioPlaceholder.setVisible (audioSetup && audioHost.isDetached());
+        audioPopOutBtn.setVisible (audioSetup);
+        audioPopOutBtn.setButtonText (audioHost.isDetached() ? "Re-dock  \xe2\x86\x99" : "Pop out  \xe2\x86\x97");
+
         if (audioSetup)
         {
             // Refresh strips from the current device list every time the tab opens,
