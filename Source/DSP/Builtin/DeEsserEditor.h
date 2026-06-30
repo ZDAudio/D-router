@@ -17,11 +17,14 @@ namespace dcr::builtin
         explicit DeEsserEditor (DeEsserProcessor& proc)
             : juce::AudioProcessorEditor (proc), de (proc)
         {
+            // GenericAudioProcessorEditor caps its OWN height at 400 px and
+            // scrolls internally, so we host it directly (no extra viewport) and
+            // give the window enough height that every control shows without
+            // scrolling.  The editor is freely resizable; shrinking it lets the
+            // generic editor's own scrollbar take over.
             generic = std::make_unique<juce::GenericAudioProcessorEditor> (de);
-            viewport.setViewedComponent (generic.get(), false);
-            viewport.setScrollBarsShown (true, false);
-            addAndMakeVisible (viewport);
-            setSize (480, 600); // tall enough for the full control set (band view + ~15 params)
+            addAndMakeVisible (*generic);
+            setSize (480, topHeight + 500); // band view + the full ~15-control set
             startTimerHz (24);
         }
 
@@ -33,8 +36,7 @@ namespace dcr::builtin
             topArea = r.removeFromTop (topHeight);
             meterArea = topArea.removeFromRight (54).reduced (6);
             bandArea = topArea.reduced (8);
-            viewport.setBounds (r);
-            generic->setSize (r.getWidth() - 10, juce::jmax (generic->getHeight(), 5 * 26 + 30));
+            generic->setBounds (r); // fills the area below the band view; self-scrolls if short
         }
 
         void paint (juce::Graphics& g) override
@@ -156,7 +158,6 @@ namespace dcr::builtin
 
         DeEsserProcessor& de;
         std::unique_ptr<juce::GenericAudioProcessorEditor> generic;
-        juce::Viewport viewport;
         juce::Rectangle<int> topArea, bandArea, meterArea;
     };
 
