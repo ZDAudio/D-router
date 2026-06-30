@@ -27,6 +27,11 @@ namespace dcr
     static constexpr int kMenuAboutId = 1500;
     static constexpr int kMenuCheckUpdatesId = 1501;
 
+    // Main-window chrome geometry, shared between paint() (rail background) and
+    // resized() (layout) so the two never drift apart.
+    static constexpr int kEdge = 12; // outer window inset
+    static constexpr int kRailW = 168; // left navigation rail width
+
     MainComponent::MainComponent()
     {
         juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);
@@ -51,7 +56,9 @@ namespace dcr
         // default once the window opens since no child has called grabKeyboard.
         setWantsKeyboardFocus (true);
 
-        title.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+        // Brand mark sits at the top of the left rail now, so it is sized to fit
+        // the rail width rather than the old full-width top bar.
+        title.setFont (juce::FontOptions (15.0f, juce::Font::bold));
         // App brand label is always white -- not theme-tinted -- so the brand
         // reads cleanly against any accent colour the user picks.
         title.setColour (juce::Label::textColourId, juce::Colours::white);
@@ -64,6 +71,16 @@ namespace dcr
         };
         addAndMakeVisible (title);
         addChildComponent (zdFace); // hidden until unlocked
+
+        // Toolbar section captions (above the grouped buttons -- see resized()).
+        for (auto* lbl : { &sourcesSectionLabel, &sessionSectionLabel })
+        {
+            lbl->setFont (juce::FontOptions (10.0f));
+            lbl->setColour (juce::Label::textColourId, juce::Colour::fromRGB (120, 120, 128));
+            lbl->setJustificationType (juce::Justification::bottomLeft);
+            lbl->setInterceptsMouseClicks (false, false);
+            addAndMakeVisible (*lbl);
+        }
 
         // App-audio capture: watch process launch/quit so captured apps
         // auto-(re)attach via the message-thread reconcile.
@@ -505,6 +522,15 @@ namespace dcr
     void MainComponent::paint (juce::Graphics& g)
     {
         g.fillAll (juce::Colour::fromRGB (12, 12, 14)); // Deep cyber black background
+
+        // Left navigation rail: a slightly raised panel with a hairline divider,
+        // so the sidebar reads as a distinct region from the content area.  The
+        // geometry mirrors resized() (full height, kRailW wide, kEdge inset).
+        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (kRailW);
+        g.setColour (juce::Colour::fromRGB (20, 20, 24));
+        g.fillRect (rail);
+        g.setColour (juce::Colour::fromRGB (44, 44, 50));
+        g.fillRect (rail.getRight(), rail.getY(), 1, rail.getHeight());
     }
 
     bool MainComponent::keyPressed (const juce::KeyPress& k)
@@ -952,55 +978,64 @@ namespace dcr
         // Loading overlay always covers the entire window.
         loadingOverlay.setBounds (getLocalBounds());
 
-        auto r = getLocalBounds().reduced (12);
-        auto top = r.removeFromTop (32);
+        auto full = getLocalBounds().reduced (kEdge);
 
-        // Left Configuration Section
-        title.setBounds (top.removeFromLeft (240)); // wide enough for "ZDAudio D-Router" @ 22pt bold
-        zdFace.setBounds (top.removeFromLeft (26).withSizeKeepingCentre (20, 20)); // easter-egg; only visible once unlocked
-        top.removeFromLeft (10);
-        devicesButton.setBounds (top.removeFromLeft (90));
-        top.removeFromLeft (4);
-        softwareButton.setBounds (top.removeFromLeft (90));
-        top.removeFromLeft (4);
-        groupsButton.setBounds (top.removeFromLeft (90));
-        top.removeFromLeft (4);
-        settingsButton.setBounds (top.removeFromLeft (90));
-        top.removeFromLeft (4);
+        // ---- Left navigation rail (full height) -----------------------------
+        // Brand mark on top, then the four page tabs stacked below it.  The
+        // rail's raised background + right-hand divider are drawn in paint();
+        // here we just place the widgets inside it with a little padding.
+        auto rail = full.removeFromLeft (kRailW).reduced (10, 2);
+        full.removeFromLeft (12); // gap between rail and content column
+        {
+            auto brand = rail.removeFromTop (28);
+            if (zdFace.isVisible())
+                zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
+            title.setBounds (brand);
+            rail.removeFromTop (16);
 
-        // Right Session Section (Save, Load, Logs, [Reset], PANIC)
-        stopButton.setBounds (top.removeFromRight (60));
+            const int kTabHeight = 46;
+            for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            {
+                b->setBounds (rail.removeFromTop (kTabHeight));
+                rail.removeFromTop (6);
+            }
+        }
+
+        // ---- Top toolbar (in the content column, right of the rail) ---------
+        // Two grouped zones under small captions -- SOURCES & SETUP on the left,
+        // SESSION (save/load/logs) on the right -- then PANIC standing alone on
+        // the far right, deliberately isolated so it is never mis-clicked.
+        auto caption = full.removeFromTop (12);
+        auto top = full.removeFromTop (30);
+
+        // Left zone: sources + setup.
+        auto leftZone = top;
+        sourcesSectionLabel.setBounds (caption.getX(), caption.getY(), 4 * 90 + 3 * 4, 12);
+        devicesButton.setBounds (leftZone.removeFromLeft (90));
+        leftZone.removeFromLeft (4);
+        softwareButton.setBounds (leftZone.removeFromLeft (90));
+        leftZone.removeFromLeft (4);
+        groupsButton.setBounds (leftZone.removeFromLeft (90));
+        leftZone.removeFromLeft (4);
+        settingsButton.setBounds (leftZone.removeFromLeft (90));
+
+        // Right zone: PANIC (far right), [RESET], then the SESSION group.
+        stopButton.setBounds (top.removeFromRight (66));
         if (resetButton.isVisible())
         {
-            top.removeFromRight (4);
+            top.removeFromRight (6);
             resetButton.setBounds (top.removeFromRight (60));
         }
-        top.removeFromRight (12); // Extra separation for safety
+        top.removeFromRight (16); // gap isolating PANIC from the session group
         logsButton.setBounds (top.removeFromRight (70));
         top.removeFromRight (4);
         loadButton.setBounds (top.removeFromRight (70));
         top.removeFromRight (4);
         saveButton.setBounds (top.removeFromRight (70));
+        sessionSectionLabel.setBounds (saveButton.getX(), caption.getY(), 3 * 70 + 2 * 4, 12);
 
-        r.removeFromTop (6);
-
-        // Left navigation rail: the four page tabs stacked vertically down the
-        // left edge, replacing the old centered horizontal tab row.  This frees
-        // the full window width for the matrix / panels and keeps navigation
-        // persistently visible as a sidebar.  The rail sits below the top toolbar
-        // for now; promoting it to a full-height sidebar with the brand mark is
-        // part of the separate top-bar pass.
-        {
-            const int kTabRailWidth = 150;
-            const int kTabHeight = 46;
-            auto rail = r.removeFromLeft (kTabRailWidth);
-            r.removeFromLeft (10); // gap between the rail and the content area
-            for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
-            {
-                b->setBounds (rail.removeFromTop (kTabHeight));
-                rail.removeFromTop (4);
-            }
-        }
+        full.removeFromTop (8);
+        auto r = full; // content area for the active tab
 
         // Position active component in viewport space r
         if (currentTab == RoutingTab)

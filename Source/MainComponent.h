@@ -243,6 +243,12 @@ namespace dcr
         // device-format desync without quitting the app.
         juce::TextButton resetButton { "RESET" };
 
+        // Subtle captions over the two grouped toolbar zones (left = where sound
+        // comes in + how it's configured, right = saved-session files).  PANIC
+        // stands alone on the far right with no caption.
+        juce::Label sourcesSectionLabel { {}, "SOURCES & SETUP" };
+        juce::Label sessionSectionLabel { {}, "SESSION" };
+
         // Top Navigation Tabs
         enum Tab { RoutingTab,
             GroupsTab,
