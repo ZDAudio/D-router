@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.22)
 #   cmake -B build -DCMAKE_OSX_ARCHITECTURES=arm64
 set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "macOS build architectures")
 
-project(dcorerouter VERSION 0.10.2 LANGUAGES C CXX OBJC OBJCXX)
+project(dcorerouter VERSION 0.10.3 LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
