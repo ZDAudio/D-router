@@ -15,6 +15,7 @@
 #include "Persistence/SnapshotStore.h"
 #include "Routing/PanicController.h"
 #include "UI/DeviceVolumePanel.h"
+#include "UI/Eased.h"
 #include "UI/LoadingOverlay.h"
 #include "UI/LookAndFeel.h"
 #include "UI/MatrixView.h"
@@ -308,14 +309,26 @@ namespace dcr
         };
         SplitView audioSetupView;
 
-        // Left-rail width (px).  Eases between wide (168) and the icon-only strip
-        // (56) so the compact transition is animated rather than snapping.
-        // railWidthPx is the live (animated) value shared by resized() + paint();
-        // railTargetW is where it's heading (chosen by the width threshold).
-        // The icon/label swap is keyed off the live width, so the rail visibly
-        // morphs.  A small Timer drives the ease and re-lays-out each frame.
-        int railWidthPx = 168;
-        int railTargetW = 168;
+        // ----- UI animation (message-thread only; see UI/Eased.h) -------------
+        // One 60 Hz timer drives every UI ease so there's a single pattern:
+        //   railW        live left-rail width, eases wide (168) <-> compact (56);
+        //                the icon/label swap is keyed off the live value so the
+        //                rail visibly morphs.  Shared by resized() + paint().
+        //   indicatorY   the active-tab accent bar's Y centre; glides between
+        //                tabs and tracks the rail collapse.
+        //   contentFade  fades the incoming tab panel in (alpha + small rise).
+        //   panicFade    fades the PANIC banner in/out.
+        //   tabHover[]   per-rail-tab hover glow (read by LookAndFeel).
+        // stepUiAnimation() advances them all each frame, re-lays-out only when
+        // the rail width moved, and stops the timer once everything is at rest.
+        Eased railW { 168.0, 168.0 };
+        Eased indicatorY;
+        bool indicatorInit = false; // snap (don't glide) on the first layout
+        Eased contentFade { 1.0, 1.0 };
+        double contentFadeFactor = 0.30; // per-frame ease of the current fade
+        Eased panicFade;
+        double tabHover[4] { 0.0, 0.0, 0.0, 0.0 };
+
         struct CallbackTimer : juce::Timer
         {
             std::function<void()> fn;
@@ -325,8 +338,19 @@ namespace dcr
                     fn();
             }
         };
-        CallbackTimer railAnim;
-        void stepRailAnimation();
+        CallbackTimer uiAnim;
+        void stepUiAnimation();
+        void wakeUiAnim(); // start the timer if it isn't already running
+        void beginContentFade (double factor = 0.30); // (re)start the incoming-panel fade from 0
+        // The in-main-window content component(s) for the current tab (excludes
+        // detached panels, which live in their own windows).  contentFade's alpha
+        // + rise transform are applied to exactly these.
+        std::vector<juce::Component*> activeContentComponents();
+        // Bounds of the currently-selected rail tab button (indicator target).
+        juce::Rectangle<int> activeTabButtonBounds() const;
+
+        void mouseEnter (const juce::MouseEvent&) override;
+        void mouseExit (const juce::MouseEvent&) override;
 
         // Full-window overlay shown during startup splash + matrix rebuilds.
         LoadingOverlay loadingOverlay;
@@ -339,7 +363,7 @@ namespace dcr
         PanelHost matrixHost { *this, matrixView, "Matrix routing" };
         PanelHost audioHost { *this, audioSetupView, "Audio setup" };
 
-        void switchTab (Tab newTab);
+        void switchTab (Tab newTab, double fadeFactor = 0.30);
         static int cards_default_width();
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)

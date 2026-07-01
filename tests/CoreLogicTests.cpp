@@ -23,6 +23,7 @@
 #include "Routing/GroupGain.h"
 #include "Routing/PanicController.h"
 #include "Routing/RoutingMatrix.h"
+#include "UI/Eased.h"
 #include "Update/Version.h"
 
 #include <algorithm>
@@ -1202,6 +1203,66 @@ namespace
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Eased (shared UI animation value)
+    // ---------------------------------------------------------------------------
+    void test_eased_snap_and_rest()
+    {
+        dcr::Eased e;
+        CHECK (e.atRest()); // fresh: current == target == 0
+        e.snap (5.0);
+        CHECK (feq ((float) e.current, 5.0f));
+        CHECK (feq ((float) e.target, 5.0f));
+        CHECK (e.atRest());
+        // snap onto a target it was mid-chase toward.
+        e.to (10.0);
+        CHECK (!e.atRest());
+        e.snap (10.0);
+        CHECK (e.atRest());
+    }
+
+    void test_eased_converges_and_stops()
+    {
+        dcr::Eased e;
+        e.snap (0.0);
+        e.to (100.0);
+
+        int frames = 0;
+        bool moving = true;
+        double prev = e.current;
+        while (moving && frames < 1000)
+        {
+            moving = e.step(); // default 0.30 / eps 0.5
+            CHECK (e.current >= prev - 1.0e-9); // monotonic approach from below
+            CHECK (e.current <= 100.0 + 1.0e-9); // never overshoots
+            prev = e.current;
+            ++frames;
+        }
+        CHECK (!moving); // step() reported settled
+        CHECK (e.atRest()); // landed exactly on target
+        CHECK (feq ((float) e.current, 100.0f));
+        CHECK (frames < 60); // ~10-frame ease, not spinning
+        CHECK (frames > 1);
+    }
+
+    void test_eased_downward_and_epsilon_snap()
+    {
+        dcr::Eased e;
+        e.snap (10.0);
+        e.to (0.0);
+        // First step moves 30% of the -10 gap.
+        const bool moving = e.step();
+        CHECK (moving);
+        CHECK (feq ((float) e.current, 7.0f));
+
+        // Within eps of target -> snaps exactly and reports stopped.
+        dcr::Eased s;
+        s.current = 0.4;
+        s.target = 0.0;
+        CHECK (s.step (0.30, 0.5) == false);
+        CHECK (s.current == 0.0);
+    }
+
 } // namespace
 
 int main()
@@ -1283,6 +1344,10 @@ int main()
 
     test_device_rate_choice();
     test_format_restart_guard();
+
+    test_eased_snap_and_rest();
+    test_eased_converges_and_stops();
+    test_eased_downward_and_epsilon_snap();
 
     std::printf ("\n%d checks, %d failures\n", g_checks, g_fails);
     return g_fails == 0 ? 0 : 1;

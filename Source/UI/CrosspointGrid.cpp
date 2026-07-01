@@ -11,6 +11,29 @@ namespace dcr
     {
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
         setOpaque (true);
+        flashTimer.fn = [this] { stepCellFlash(); };
+    }
+
+    void CrosspointGrid::startCellFlash (int outIdx, int inIdx)
+    {
+        flashOut = outIdx;
+        flashIn = inIdx;
+        flashLevel.snap (1.0);
+        flashLevel.to (0.0);
+        if (!flashTimer.isTimerRunning())
+            flashTimer.startTimerHz (60);
+    }
+
+    void CrosspointGrid::stepCellFlash()
+    {
+        const bool moving = flashLevel.step (0.30, 0.03); // ~fast fade, ~10 frames
+        if (flashOut >= 0 && flashIn >= 0)
+            repaint (cellBounds (flashOut, flashIn));
+        if (!moving)
+        {
+            flashTimer.stopTimer();
+            flashOut = flashIn = -1;
+        }
     }
 
     // ---- Hover tracking ----------------------------------------------------
@@ -318,6 +341,14 @@ namespace dcr
                         g.drawText (label, r.toNearestInt(), juce::Justification::centred);
                     }
                 }
+
+                // Click-toggle flash: a brief white pulse over the just-toggled
+                // cell (flashLevel eases 1 -> 0).  Purely cosmetic feedback.
+                if (m == flashOut && n == flashIn && flashLevel.current > 0.01)
+                {
+                    g.setColour (juce::Colours::white.withAlpha ((float) flashLevel.current * 0.55f));
+                    g.fillRect (r);
+                }
             }
         }
 
@@ -505,6 +536,7 @@ namespace dcr
             const float cur = matrix.getCrosspoint (em, en);
             matrix.setCrosspoint (em, en, cur > 1.0e-6f ? 0.0f : 1.0f);
             invalidateCell (dragOut, dragIn);
+            startCellFlash (dragOut, dragIn); // brief pulse on the toggled cell
         }
         dragOut = dragIn = -1;
     }

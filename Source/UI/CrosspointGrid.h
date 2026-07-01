@@ -2,6 +2,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "Eased.h"
+
 namespace dcr
 {
 
@@ -129,6 +131,24 @@ namespace dcr
         // grey cells behind.
         int hoverOut = -1, hoverIn = -1;
         void repaintHoverHalo (int outIdx, int inIdx);
+
+        // Click-toggle flash: a short white pulse over the just-toggled cell so
+        // a click reads as a deliberate state change.  flashLevel eases 1 -> 0,
+        // driven by a self-stopping 60 Hz timer; only the flashed cell repaints.
+        struct FlashTimer : juce::Timer
+        {
+            std::function<void()> fn;
+            void timerCallback() override
+            {
+                if (fn)
+                    fn();
+            }
+        };
+        FlashTimer flashTimer;
+        Eased flashLevel;
+        int flashOut = -1, flashIn = -1;
+        void startCellFlash (int outIdx, int inIdx);
+        void stepCellFlash();
 
         // Max diagonal extent (in cells) drawn from the hovered cell.  Looks
         // essentially "infinite" inside any reasonable viewport while keeping
