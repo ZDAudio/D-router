@@ -78,6 +78,17 @@ namespace dcr
             else if (shouldDrawButtonAsHighlighted)
                 baseColor = baseColor.brighter (0.14f);
         }
+        else if (button.getProperties().contains ("railIcon"))
+        {
+            // Left-rail tab: ease the background between rest and hover by the
+            // animated "railHover" value (0..1) MainComponent publishes, so the
+            // glow ramps instead of snapping.  Pressed still darkens instantly.
+            const auto rest = juce::Colour::fromRGB (28, 28, 34);
+            const auto hover = juce::Colour::fromRGB (42, 42, 48);
+            const auto h = (float) juce::jlimit (0.0, 1.0, (double) button.getProperties().getWithDefault ("railHover", 0.0));
+            baseColor = shouldDrawButtonAsDown ? juce::Colour::fromRGB (16, 16, 20)
+                                               : rest.interpolatedWith (hover, h);
+        }
         else if (shouldDrawButtonAsDown)
             baseColor = juce::Colour::fromRGB (16, 16, 20);
         else if (shouldDrawButtonAsHighlighted)

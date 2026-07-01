@@ -354,8 +354,14 @@ namespace dcr
         audioPopOutBtn.setTooltip ("Open Audio Setup in its own window.");
         addChildComponent (audioPopOutBtn);
 
-        // Drives the animated rail collapse/expand (see resized / stepRailAnimation).
-        railAnim.fn = [this] { stepRailAnimation(); };
+        // One timer drives every UI ease (rail collapse, tab indicator, panel
+        // fade, hover glow); see stepUiAnimation / UI/Eased.h.
+        uiAnim.fn = [this] { stepUiAnimation(); };
+
+        // Listen for hover on the rail tabs so their glow can ease in/out (the
+        // timer wakes on enter/exit and settles the hover value; see mouseEnter).
+        for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            b->addMouseListener (this, false);
 
         // Load persistent settings (engine SR, ring sizes, SRC quality, theme).
         engine.setSettings (SettingsStore::load());
@@ -573,12 +579,28 @@ namespace dcr
 
         // Left navigation rail: a slightly raised panel with a hairline divider,
         // so the sidebar reads as a distinct region from the content area.  The
-        // geometry mirrors resized() (full height, railWidthPx wide, kEdge inset).
-        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (railWidthPx);
+        // geometry mirrors resized() (full height, live railW wide, kEdge inset).
+        const int railPx = (int) std::lround (railW.current);
+        auto rail = getLocalBounds().reduced (kEdge).removeFromLeft (railPx);
         g.setColour (juce::Colour::fromRGB (20, 20, 24));
         g.fillRect (rail);
         g.setColour (juce::Colour::fromRGB (44, 44, 50));
         g.fillRect (rail.getRight(), rail.getY(), 1, rail.getHeight());
+
+        // Active-tab indicator: a rounded accent bar in the rail's left gutter
+        // that eases its Y to the selected tab (indicatorY) and tracks the rail
+        // collapse.  Drawn in the ~10 px inset between the rail edge and the tab
+        // buttons so it isn't painted over by the button backgrounds.  Skipped
+        // until the first layout has positioned the tabs.
+        if (indicatorInit)
+        {
+            const float barW = 3.0f;
+            const float barH = 26.0f; // a touch shorter than the 46 px tab
+            const float x = (float) rail.getX() + 3.0f;
+            const float y = (float) indicatorY.current - barH * 0.5f;
+            g.setColour (customLookAndFeel.getAccent());
+            g.fillRoundedRectangle (x, y, barW, barH, barW * 0.5f);
+        }
     }
 
     bool MainComponent::keyPressed (const juce::KeyPress& k)
@@ -1021,20 +1043,146 @@ namespace dcr
 #endif
     }
 
-    void MainComponent::stepRailAnimation()
+    void MainComponent::wakeUiAnim()
     {
-        const int diff = railTargetW - railWidthPx;
-        if (std::abs (diff) <= 2)
+        if (!uiAnim.isTimerRunning())
+            uiAnim.startTimerHz (60);
+    }
+
+    juce::Rectangle<int> MainComponent::activeTabButtonBounds() const
+    {
+        switch (currentTab)
         {
-            railWidthPx = railTargetW;
-            railAnim.stopTimer();
+            case GroupsTab:
+                return groupsTabBtn.getBounds();
+            case AudioSetupTab:
+                return audioSetupTabBtn.getBounds();
+            case StatusTab:
+                return statusTabBtn.getBounds();
+            case RoutingTab:
+            default:
+                return matrixTabBtn.getBounds();
         }
-        else
+    }
+
+    void MainComponent::mouseEnter (const juce::MouseEvent& e)
+    {
+        // Wake the ease so a rail tab's hover glow can ramp up (the step reads
+        // isOver()).  Ignored for any other component we might listen to.
+        for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            if (e.eventComponent == b)
+            {
+                wakeUiAnim();
+                return;
+            }
+    }
+
+    void MainComponent::mouseExit (const juce::MouseEvent& e)
+    {
+        for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
+            if (e.eventComponent == b)
+            {
+                wakeUiAnim(); // ramp the glow back down
+                return;
+            }
+    }
+
+    std::vector<juce::Component*> MainComponent::activeContentComponents()
+    {
+        // Only the panels shown *in the main window* for the current tab -- the
+        // fade must not touch panels that are detached into their own windows.
+        std::vector<juce::Component*> v;
+        switch (currentTab)
         {
-            railWidthPx += (int) std::lround (diff * 0.30); // ~10-frame ease @ 60 Hz
+            case RoutingTab:
+                v.push_back (matrixHost.isDetached() ? (juce::Component*) &matrixPlaceholder
+                                                     : (juce::Component*) &matrixView);
+                break;
+            case GroupsTab:
+                v.push_back (inputGroupHost.isDetached() ? (juce::Component*) &inputGroupsPlaceholder
+                                                         : (juce::Component*) &inputGroupPanel);
+                v.push_back (groupHost.isDetached() ? (juce::Component*) &groupsPlaceholder
+                                                    : (juce::Component*) &groupPanel);
+                break;
+            case AudioSetupTab:
+                v.push_back (audioHost.isDetached() ? (juce::Component*) &audioPlaceholder
+                                                    : (juce::Component*) &audioSetupView);
+                break;
+            case StatusTab:
+                v.push_back (statusHost.isDetached() ? (juce::Component*) &statusPlaceholder
+                                                     : (juce::Component*) &statusPanel);
+                break;
         }
-        resized();
-        repaint(); // rail background lives in paint() -- follow the animated width
+        return v;
+    }
+
+    void MainComponent::beginContentFade()
+    {
+        contentFade.snap (0.0);
+        contentFade.to (1.0);
+        wakeUiAnim();
+    }
+
+    void MainComponent::stepUiAnimation()
+    {
+        bool moving = false;
+
+        // Rail width: re-lay-out only while it's actually moving (the discrete
+        // icon/label swap is keyed off the live width inside resized()).
+        const bool railMoving = railW.step();
+        moving |= railMoving;
+
+        // Active-tab indicator glide.
+        moving |= indicatorY.step();
+
+        // PANIC banner fade.
+        moving |= panicFade.step();
+        panicBanner.setAlpha ((float) panicFade.current);
+
+        // Incoming-panel fade (alpha + a small downward rise that settles to 0).
+        const bool fading = contentFade.step();
+        moving |= fading;
+        {
+            const float a = (float) contentFade.current;
+            const float rise = (float) ((1.0 - contentFade.current) * 8.0);
+            for (auto* c : activeContentComponents())
+            {
+                if (c == nullptr || !c->isVisible())
+                    continue;
+                c->setAlpha (a);
+                c->setTransform (fading ? juce::AffineTransform::translation (0.0f, rise)
+                                        : juce::AffineTransform());
+            }
+        }
+
+        // Rail-tab hover glow: ease each toward isOver ? 1 : 0, publish to the
+        // button so LookAndFeel can lerp its background.
+        juce::Button* tabs[4] = { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn };
+        for (int i = 0; i < 4; ++i)
+        {
+            const double tgt = tabs[i]->isOver() ? 1.0 : 0.0;
+            const double diff = tgt - tabHover[i];
+            if (std::abs (diff) > 0.01)
+            {
+                tabHover[i] += diff * 0.30;
+                tabs[i]->getProperties().set ("railHover", tabHover[i]);
+                tabs[i]->repaint();
+                moving = true;
+            }
+            else if (tabHover[i] != tgt)
+            {
+                tabHover[i] = tgt;
+                tabs[i]->getProperties().set ("railHover", tabHover[i]);
+                tabs[i]->repaint();
+            }
+        }
+
+        if (railMoving)
+            resized(); // rail geometry changed -> re-flow buttons/labels/content
+        repaint(); // rail bg + indicator live in paint()
+
+        if (!moving)
+            uiAnim.stopTimer();
     }
 
     void MainComponent::resized()
@@ -1044,20 +1192,21 @@ namespace dcr
 
         auto full = getLocalBounds().reduced (kEdge);
 
-        // Below ~760 px the UI goes compact.  railWidthPx eases toward the target
+        // Below ~760 px the UI goes compact.  railW eases toward the target
         // (56 narrow / 168 wide); the discrete bits (rail icons, toolbar captions
         // + button widths) swap once the animated rail passes the midpoint, so
         // the whole thing morphs instead of snapping.
-        railTargetW = (getWidth() < 760) ? 56 : kRailW;
-        if (railWidthPx != railTargetW && !railAnim.isTimerRunning())
-            railAnim.startTimerHz (60);
-        const bool compact = railWidthPx < (56 + kRailW) / 2;
+        railW.to ((getWidth() < 760) ? 56.0 : (double) kRailW);
+        if (!railW.atRest())
+            wakeUiAnim();
+        const int railPx = (int) std::lround (railW.current);
+        const bool compact = railPx < (56 + kRailW) / 2;
 
         // ---- Left navigation rail (full height) -----------------------------
         // Brand mark on top (wide only), then the four page tabs stacked below.
         // The rail's raised background + divider are drawn in paint() using the
-        // live railWidthPx, kept in sync here.
-        auto rail = full.removeFromLeft (railWidthPx).reduced (compact ? 5 : 10, 2);
+        // live railW, kept in sync here.
+        auto rail = full.removeFromLeft (railPx).reduced (compact ? 5 : 10, 2);
         full.removeFromLeft (compact ? 8 : 12); // gap between rail and content column
 
         title.setVisible (!compact); // brand label doesn't fit the icon-only rail
@@ -1082,6 +1231,24 @@ namespace dcr
             {
                 b->setBounds (rail.removeFromTop (kTabHeight));
                 rail.removeFromTop (6);
+            }
+        }
+
+        // Point the active-tab indicator at the selected tab's Y centre.  Snap on
+        // the very first layout (no glide from 0), glide thereafter -- including
+        // when the buttons shift during the rail collapse.
+        {
+            const double targetY = (double) activeTabButtonBounds().getCentreY();
+            if (!indicatorInit)
+            {
+                indicatorY.snap (targetY);
+                indicatorInit = true;
+            }
+            else
+            {
+                indicatorY.to (targetY);
+                if (!indicatorY.atRest())
+                    wakeUiAnim();
             }
         }
 
@@ -1254,8 +1421,22 @@ namespace dcr
         stopButton.getProperties().set ("panicEngaged", active);
         stopButton.repaint();
 
-        // The loud full-width banner appears only while engaged.
-        panicBanner.setVisible (active);
+        // The loud full-width banner appears only while engaged.  Fade it in on
+        // engage; hide immediately on release (so it doesn't linger in the
+        // layout as a ghost).  setAlpha is driven each frame by stepUiAnimation.
+        if (active && !panicBanner.isVisible())
+        {
+            panicFade.snap (0.0);
+            panicFade.to (1.0);
+            panicBanner.setVisible (true);
+            wakeUiAnim();
+        }
+        else if (!active && panicBanner.isVisible())
+        {
+            panicFade.snap (0.0);
+            panicBanner.setAlpha (0.0f);
+            panicBanner.setVisible (false);
+        }
 
         // RESET appears beside PANIC only while panic is engaged.  Re-run the
         // toolbar layout so the button (and banner) slide in/out cleanly.
@@ -2534,6 +2715,7 @@ namespace dcr
         }
 
         resized();
+        beginContentFade(); // fade the freshly-shown panel(s) in
         menuItemsChanged(); // View menu's tab tick follows currentTab
     }
 
