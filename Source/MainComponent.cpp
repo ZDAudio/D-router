@@ -32,6 +32,12 @@ namespace dcr
     static constexpr int kEdge = 12; // outer window inset
     static constexpr int kRailW = 168; // left navigation rail width
 
+    // Content-fade approach fractions (per 60 Hz frame; smaller = slower).
+    // Tab switching is quick; the pop-out/dock transition is deliberately
+    // slower so the panel visibly settles into place.
+    static constexpr double kTabFade = 0.30; // ~13 frames / ~0.2 s
+    static constexpr double kDockFade = 0.11; // ~40 frames / ~0.65 s
+
     MainComponent::MainComponent()
     {
         juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);
@@ -248,7 +254,7 @@ namespace dcr
         addChildComponent (groupPanel);
         groupHost.windowSize = [] { return juce::Point<int> { juce::jmax (820, cards_default_width()), 240 }; };
         groupHost.setPanelDetached = [this] (bool d) { groupPanel.setDetached (d); };
-        groupHost.onChanged = [this] { switchTab (currentTab); };
+        groupHost.onChanged = [this] { switchTab (currentTab, kDockFade); };
         groupPanel.onPopOutRequested = [this] { groupHost.toggle(); };
         groupPanel.onGroupHover = [this] (const std::vector<int>& outs) {
             matrixView.setHighlightedOutputs (outs);
@@ -258,7 +264,7 @@ namespace dcr
         addChildComponent (inputGroupPanel);
         inputGroupHost.windowSize = [] { return juce::Point<int> { juce::jmax (820, cards_default_width()), 240 }; };
         inputGroupHost.setPanelDetached = [this] (bool d) { inputGroupPanel.setDetached (d); };
-        inputGroupHost.onChanged = [this] { switchTab (currentTab); };
+        inputGroupHost.onChanged = [this] { switchTab (currentTab, kDockFade); };
         inputGroupPanel.onPopOutRequested = [this] { inputGroupHost.toggle(); };
         inputGroupPanel.onGroupHover = [this] (const std::vector<int>& ins) {
             matrixView.setHighlightedInputs (ins);
@@ -325,7 +331,7 @@ namespace dcr
         addChildComponent (statusPanel);
         statusHost.windowSize = [] { return juce::Point<int> { 600, 280 }; };
         statusHost.setPanelDetached = [this] (bool d) { statusPanel.setDetached (d); };
-        statusHost.onChanged = [this] { switchTab (currentTab); };
+        statusHost.onChanged = [this] { switchTab (currentTab, kDockFade); };
         statusPanel.onPopOutRequested = [this] { statusHost.toggle(); };
 
         // Matrix Routing + Audio Setup detachable views.  Unlike Groups / Engine
@@ -343,13 +349,13 @@ namespace dcr
         setupPlaceholder (audioPlaceholder, "AUDIO SETUP");
 
         matrixHost.windowSize = [] { return juce::Point<int> { 1000, 640 }; };
-        matrixHost.onChanged = [this] { switchTab (currentTab); };
+        matrixHost.onChanged = [this] { switchTab (currentTab, kDockFade); };
         matrixPopOutBtn.onClick = [this] { matrixHost.toggle(); };
         matrixPopOutBtn.setTooltip ("Open Matrix Routing in its own window.");
         addChildComponent (matrixPopOutBtn);
 
         audioHost.windowSize = [] { return juce::Point<int> { 860, 560 }; };
-        audioHost.onChanged = [this] { switchTab (currentTab); };
+        audioHost.onChanged = [this] { switchTab (currentTab, kDockFade); };
         audioPopOutBtn.onClick = [this] { audioHost.toggle(); };
         audioPopOutBtn.setTooltip ("Open Audio Setup in its own window.");
         addChildComponent (audioPopOutBtn);
@@ -1116,8 +1122,9 @@ namespace dcr
         return v;
     }
 
-    void MainComponent::beginContentFade()
+    void MainComponent::beginContentFade (double factor)
     {
+        contentFadeFactor = factor;
         contentFade.snap (0.0);
         contentFade.to (1.0);
         wakeUiAnim();
@@ -1135,12 +1142,15 @@ namespace dcr
         // Active-tab indicator glide.
         moving |= indicatorY.step();
 
-        // PANIC banner fade.
-        moving |= panicFade.step();
+        // PANIC banner fade.  Small eps: this is a 0..1 alpha, not a pixel span,
+        // so the default 0.5 eps would snap it in ~2 frames.
+        moving |= panicFade.step (0.30, 0.01);
         panicBanner.setAlpha ((float) panicFade.current);
 
         // Incoming-panel fade (alpha + a small downward rise that settles to 0).
-        const bool fading = contentFade.step();
+        // Factor varies per trigger (quick tab switch vs slower pop-out/dock);
+        // small eps for the same 0..1-alpha reason as the panic banner.
+        const bool fading = contentFade.step (contentFadeFactor, 0.01);
         moving |= fading;
         {
             const float a = (float) contentFade.current;
@@ -2624,7 +2634,7 @@ namespace dcr
             });
     }
 
-    void MainComponent::switchTab (Tab newTab)
+    void MainComponent::switchTab (Tab newTab, double fadeFactor)
     {
         currentTab = newTab;
 
@@ -2715,7 +2725,7 @@ namespace dcr
         }
 
         resized();
-        beginContentFade(); // fade the freshly-shown panel(s) in
+        beginContentFade (fadeFactor); // fade the freshly-shown panel(s) in
         menuItemsChanged(); // View menu's tab tick follows currentTab
     }
 

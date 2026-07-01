@@ -325,6 +325,7 @@ namespace dcr
         Eased indicatorY;
         bool indicatorInit = false; // snap (don't glide) on the first layout
         Eased contentFade { 1.0, 1.0 };
+        double contentFadeFactor = 0.30; // per-frame ease of the current fade
         Eased panicFade;
         double tabHover[4] { 0.0, 0.0, 0.0, 0.0 };
 
@@ -340,7 +341,7 @@ namespace dcr
         CallbackTimer uiAnim;
         void stepUiAnimation();
         void wakeUiAnim(); // start the timer if it isn't already running
-        void beginContentFade(); // (re)start the incoming-panel fade from 0
+        void beginContentFade (double factor = 0.30); // (re)start the incoming-panel fade from 0
         // The in-main-window content component(s) for the current tab (excludes
         // detached panels, which live in their own windows).  contentFade's alpha
         // + rise transform are applied to exactly these.
@@ -362,7 +363,7 @@ namespace dcr
         PanelHost matrixHost { *this, matrixView, "Matrix routing" };
         PanelHost audioHost { *this, audioSetupView, "Audio setup" };
 
-        void switchTab (Tab newTab);
+        void switchTab (Tab newTab, double fadeFactor = 0.30);
         static int cards_default_width();
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
