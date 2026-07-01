@@ -17,6 +17,11 @@ and the process is `D-Router` (not `dcorerouter`). `build/` and `dist/` are
 gitignored; never commit them. `package.sh` re-signs because `cp -R` breaks the
 ad-hoc seal and recipients get a "damaged" Gatekeeper error otherwise.
 
+The release build is a **universal binary** (`x86_64;arm64`, Intel + Apple
+Silicon) — `CMAKE_OSX_ARCHITECTURES` is set **before `project()`** in
+CMakeLists.txt (setting it *after* `project()` silently no-ops → arm64-only).
+For a faster single-arch dev build, pass `-DCMAKE_OSX_ARCHITECTURES=arm64`.
+
 ## Tests
 
 ```bash
@@ -28,10 +33,18 @@ ctest --test-dir build --output-on-failure          # ~0.5s, headless, no JUCE
 regression net: `FloatRingBuffer` SPSC + `RoutingMatrix` (gains, mute/solo,
 self-loop block, snapshot). **Run it before claiming a change is safe, and add
 cases for any new deterministic logic** (e.g. PDC delay-line alignment).
-DSP/JUCE-linked tests (STFT/WOLA reconstruction, gain staging) are a planned
-second target. Verify against reality — most of the audio behavior can only be
-confirmed by the user testing on real devices, so say plainly what is and isn't
-verified.
+
+A second **JUCE-linked** target `dcorerouter_tests_juce` (`tests/juce/`) covers
+persistence + `ReconfigurationController` (snapshot/settings/atomic-XML/crash-
+handler round-trips). `ctest` runs both, serially. **Run it as a singleton —
+never concurrently and never under a short timeout**: it scans AudioUnits via
+CoreAudio HAL (`JUCE_PLUGINHOST_AU=1`), and interrupting it mid-scan wedges the
+process in uninterruptible `UE` state (`kill -9` can't reap it until reboot);
+overlapping runs also deadlock over the audio device. Pure DSP tests
+(STFT/WOLA reconstruction, gain staging) are still unbuilt.
+
+Verify against reality — most of the audio behavior can only be confirmed by the
+user testing on real devices, so say plainly what is and isn't verified.
 
 ## Workflow
 
