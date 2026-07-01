@@ -279,6 +279,16 @@ namespace dcr
         juce::TextButton matrixPopOutBtn { "->" };
         juce::TextButton audioPopOutBtn { "->" };
 
+        // Dock-back buttons for the three panels whose own pop-out button lives
+        // INSIDE the panel (Input/Output Groups + Engine Monitor) -- once
+        // detached that button floats away with the panel, so the main window
+        // needs its own "<-" on the placeholder to re-dock (Matrix / Audio Setup
+        // already keep their button in the main-window header).  Shown only when
+        // the matching host is detached on its tab.
+        juce::TextButton inputGroupsDockBtn { "<-" };
+        juce::TextButton groupsDockBtn { "<-" };
+        juce::TextButton statusDockBtn { "<-" };
+
         MatrixView matrixView { engine };
         OutputGroupPanel groupPanel { engine, OutputGroupPanel::Direction::Outputs };
         OutputGroupPanel inputGroupPanel { engine, OutputGroupPanel::Direction::Inputs };

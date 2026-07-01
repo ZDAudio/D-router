@@ -238,17 +238,29 @@ namespace dcr
         addAndMakeVisible (audioSetupTabBtn);
         addAndMakeVisible (statusTabBtn);
 
-        groupsPlaceholder.setText ("OUTPUT GROUPS DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+        groupsPlaceholder.setText ("OUTPUT GROUPS DETACHED\n\nPanel is floating in an external window.\nClick <- to dock it back.", juce::dontSendNotification);
         groupsPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
         groupsPlaceholder.setJustificationType (juce::Justification::centred);
         groupsPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         addChildComponent (groupsPlaceholder);
 
-        statusPlaceholder.setText ("ENGINE MONITOR DETACHED\n\nPanel is floating in an external window.", juce::dontSendNotification);
+        statusPlaceholder.setText ("ENGINE MONITOR DETACHED\n\nPanel is floating in an external window.\nClick <- to dock it back.", juce::dontSendNotification);
         statusPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::bold));
         statusPlaceholder.setJustificationType (juce::Justification::centred);
         statusPlaceholder.setColour (juce::Label::textColourId, juce::Colour::fromRGB (160, 160, 165));
         addChildComponent (statusPlaceholder);
+
+        // Main-window dock-back buttons for the panels whose "<-" would otherwise
+        // float away with them (see header).  Each re-docks its host.
+        inputGroupsDockBtn.onClick = [this] { inputGroupHost.toggle(); };
+        inputGroupsDockBtn.setTooltip ("Dock Input Groups back into the main window.");
+        addChildComponent (inputGroupsDockBtn);
+        groupsDockBtn.onClick = [this] { groupHost.toggle(); };
+        groupsDockBtn.setTooltip ("Dock Output Groups back into the main window.");
+        addChildComponent (groupsDockBtn);
+        statusDockBtn.onClick = [this] { statusHost.toggle(); };
+        statusDockBtn.setTooltip ("Dock Engine Monitor back into the main window.");
+        addChildComponent (statusDockBtn);
 
         // Output Group Panel setup
         addChildComponent (groupPanel);
@@ -270,7 +282,7 @@ namespace dcr
             matrixView.setHighlightedInputs (ins);
         };
 
-        inputGroupsPlaceholder.setText ("INPUT GROUPS DETACHED\n\nPanel is floating in an external window.",
+        inputGroupsPlaceholder.setText ("INPUT GROUPS DETACHED\n\nPanel is floating in an external window.\nClick <- to dock it back.",
             juce::dontSendNotification);
         inputGroupsPlaceholder.setFont (juce::FontOptions (juce::Font::getDefaultMonospacedFontName(),
             13.0f,
@@ -1219,22 +1231,22 @@ namespace dcr
         auto rail = full.removeFromLeft (railPx).reduced (compact ? 5 : 10, 2);
         full.removeFromLeft (compact ? 8 : 12); // gap between rail and content column
 
-        title.setVisible (!compact); // brand label doesn't fit the icon-only rail
+        // Brand row: always reserve the same top space (28 + 16) so the tabs
+        // below don't shift up when the rail collapses.  Wide shows the full
+        // name; compact shows a short centred "ZD" mark in the same slot.
+        title.setVisible (true);
+        title.setText (compact ? "ZD" : "ZDAudio D-Router", juce::dontSendNotification);
+        title.setJustificationType (compact ? juce::Justification::centred
+                                            : juce::Justification::centredLeft);
         for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
             b->getProperties().set ("railCompact", compact);
         {
-            if (!compact)
-            {
-                auto brand = rail.removeFromTop (28);
-                if (zdFace.isVisible())
-                    zdFace.setBounds (brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
-                title.setBounds (brand);
-                rail.removeFromTop (16);
-            }
-            else
-            {
-                rail.removeFromTop (8);
-            }
+            auto brand = rail.removeFromTop (28);
+            if (zdFace.isVisible())
+                zdFace.setBounds (compact ? juce::Rectangle<int> {} // no room in the icon-only rail
+                                          : brand.removeFromRight (24).withSizeKeepingCentre (20, 20));
+            title.setBounds (brand);
+            rail.removeFromTop (16);
 
             const int kTabHeight = 46;
             for (auto* b : { &matrixTabBtn, &groupsTabBtn, &audioSetupTabBtn, &statusTabBtn })
@@ -1331,12 +1343,18 @@ namespace dcr
             auto bottomHalf = r;
 
             if (inputGroupHost.isDetached())
+            {
                 inputGroupsPlaceholder.setBounds (topHalf);
+                inputGroupsDockBtn.setBounds (topHalf.reduced (10).removeFromTop (24).removeFromRight (44));
+            }
             else
                 inputGroupPanel.setBounds (topHalf);
 
             if (groupHost.isDetached())
+            {
                 groupsPlaceholder.setBounds (bottomHalf);
+                groupsDockBtn.setBounds (bottomHalf.reduced (10).removeFromTop (24).removeFromRight (44));
+            }
             else
                 groupPanel.setBounds (bottomHalf);
         }
@@ -1354,7 +1372,10 @@ namespace dcr
         else if (currentTab == StatusTab)
         {
             if (statusHost.isDetached())
+            {
                 statusPlaceholder.setBounds (r);
+                statusDockBtn.setBounds (r.reduced (10).removeFromTop (24).removeFromRight (44));
+            }
             else
                 statusPanel.setBounds (r);
         }
@@ -2723,6 +2744,11 @@ namespace dcr
             inputGroupsPlaceholder.setVisible (false);
             statusPlaceholder.setVisible (false);
         }
+
+        // Dock-back buttons: shown only on their tab while that host is detached.
+        inputGroupsDockBtn.setVisible (currentTab == GroupsTab && inputGroupHost.isDetached());
+        groupsDockBtn.setVisible (currentTab == GroupsTab && groupHost.isDetached());
+        statusDockBtn.setVisible (currentTab == StatusTab && statusHost.isDetached());
 
         resized();
         beginContentFade (fadeFactor); // fade the freshly-shown panel(s) in
