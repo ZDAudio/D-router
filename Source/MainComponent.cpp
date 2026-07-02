@@ -32,12 +32,6 @@ namespace dcr
     static constexpr int kEdge = 12; // outer window inset
     static constexpr int kRailW = 168; // left navigation rail width
 
-    // Content-fade approach fractions (per 60 Hz frame; smaller = slower).
-    // Tab switching is quick; the pop-out/dock transition is deliberately
-    // slower so the panel visibly settles into place.
-    static constexpr double kTabFade = 0.30; // ~13 frames / ~0.2 s
-    static constexpr double kDockFade = 0.11; // ~40 frames / ~0.65 s
-
     MainComponent::MainComponent()
     {
         juce::LookAndFeel::setDefaultLookAndFeel (&customLookAndFeel);

@@ -418,7 +418,7 @@ namespace dcr
                 g.setColour (valueCol);
                 g.fillRect (barArea.withWidth (filledW));
                 g.setColour (juce::Colour::fromRGB (40, 40, 48));
-                g.drawRect (barArea, 0.5f);
+                g.drawRect (barArea.toFloat(), 0.5f); // int overload would truncate 0.5 -> 0 (no border)
                 inner.removeFromTop (2);
             }
 

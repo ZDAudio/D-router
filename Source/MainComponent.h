@@ -373,7 +373,13 @@ namespace dcr
         PanelHost matrixHost { *this, matrixView, "Matrix routing" };
         PanelHost audioHost { *this, audioSetupView, "Audio setup" };
 
-        void switchTab (Tab newTab, double fadeFactor = 0.30);
+        // Content-fade approach fractions (per 60 Hz frame; smaller = slower).
+        // Tab switching is quick; the pop-out/dock transition is deliberately
+        // slower so the panel visibly settles into place.
+        static constexpr double kTabFade = 0.30; // ~13 frames / ~0.2 s
+        static constexpr double kDockFade = 0.11; // ~40 frames / ~0.65 s
+
+        void switchTab (Tab newTab, double fadeFactor = kTabFade);
         static int cards_default_width();
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
