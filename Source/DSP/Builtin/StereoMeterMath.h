@@ -9,6 +9,20 @@ namespace dcr::builtin
     // Max extra display-gain factor at full strength at/above Nyquist.
     inline constexpr float kHighLiftMax = 6.0f;
 
+    // Proportional-bandwidth (per-octave) display weighting: +3 dB/oct on
+    // amplitude, unity at `refHz`.  A raw FFT bin has constant bandwidth, so
+    // equal-energy-per-octave material (pink noise) falls 3 dB/oct on a per-bin
+    // display; hardware/software RTAs integrate proportional bands instead and
+    // show pink as FLAT.  Multiplying each point's magnitude by this weight
+    // reproduces the RTA convention.  White noise then reads +3 dB/oct rising --
+    // that is correct, not a bug.
+    inline float perOctaveWeight (float hz, float refHz) noexcept
+    {
+        if (hz <= 0.0f || refHz <= 0.0f)
+            return 1.0f;
+        return std::sqrt (hz / refHz);
+    }
+
     // Log position of `hz` within [lowestHz, nyquistHz], clamped to [0, 1].
     // Mirrors the analyzer's log bin spacing so labels and points share one axis.
     inline float freqToNorm (float hz, float lowestHz, float nyquistHz) noexcept

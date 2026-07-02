@@ -862,6 +862,29 @@ namespace
         CHECK (dbToNormY (-30.0f, -30.0f, -30.0f) == -1.0f);
     }
 
+    // Per-octave (RTA) display weighting: pink noise's per-bin amplitude falls as
+    // 1/sqrt(f); the weight must exactly cancel that so pink reads FLAT, and it
+    // must add +3 dB/oct (x sqrt(2) per octave) to flat-spectral-density material.
+    void test_stereometer_per_octave_weight()
+    {
+        using dcr::builtin::perOctaveWeight;
+        const float ref = 1000.0f;
+        CHECK (std::abs (perOctaveWeight (ref, ref) - 1.0f) < 1e-6f); // unity at ref
+        // Pink amplitude ~ 1/sqrt(f): weighted product is constant across the band.
+        const float p100 = (1.0f / std::sqrt (100.0f)) * perOctaveWeight (100.0f, ref);
+        const float p1k = (1.0f / std::sqrt (1000.0f)) * perOctaveWeight (1000.0f, ref);
+        const float p10k = (1.0f / std::sqrt (10000.0f)) * perOctaveWeight (10000.0f, ref);
+        CHECK (std::abs (p100 - p1k) < 1e-6f);
+        CHECK (std::abs (p10k - p1k) < 1e-6f);
+        // One octave up = x sqrt(2) on amplitude (+3 dB).
+        CHECK (std::abs (perOctaveWeight (2000.0f, ref) / perOctaveWeight (1000.0f, ref)
+                         - std::sqrt (2.0f))
+               < 1e-5f);
+        // Degenerate inputs stay harmless.
+        CHECK (perOctaveWeight (0.0f, ref) == 1.0f);
+        CHECK (perOctaveWeight (1000.0f, 0.0f) == 1.0f);
+    }
+
     // Spectral node-curve preset restore is an untrusted surface: a hand-edited or
     // corrupt blob can carry NaN/Inf or a wild value, which would latch into the
     // per-bin smoother and poison the FFT output with NaN forever.  sanitizeNodeDb
@@ -1321,6 +1344,7 @@ int main()
     test_stereometer_high_lift_gain();
     test_stereometer_high_lift_knee();
     test_stereometer_db_to_norm_y();
+    test_stereometer_per_octave_weight();
     test_recorder_naming();
     test_recorder_channel_count();
 
