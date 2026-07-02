@@ -111,9 +111,11 @@ Otherwise keep brands out. LICENSE is proprietary (© ZDAudio, all rights reserv
 
 ## Known limitation
 
-**No plugin delay compensation (PDC).** Plugins report latency
-(`setLatencySamples`) but the engine ignores it, so a spectral plugin on one
-output/group desyncs the rest. Being built next — see the project memory.
+**PDC is output-side only and default OFF.** Plugin delay compensation
+(`Source/Engine/PdcPlan.h` + `PdcDelayLine.h`, merged #5/#6) aligns output
+chains from reported plugin latency, but input-side latency is still
+uncompensated, and the feature ships disabled pending a real-device listening
+test — see the project memory before changing defaults.
 
 ## Style
 

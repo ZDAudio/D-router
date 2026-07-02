@@ -149,7 +149,8 @@ target_link_libraries(dcorerouter PRIVATE
 # (gains, mute/solo, the virtual-device self-loop block).
 #   cmake --build build --target dcorerouter_tests
 #   ctest --test-dir build --output-on-failure
-# DSP tests that need JUCE (STFT/WOLA, gain staging) are a separate follow-up.
+# STFT/WOLA lives in the JUCE test target below; matrix gain staging is still
+# a follow-up (needs the engine's ring plumbing extracted or faked).
 # ===========================================================================
 enable_testing()
 add_executable(dcorerouter_tests
@@ -172,6 +173,7 @@ target_sources(dcorerouter_tests_juce PRIVATE
     tests/juce/AtomicXmlWriteTests.cpp
     tests/juce/CrashHandlerTests.cpp
     tests/juce/ReconfigurationControllerTests.cpp
+    tests/juce/SpectralProcessorTests.cpp
     Source/Engine/ReconfigurationController.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp
