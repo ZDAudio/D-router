@@ -113,9 +113,12 @@ Otherwise keep brands out. LICENSE is proprietary (© ZDAudio, all rights reserv
 
 **PDC is output-side only and default OFF.** Plugin delay compensation
 (`Source/Engine/PdcPlan.h` + `PdcDelayLine.h`, merged #5/#6) aligns output
-chains from reported plugin latency, but input-side latency is still
-uncompensated, and the feature ships disabled pending a real-device listening
-test — see the project memory before changing defaults.
+chains from reported plugin latency **within each device** (one alignment
+domain per device — cross-device outputs are never delayed to match each
+other). Input-side chains (`inputPluginHosts`) are still uncompensated, and
+the feature ships disabled pending a real-device listening test — see the
+project memory before changing defaults. Toggle: **Config → Plugin Delay
+Compensation (PDC)**.
 
 ## Style
 
