@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DSP/Builtin/StereoMeterMath.h"
+
 #include <juce_dsp/juce_dsp.h>
 
 #include <cmath>
@@ -39,12 +41,16 @@ namespace dcr::builtin
             const float nyq = (float) (sr * 0.5);
             binPos.resize ((size_t) maxPoints);
             freqs.resize ((size_t) maxPoints);
+            octWeight.resize ((size_t) maxPoints);
             for (int i = 0; i < maxPoints; ++i)
             {
                 const float t = maxPoints > 1 ? (float) i / (float) (maxPoints - 1) : 0.0f;
                 const float f = lowestHz * std::pow (nyq / lowestHz, t); // log sweep
                 freqs[(size_t) i] = f;
                 binPos[(size_t) i] = f * (float) fftSize / (float) sr; // fractional FFT bin
+                // RTA convention: weight each point to per-octave energy so pink
+                // noise reads flat (see StereoMeterMath::perOctaveWeight).
+                octWeight[(size_t) i] = perOctaveWeight (f, 1000.0f);
             }
 
             window.resize ((size_t) fftSize);
@@ -129,7 +135,8 @@ namespace dcr::builtin
                 float c = reLR / (mL * mR + eps);
                 c = std::max (-1.0f, std::min (1.0f, c));
 
-                const float linNorm = std::sqrt (mL * mL + mR * mR) * magNorm;
+                const float linNorm = std::sqrt (mL * mL + mR * mR) * magNorm
+                                      * octWeight[(size_t) i];
                 float v = 0.0f;
                 if (linNorm > floorLin * magNorm)
                 {
@@ -159,7 +166,7 @@ namespace dcr::builtin
         int fftSize;
         juce::dsp::FFT fft;
         float magNorm = 1.0f;
-        std::vector<float> binPos, freqs, window, scratchL, scratchR;
+        std::vector<float> binPos, freqs, octWeight, window, scratchL, scratchR;
         float floorDB_ = -60.0f, ceilDB_ = 0.0f, smoothAlpha_ = 1.0f;
         std::vector<float> prevP, prevC, prevI;
     };

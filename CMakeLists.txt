@@ -174,6 +174,7 @@ target_sources(dcorerouter_tests_juce PRIVATE
     tests/juce/CrashHandlerTests.cpp
     tests/juce/ReconfigurationControllerTests.cpp
     tests/juce/SpectralProcessorTests.cpp
+    tests/juce/ToneNoiseTests.cpp
     Source/Engine/ReconfigurationController.cpp
     Source/Persistence/SnapshotStore.cpp
     Source/Persistence/SettingsStore.cpp

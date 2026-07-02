@@ -35,7 +35,9 @@ namespace dcr::builtin
             l.add (std::make_unique<P> (juce::ParameterID { "ceilDb", 1 }, "Ceiling", R (-40.0f, 0.0f, 0.5f), 0.0f, A().withLabel ("dB")));
             // High-frequency tilt strength. Reshaped by StereoMeterMath::highLiftGain:
             // ~no lift at/below `liftPivot`, rising toward Nyquist (true highs only).
-            l.add (std::make_unique<P> (juce::ParameterID { "highLift", 1 }, "High lift", R (0.0f, 1.0f, 0.01f), 0.5f));
+            // Default 0: the analyzer already applies proper per-octave (RTA)
+            // weighting, so this is extra seasoning, not spectrum correction.
+            l.add (std::make_unique<P> (juce::ParameterID { "highLift", 1 }, "High lift", R (0.0f, 1.0f, 0.01f), 0.0f));
             {
                 auto pivotRange = R (200.0f, 8000.0f, 1.0f);
                 pivotRange.setSkewForCentre (1500.0f);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DSP/Builtin/DeEsserMath.h"
+#include "DSP/Builtin/NoiseGenerators.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -1005,8 +1006,9 @@ namespace dcr::builtin
     };
 
     // ===========================================================================
-    // 9. Tone Generator -- sine / white / pink test signal (replaces the input).
-    //    Handy in a router for verifying a signal path end-to-end.
+    // 9. Tone Generator -- sine / white / pink / music-weighted noise test signal
+    //    (replaces the input).  Handy in a router for verifying a signal path
+    //    end-to-end; noise spectra are unit-tested (tests/juce/ToneNoiseTests).
     // ===========================================================================
     class ToneProcessor : public BuiltinProcessor
     {
@@ -1016,8 +1018,10 @@ namespace dcr::builtin
         static APVTS::ParameterLayout createLayout()
         {
             APVTS::ParameterLayout l;
+            // Appending choices is safe for saved state: the APVTS stores the
+            // plain index, so old snapshots keep their meaning.
             l.add (std::make_unique<juce::AudioParameterChoice> (
-                juce::ParameterID { "mode", 1 }, "Mode", juce::StringArray { "Off (pass-through)", "Sine", "White Noise", "Pink Noise" }, 0));
+                juce::ParameterID { "mode", 1 }, "Mode", juce::StringArray { "Off (pass-through)", "Sine", "White Noise", "Pink Noise", "MNoise (music-weighted)" }, 0));
             l.add (std::make_unique<juce::AudioParameterFloat> (
                 juce::ParameterID { "freq", 1 }, "Frequency", juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.25f), 1000.0f, juce::AudioParameterFloatAttributes().withLabel ("Hz")));
             l.add (std::make_unique<juce::AudioParameterFloat> (
@@ -1030,7 +1034,8 @@ namespace dcr::builtin
         {
             dspSampleRate = sr;
             phase = 0.0;
-            pink = 0.0f;
+            pinkFilter.reset();
+            mnoise.prepare (sr);
         }
 
         void processDsp (juce::AudioBuffer<float>& buffer) override
@@ -1054,15 +1059,17 @@ namespace dcr::builtin
                     if (phase >= 1.0)
                         phase -= 1.0;
                 }
-                else if (mode == 2) // white
+                else if (mode == 2) // white: flat spectral density (reads +3 dB/oct on an RTA)
                 {
                     s = rng.nextFloat() * 2.0f - 1.0f;
                 }
-                else // pink (one-pole coloured approx)
+                else if (mode == 3) // pink: equal energy per octave (reads flat on an RTA)
                 {
-                    const float w = rng.nextFloat() * 2.0f - 1.0f;
-                    pink = 0.98f * pink + 0.02f * w;
-                    s = pink * 3.0f;
+                    s = pinkFilter.process (rng.nextFloat() * 2.0f - 1.0f);
+                }
+                else // MNoise: pink low end, HF RMS shelved down in bursts (music-like crest)
+                {
+                    s = mnoise.process (rng.nextFloat() * 2.0f - 1.0f);
                 }
                 s *= lvl;
                 for (int ch = 0; ch < nch; ++ch)
@@ -1072,7 +1079,8 @@ namespace dcr::builtin
 
     private:
         double phase = 0.0;
-        float pink = 0.0f;
+        dcr::noise::PinkFilter pinkFilter;
+        dcr::noise::MusicNoise mnoise;
         juce::Random rng;
     };
 
