@@ -24,7 +24,6 @@ namespace dcr::builtin
     public:
         SpectralProcessor (juce::String id, juce::String name, APVTS::ParameterLayout layout, int fftOrder = 10, int overlap = 4)
             : BuiltinProcessor (std::move (id), std::move (name), std::move (layout)),
-              fftOrderVal (fftOrder),
               overlapFactor (overlap),
               fft (fftOrder)
         {
@@ -164,7 +163,7 @@ namespace dcr::builtin
                 cs.outputFifo[(size_t) ((idx + i) % fftSize)] += fftData[(size_t) i] * window[(size_t) i] * normScale;
         }
 
-        int fftOrderVal, overlapFactor;
+        int overlapFactor;
         int fftSize = 1024, hopSize = 256, numBins = 513;
         juce::dsp::FFT fft;
 

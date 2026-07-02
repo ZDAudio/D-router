@@ -83,7 +83,7 @@ namespace dcr
             trayIcon->setIconTooltip ("ZDAudio D-Router");
             trayIcon->isWindowVisible = [this] { return mainWindow != nullptr && mainWindow->isVisible(); };
             trayIcon->onToggleWindow = [this] { toggleWindow(); };
-            trayIcon->onQuit = [this] { quit(); };
+            trayIcon->onQuit = [] { juce::JUCEApplication::quit(); };
 
             mainWindow->toFront (true);
         }
