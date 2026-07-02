@@ -519,6 +519,65 @@ namespace
         CHECK (p.compDelay[1] == 48000);
     }
 
+    void test_pdc_plan_device_domains()
+    {
+        // Two devices (domains 0 and 1): each aligns to ITS OWN slowest chain --
+        // device 1's clean outputs must not inherit device 0's plugin latency.
+        std::vector<int> lat { 1024, 0, 512, 0 };
+        std::vector<int> dom { 0, 0, 1, 1 };
+        auto p = dcr::computePdcPlan (lat, dom, true, 48000);
+        CHECK (p.maxLatency == 1024); // global worst, for the status display
+        CHECK (p.compDelay[0] == 0);
+        CHECK (p.compDelay[1] == 1024); // aligned within device 0
+        CHECK (p.compDelay[2] == 0);
+        CHECK (p.compDelay[3] == 512); // aligned within device 1 (NOT 1024)
+        // Per-domain invariant: latency + compensation is equal within a domain.
+        CHECK (lat[0] + p.compDelay[0] == lat[1] + p.compDelay[1]);
+        CHECK (lat[2] + p.compDelay[2] == lat[3] + p.compDelay[3]);
+    }
+
+    void test_pdc_plan_domain_with_no_latency_stays_untouched()
+    {
+        // A device with no latent plugin gets zero compensation everywhere even
+        // while another device is being aligned.
+        std::vector<int> lat { 2048, 0, 0, 0 };
+        std::vector<int> dom { 7, 7, 3, 3 }; // labels are arbitrary
+        auto p = dcr::computePdcPlan (lat, dom, true, 48000);
+        CHECK (p.compDelay[0] == 0);
+        CHECK (p.compDelay[1] == 2048);
+        CHECK (p.compDelay[2] == 0);
+        CHECK (p.compDelay[3] == 0);
+    }
+
+    void test_pdc_plan_mismatched_domains_fall_back_to_global()
+    {
+        // Wrong-sized domain vector (defensive path) -> single global domain,
+        // identical to the legacy 3-arg call.
+        std::vector<int> lat { 1024, 0, 512 };
+        std::vector<int> dom { 0, 1 }; // size mismatch
+        auto p = dcr::computePdcPlan (lat, dom, true, 48000);
+        auto legacy = dcr::computePdcPlan (lat, true, 48000);
+        CHECK (p.compDelay == legacy.compDelay);
+        CHECK (p.maxLatency == legacy.maxLatency);
+    }
+
+    void test_pdc_plan_domains_disabled_and_clamped()
+    {
+        // Disabled: all zeros regardless of domains.
+        std::vector<int> lat { 1024, 0 };
+        std::vector<int> dom { 0, 1 };
+        auto off = dcr::computePdcPlan (lat, dom, false, 48000);
+        for (int d : off.compDelay)
+            CHECK (d == 0);
+        // Clamp + flag still work per domain.
+        std::vector<int> lat2 { 60000, 0, 100, 0 };
+        std::vector<int> dom2 { 0, 0, 1, 1 };
+        auto p = dcr::computePdcPlan (lat2, dom2, true, 48000);
+        CHECK (p.clamped);
+        CHECK (p.compDelay[1] == 48000); // device 0 aligned to the clamped cap
+        CHECK (p.compDelay[3] == 100); // device 1 untouched by the clamp
+    }
+
     // ---------------------------------------------------------------------------
     // PDC delay line (PdcDelayLine): exact integer delay + glitchless re-target.
     // ---------------------------------------------------------------------------
@@ -1325,6 +1384,10 @@ int main()
     test_pdc_plan_empty();
     test_pdc_plan_negative_treated_as_zero();
     test_pdc_plan_cap_clamps_and_flags();
+    test_pdc_plan_device_domains();
+    test_pdc_plan_domain_with_no_latency_stays_untouched();
+    test_pdc_plan_mismatched_domains_fall_back_to_global();
+    test_pdc_plan_domains_disabled_and_clamped();
 
     test_pdc_delay_static();
     test_pdc_delay_change_settles();

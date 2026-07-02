@@ -245,7 +245,7 @@ namespace dcr
             const bool pdcOn = engine.isPdcEnabled();
             s << "  Plugin lat   = " << juce::String (plugMs, 2) << " ms"
               << "   (worst output: " << rep.pluginMaxLatencyEng << " spl @ " << (int) eng << " Hz; "
-              << (pdcOn ? "PDC ON: other outputs aligned to it"
+              << (pdcOn ? "PDC ON: same-device outputs aligned to it"
                         : "PDC OFF: other outputs run ahead by up to this")
               << ")\n";
         }

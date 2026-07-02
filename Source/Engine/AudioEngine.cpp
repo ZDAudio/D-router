@@ -700,7 +700,18 @@ namespace dcr
     void AudioEngine::replanPdc()
     {
         const auto perOut = computePerOutputPluginLatencySamples();
-        const auto plan = computePdcPlan (perOut, settings.pdcEnabled, kMaxPdcSamples);
+        // One alignment domain per device, in the same worker-by-worker order the
+        // outputs (and pluginHosts) were built in.  A latent chain on one device
+        // must not delay another device's outputs -- cross-device alignment only
+        // adds latency without any shared listener to align for.
+        std::vector<int> domains;
+        domains.reserve (perOut.size());
+        for (size_t dev = 0; dev < workers.size(); ++dev)
+            for (int c = 0; c < workers[dev]->getNumOutputChannels(); ++c)
+                domains.push_back ((int) dev);
+        if (domains.size() != perOut.size())
+            domains.clear(); // defensive: fall back to one global domain
+        const auto plan = computePdcPlan (perOut, domains, settings.pdcEnabled, kMaxPdcSamples);
         if (plan.clamped)
             juce::Logger::writeToLog ("[PDC] an output's plugin latency exceeded the "
                                       + juce::String (kMaxPdcSamples) + "-sample cap -- clamped");
